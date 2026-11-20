@@ -1,0 +1,25 @@
+{
+  "lab": "authlab",
+  "description": "Deterministic vulnerable/hardened form-login web app with a login -> view item -> transfer workflow. vuln=127.0.0.1:8831, hardened=127.0.0.1:8832. All credentials and data are lab-only fakes.",
+  "mode_env": "LAB_MODE",
+  "identities": [
+    {"username": "alice", "password": "SI_SECRET_PASSWORD_AUTHLAB_A1", "role": "user", "uid": 1},
+    {"username": "bob", "password": "SI_SECRET_PASSWORD_AUTHLAB_B2", "role": "user", "uid": 2},
+    {"username": "admin", "password": "SI_SECRET_PASSWORD_AUTHLAB_C3", "role": "admin", "uid": 3}
+  ],
+  "login": {"url": "/login", "selectors": {"username": "input[name=username]", "password": "input[name=password]", "submit": "button[type=submit]"}, "success_assertion": "#dashboard"},
+  "seeded_findings": [
+    {"id": "AL-01", "cwe": "CWE-639", "owasp": "A01:2021 Broken Access Control", "endpoint": "/items/2", "title": "BOLA: alice's session renders bob's item page", "proof": "alice logs in, navigates to /items/2 (owner_id 2 = bob) and the page renders Bob's notebook", "present_in": "vuln"},
+    {"id": "AL-02", "cwe": "CWE-285", "owasp": "A01:2021 Broken Access Control", "endpoint": "/admin", "title": "BFLA: non-admin session reaches the admin panel", "proof": "alice's session GETs /admin and gets 200 with the admin statistics page", "present_in": "vuln"},
+    {"id": "AL-03", "cwe": "CWE-352", "owasp": "A01:2021 Broken Access Control", "endpoint": "/items/3/transfer", "title": "CSRF: state-changing transfer accepted without a token", "proof": "alice's session POSTs /items/3/transfer without the csrf field and ownership changes to bob", "present_in": "vuln"},
+    {"id": "AL-04", "cwe": "CWE-639", "owasp": "A01:2021 Broken Access Control", "endpoint": "/profile?uid=2", "title": "BOLA: cross-user profile read", "proof": "alice's session GETs /profile?uid=2 and receives bob's email", "present_in": "vuln"}
+  ],
+  "negative_controls": [
+    {"id": "NC-01", "endpoint": "/items/1", "signal": "alice reads her own item", "expected": "200 in both modes"},
+    {"id": "NC-02", "endpoint": "/admin", "signal": "admin session reads the admin panel", "expected": "200 in both modes"},
+    {"id": "NC-03", "endpoint": "/login", "signal": "wrong password", "expected": "401 in both modes"},
+    {"id": "NC-04", "endpoint": "/items/2", "signal": "bob reads his own item", "expected": "200 in both modes"},
+    {"id": "NC-05", "endpoint": "/dashboard", "signal": "unauthenticated browser", "expected": "302 to /login in both modes"},
+    {"id": "NC-06", "endpoint": "all hardened routes", "signal": "hardened twin", "expected": "zero findings; any finding on hardened mode is a false positive"}
+  ]
+}

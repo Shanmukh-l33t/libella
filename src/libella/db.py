@@ -71,6 +71,46 @@ CREATE TABLE IF NOT EXISTS retests(
   detail TEXT, created_at REAL
 );
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS hypotheses(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, asset_id TEXT, intent_id TEXT,
+  kind TEXT, statement TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
+  confidence REAL DEFAULT 0.5, created_by TEXT, created_at REAL, updated_at REAL
+);
+CREATE TABLE IF NOT EXISTS investigation_steps(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, intent_id TEXT, agent_run_id TEXT,
+  seq INTEGER, action_kind TEXT NOT NULL, summary TEXT, tool_call_id TEXT,
+  observation_id TEXT, evidence_id TEXT, hypothesis_id TEXT, model TEXT,
+  tokens INTEGER DEFAULT 0, created_at REAL
+);
+CREATE TABLE IF NOT EXISTS agent_runs(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, intent_id TEXT, role TEXT NOT NULL,
+  model TEXT, status TEXT NOT NULL DEFAULT 'running', iterations INTEGER DEFAULT 0,
+  tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
+  started_at REAL, finished_at REAL, summary TEXT, exit_reason TEXT
+);
+CREATE TABLE IF NOT EXISTS auth_contexts(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, name TEXT, username TEXT,
+  login_flow_json TEXT, cookies_json TEXT, status TEXT DEFAULT 'active',
+  last_verified_at REAL, created_at REAL
+);
+CREATE TABLE IF NOT EXISTS workflows(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, name TEXT, auth_context_id TEXT,
+  steps_json TEXT, status TEXT DEFAULT 'draft', created_at REAL
+);
+CREATE TABLE IF NOT EXISTS memory_facts(
+  id TEXT PRIMARY KEY, target_key TEXT NOT NULL, kind TEXT NOT NULL, value_json TEXT,
+  source_engagement_id TEXT, confidence REAL DEFAULT 0.5, first_seen REAL, last_seen REAL,
+  UNIQUE(target_key, kind)
+);
+CREATE TABLE IF NOT EXISTS asset_changes(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, asset_key TEXT NOT NULL,
+  change_kind TEXT NOT NULL, old_json TEXT, new_json TEXT, detected_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_hyp_eng ON hypotheses(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_steps_eng ON investigation_steps(engagement_id, intent_id);
+CREATE INDEX IF NOT EXISTS idx_runs_eng ON agent_runs(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_auth_eng ON auth_contexts(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_mem_target ON memory_facts(target_key);
 CREATE INDEX IF NOT EXISTS idx_assets_eng ON assets(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_intents_eng ON intents(engagement_id, status);
 CREATE INDEX IF NOT EXISTS idx_obs_eng ON observations(engagement_id);
@@ -95,7 +135,21 @@ class DB:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self):
+        """Add columns to pre-existing tables (idempotent)."""
+        additions = {
+            "findings": [("remediation_notes", "TEXT"), ("owner", "TEXT"),
+                         ("fix_commit", "TEXT"), ("remediated_at", "REAL")],
+            "exchanges": [("replay_of", "TEXT"), ("tags_json", "TEXT DEFAULT '[]'")],
+        }
+        for table, cols in additions.items():
+            existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            for name, typ in cols:
+                if name not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
     def execute(self, sql: str, params=()):
         with self._lock:

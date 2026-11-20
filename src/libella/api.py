@@ -11,11 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .auth_browser import STEP_ACTIONS, AuthBrowser
+from .browser_crawl import browser_available
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
 from .llm import LLM
 from .orchestrator import Orchestrator
+from . import mcp_client  # plugin/MCP extension framework
+from .plugins import PluginHost
 from .report import render_report
 from .scope import Scope
 from .secrets import SecretBox
@@ -43,6 +47,14 @@ class App:
         for spec in CODE_SPECS + [TRIVY_IMAGE]:
             self.registry.register(spec)
         self.runner = ToolRunner(self.db, self.evidence, self.data_dir / "runs")
+        # ---- plugins (extension framework) ----
+        self.plugins = PluginHost(
+            Path(os.environ.get("LIBELLA_PLUGIN_DIR") or self.data_dir / "plugins"),
+            self.registry)
+        try:
+            self.plugins.load()
+        except OSError as e:  # a bad plugin dir must not stop the platform
+            self.plugins.errors.append({"plugin": "*", "error": str(e)[:300]})
         self._llm = None
         self._threads: dict[str, threading.Thread] = {}
         self.box = SecretBox(self.data_dir)
@@ -211,6 +223,33 @@ def create_api(app: App) -> FastAPI:
     def findings(eid: str):
         return app.pipeline.list(eid)
 
+    @api.post("/api/engagements/{eid}/cloud-audit", dependencies=[Depends(auth)])
+    def cloud_audit(eid: str, body: dict):
+        """Read-only AWS posture run against an operator-supplied endpoint."""
+        eng = app.db.one("SELECT scope_json FROM engagements WHERE id=?", (eid,))
+        if not eng:
+            raise HTTPException(404)
+        endpoint, region = body.get("endpoint"), body.get("region")
+        creds = body.get("creds")
+        if creds is None and body.get("creds_ref"):
+            ref = body["creds_ref"]
+            if not isinstance(ref, str) or not ref or not all(c.isalnum() or c in "_-" for c in ref):
+                raise HTTPException(400, "invalid creds_ref")
+            raw = os.environ.get(f"LIBELLA_CLOUD_CREDS_{ref.upper()}", "").split(":")
+            if len(raw) < 2:
+                raise HTTPException(400, f"creds_ref '{ref}' is not configured")
+            creds = {"access_key_id": raw[0], "secret_access_key": raw[1]}
+            if len(raw) > 2:
+                creds["session_token"] = raw[2]
+        if not endpoint or not region or not creds:
+            raise HTTPException(400, "endpoint, region and creds (or creds_ref) required")
+        from .cloud_audit import assess_cloud
+        result = assess_cloud(endpoint, region, creds, app.db, app.evidence, app.pipeline,
+                              Scope(json.loads(eng["scope_json"])), eid)
+        if result.get("refused"):
+            raise HTTPException(403, result["reason"])
+        return result
+
     @api.get("/api/engagements/{eid}/observations", dependencies=[Depends(auth)])
     def observations(eid: str):
         return app.db.query("SELECT * FROM observations WHERE engagement_id=? ORDER BY created_at", (eid,))
@@ -351,7 +390,39 @@ def create_api(app: App) -> FastAPI:
             return FileResponse(p / "report.md", media_type="text/markdown")
         if format == "sarif":
             return FileResponse(p / "report.sarif", media_type="application/json")
+        if format == "pdf":
+            from .report_pdf import render_pdf
+            pdf = render_pdf(json.loads((p / "report.json").read_text()), p / "report.pdf")
+            return FileResponse(pdf, media_type="application/pdf", filename=f"{eid}.pdf")
         return json.loads((p / "report.json").read_text())
+
+    # ---------------- remediation tracking + historical comparison (WS-Report) ----
+    @api.post("/api/findings/{fid}/remediation", dependencies=[Depends(auth)])
+    def set_finding_remediation(fid: str, body: dict):
+        from .remediation import set_remediation
+        try:
+            return set_remediation(app.db, fid, notes=body.get("notes"), owner=body.get("owner"),
+                                   fix_commit=body.get("fix_commit"), state=body.get("state"))
+        except KeyError:
+            raise HTTPException(404, "finding not found")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @api.get("/api/engagements/{eid}/remediation-board", dependencies=[Depends(auth)])
+    def remediation_board_route(eid: str):
+        from .remediation import remediation_board
+        try:
+            return remediation_board(app.db, eid)
+        except KeyError:
+            raise HTTPException(404, "engagement not found")
+
+    @api.get("/api/compare", dependencies=[Depends(auth)])
+    def compare(a: str, b: str):
+        from .remediation import compare_engagements
+        try:
+            return compare_engagements(app.db, a, b)
+        except KeyError as exc:
+            raise HTTPException(404, f"engagement not found: {exc}")
 
     @api.get("/api/tools", dependencies=[Depends(auth)])
     def tools():
@@ -380,31 +451,208 @@ def create_api(app: App) -> FastAPI:
         return {"ok": True}
 
     @api.get("/api/engagements/{eid}/graph", dependencies=[Depends(auth)])
-    def graph(eid: str):
-        assets = app.db.query("SELECT * FROM assets WHERE engagement_id=?", (eid,))
-        findings = app.db.query("SELECT * FROM findings WHERE engagement_id=?", (eid,))
-        intents = app.db.query("SELECT * FROM intents WHERE engagement_id=?", (eid,))
-        nodes, edges = [], []
-        for a in assets:
-            nodes.append({"id": a["id"], "type": "asset", "kind": a["kind"], "label": a["key"],
-                          "data": json.loads(a["value_json"])})
-            if a["parent_id"]:
-                edges.append({"source": a["parent_id"], "target": a["id"], "kind": "contains"})
-        for f in findings:
-            nodes.append({"id": f["id"], "type": "finding", "kind": f["severity"],
-                          "label": f["title"], "data": {"state": f["state"], "endpoint": f["endpoint"]}})
-            if f["endpoint"]:
-                ep = app.db.one("SELECT id FROM assets WHERE engagement_id=? AND key=?",
-                                (eid, f["endpoint"]))
-                if ep:
-                    edges.append({"source": ep["id"], "target": f["id"], "kind": "affects",
-                                  "verified": f["state"] in ("validated", "reported", "retested_persists")})
-        for i in intents:
-            nodes.append({"id": i["id"], "type": "intent", "kind": i["status"],
-                          "label": i["objective"][:80], "data": {"role": i["role"]}})
-            for dep in json.loads(i["depends_on_json"]):
-                edges.append({"source": dep, "target": i["id"], "kind": "depends_on"})
-        return {"nodes": nodes, "edges": edges}
+    def graph(eid: str, include: str | None = None):
+        from .graph import build_graph
+        inc = set(include.split(",")) if include else None
+        return build_graph(app.db, eid, include=inc)
+
+    @api.get("/api/engagements/{eid}/agent-runs", dependencies=[Depends(auth)])
+    def agent_runs(eid: str):
+        return app.db.query("SELECT * FROM agent_runs WHERE engagement_id=? ORDER BY started_at", (eid,))
+
+    @api.get("/api/engagements/{eid}/investigation", dependencies=[Depends(auth)])
+    def investigation(eid: str, run_id: str | None = None):
+        if run_id:
+            return app.db.query("SELECT * FROM investigation_steps WHERE engagement_id=? AND agent_run_id=? ORDER BY seq", (eid, run_id))
+        return app.db.query("SELECT * FROM investigation_steps WHERE engagement_id=? ORDER BY created_at", (eid,))
+
+    @api.get("/api/engagements/{eid}/hypotheses", dependencies=[Depends(auth)])
+    def hypotheses(eid: str):
+        return app.db.query("SELECT * FROM hypotheses WHERE engagement_id=? ORDER BY created_at", (eid,))
+
+    @api.get("/api/engagements/{eid}/memory", dependencies=[Depends(auth)])
+    def memory(eid: str, target: str = ""):
+        from . import memory as mem
+        eng = app.db.one("SELECT scope_json FROM engagements WHERE id=?", (eid,))
+        if not target and eng:
+            tgts = json.loads(eng["scope_json"]).get("targets", [])
+            target = tgts[0]["value"] if tgts else ""
+        return mem.recall(app.db, target)
+
+    @api.post("/api/engagements/{eid}/drift", dependencies=[Depends(auth)])
+    def drift(eid: str):
+        from . import memory as mem
+        return mem.detect_drift(app.db, eid)
+
+    # ---------------- traffic intelligence (WS-Traffic) ----------------
+    from . import traffic as traffic_mod
+
+    def _traffic_scope(engagement_id: str) -> Scope:
+        eng = app.db.one("SELECT scope_json FROM engagements WHERE id=?", (engagement_id,))
+        if eng is None:
+            raise HTTPException(404, "engagement not found")
+        return Scope(json.loads(eng["scope_json"]))
+
+    @api.get("/api/engagements/{eid}/traffic", dependencies=[Depends(auth)])
+    def traffic_search(eid: str, url: str = "", method: str = "", status: str = "",
+                       tool: str = "", body_text: str = "", page: int = 1, page_size: int = 50):
+        _traffic_scope(eid)
+        try:
+            return traffic_mod.search_exchanges(
+                app.db, eid, {"url_substring": url, "method": method, "status": status,
+                              "tool": tool, "body_text": body_text},
+                page, page_size, evidence=app.evidence)
+        except ValueError as e:
+            raise HTTPException(400, f"invalid filter: {e}")
+
+    @api.get("/api/engagements/{eid}/traffic/correlate", dependencies=[Depends(auth)])
+    def traffic_correlate(eid: str):
+        _traffic_scope(eid)
+        return traffic_mod.correlate(app.db, eid)
+
+    @api.post("/api/exchanges/{xid}/replay", dependencies=[Depends(auth)])
+    def replay_exchange(xid: str, body: dict | None = None):
+        ex = app.db.one("SELECT engagement_id FROM exchanges WHERE id=?", (xid,))
+        if not ex:
+            raise HTTPException(404)
+        raw = (body or {}).get("overrides") or body or {}
+        res = traffic_mod.replay(app.db, app.evidence, app.probe,
+                                 _traffic_scope(ex["engagement_id"]), ex["engagement_id"], xid,
+                                 {k: raw[k] for k in ("headers", "body") if k in raw})
+        if not res.get("ok"):
+            raise HTTPException(403 if str(res.get("error", "")).startswith("out_of_scope")
+                                else 409, res.get("error"))
+        return res
+
+    # ---------------- authenticated browser workflows (WS-AuthBrowser) ----------------
+    def _need_browser():
+        if not browser_available():
+            raise HTTPException(503, "playwright/chromium not installed")
+
+    def _auth_engagement(engagement_id: str) -> Scope:
+        eng = app.db.one("SELECT scope_json FROM engagements WHERE id=?", (engagement_id,))
+        if eng is None:
+            raise HTTPException(404, "engagement not found")
+        return Scope(json.loads(eng["scope_json"]))
+
+    def _ctx_out(row: dict) -> dict:
+        """auth_contexts row without cookie values (session secrets stay server-side)."""
+        return {**{k: row.get(k) for k in ("id", "engagement_id", "name", "username", "status",
+                                           "last_verified_at", "created_at")},
+                "login_flow": json.loads(row.get("login_flow_json") or "{}"),
+                "cookie_count": len(json.loads(row.get("cookies_json") or "[]"))}
+
+    @api.post("/api/engagements/{eid}/auth-contexts",
+              dependencies=[Depends(auth), Depends(_need_browser)])
+    def create_auth_context(eid: str, body: dict):
+        scope = _auth_engagement(eid)
+        for field in ("base_url", "login_url", "username"):
+            if not body.get(field):
+                raise HTTPException(400, f"{field} required")
+        with AuthBrowser(app.db, app.evidence, scope, eid) as browser:
+            res = browser.login_flow(body["base_url"], body["login_url"], body["username"],
+                                     body.get("password", ""), body.get("selectors"),
+                                     body.get("success_assertion"), name=body.get("name"))
+        if not res.get("id"):
+            raise HTTPException(400, res.get("reason") or "login failed")
+        row = app.db.one("SELECT * FROM auth_contexts WHERE id=?", (res["id"],))
+        return {**_ctx_out(row), "evidence_id": res["evidence_id"], "reason": res["reason"]}
+
+    @api.get("/api/engagements/{eid}/auth-contexts", dependencies=[Depends(auth)])
+    def list_auth_contexts(eid: str):
+        _auth_engagement(eid)
+        return [_ctx_out(r) for r in app.db.query(
+            "SELECT * FROM auth_contexts WHERE engagement_id=? ORDER BY created_at", (eid,))]
+
+    @api.post("/api/auth-contexts/{aid}/verify",
+              dependencies=[Depends(auth), Depends(_need_browser)])
+    def verify_auth_context(aid: str):
+        row = app.db.one("SELECT * FROM auth_contexts WHERE id=?", (aid,))
+        if not row:
+            raise HTTPException(404)
+        scope = _auth_engagement(row["engagement_id"])
+        with AuthBrowser(app.db, app.evidence, scope, row["engagement_id"]) as browser:
+            res = browser.verify(row)
+        return {**res, "context": _ctx_out(
+            app.db.one("SELECT * FROM auth_contexts WHERE id=?", (aid,)))}
+
+    @api.post("/api/engagements/{eid}/workflows", dependencies=[Depends(auth)])
+    def create_workflow(eid: str, body: dict):
+        _auth_engagement(eid)
+        steps = body.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise HTTPException(400, "steps must be a non-empty list")
+        if not all(isinstance(s, dict) for s in steps):
+            raise HTTPException(400, "each step must be an object")
+        bad = sorted({str(s.get("action")) for s in steps if s.get("action") not in STEP_ACTIONS})
+        if bad:
+            raise HTTPException(400, f"unknown actions: {bad}")
+        aid = body.get("auth_context_id")
+        if aid and not app.db.one(
+                "SELECT id FROM auth_contexts WHERE id=? AND engagement_id=?", (aid, eid)):
+            raise HTTPException(404, "auth context not found")
+        wid = new_id("wf")
+        name = body.get("name") or "workflow"
+        app.db.execute(
+            "INSERT INTO workflows(id, engagement_id, name, auth_context_id, steps_json, status, "
+            "created_at) VALUES(?,?,?,?,?,?,?)",
+            (wid, eid, name, aid, json.dumps(steps), "draft", time.time()))
+        return {"id": wid, "engagement_id": eid, "name": name, "auth_context_id": aid,
+                "steps": steps, "status": "draft"}
+
+    @api.post("/api/workflows/{wid}/run",
+              dependencies=[Depends(auth), Depends(_need_browser)])
+    def run_workflow(wid: str):
+        wf = app.db.one("SELECT * FROM workflows WHERE id=?", (wid,))
+        if not wf:
+            raise HTTPException(404)
+        scope = _auth_engagement(wf["engagement_id"])
+        ctx = app.db.one("SELECT * FROM auth_contexts WHERE id=?",
+                         (wf["auth_context_id"],)) if wf["auth_context_id"] else None
+        with AuthBrowser(app.db, app.evidence, scope, wf["engagement_id"]) as browser:
+            res = browser.run_workflow(json.loads(wf["steps_json"] or "[]"), ctx)
+        status = "passed" if res.get("ok") else "failed"
+        app.db.execute("UPDATE workflows SET status=? WHERE id=?", (status, wid))
+        return {**res, "workflow": {"id": wid, "status": status}}
+
+    # ---- plugins + external MCP servers (extension framework) ----
+    @api.get("/api/plugins", dependencies=[Depends(auth)])
+    def plugins():
+        return app.plugins.status()
+
+    @api.post("/api/plugins/reload", dependencies=[Depends(auth)])
+    def plugins_reload():
+        return app.plugins.load()
+
+    @api.get("/api/mcp/servers", dependencies=[Depends(auth)])
+    def mcp_servers():
+        out = []
+        for conf in mcp_client.load_servers(app.db):
+            with mcp_client.McpClient(conf, timeout=5) as client:
+                out.append(client.health())
+        return out
+
+    @api.post("/api/mcp/servers", dependencies=[Depends(auth)])
+    def mcp_register(body: dict):
+        try:
+            conf = mcp_client.register_server(app.db, body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return conf
+
+    @api.get("/api/mcp/{server}/tools", dependencies=[Depends(auth)])
+    def mcp_tools(server: str):
+        conf = mcp_client.find_server(app.db, server)
+        if not conf:
+            raise HTTPException(404, "unknown MCP server")
+        with mcp_client.McpClient(conf, timeout=10) as client:
+            try:
+                specs = mcp_client.to_specs(client)
+            except mcp_client.McpError as e:  # absent server degrades, never 500s
+                return {"server": server, "available": False,
+                        "error": str(e)[:300], "tools": []}
+        return {"server": server, "available": True,
+                "tools": [s.schema() for s in specs]}
 
     # static frontend (built). Resolve robustly: env override, container path,
     # then source-tree relative (pip-installed packages live in site-packages,

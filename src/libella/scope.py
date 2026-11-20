@@ -21,9 +21,9 @@ ALWAYS_BLOCKED = [
     ipaddress.ip_network("fe80::/10"),
 ]
 
-TARGET_KINDS = {"url", "domain", "cidr", "ip", "repo", "image"}
+TARGET_KINDS = {"url", "domain", "cidr", "ip", "repo", "image", "cloud"}
 EXCLUSION_KINDS = {"url_prefix", "domain", "cidr", "ip"}
-CATEGORIES = {"recon", "web", "api", "infra", "code"}
+CATEGORIES = {"recon", "web", "api", "infra", "code", "cloud"}
 
 
 def parse_origin(url: str) -> tuple[str, str, int, str]:
@@ -116,6 +116,15 @@ class Scope:
                 elif t["kind"] == "image":
                     if any(c in t["value"] for c in " ;|&$`\n\r\t"):
                         raise ValueError("image target contains forbidden characters")
+                elif t["kind"] == "cloud":
+                    # account id ("123456789012") or the lab/account endpoint URL
+                    v = t["value"]
+                    if any(c in v for c in " ;|&$`\n\r\t"):
+                        raise ValueError("cloud target contains forbidden characters")
+                    if "://" in v:
+                        scheme, _, _, _ = parse_origin(v)
+                        if scheme not in ("http", "https"):
+                            raise ValueError(f"cloud endpoint scheme '{scheme}' not permitted")
             except ValueError as e:
                 raise ValueError(f"invalid target {t['value']!r}: {e}") from e
         if not isinstance(self.exclusions, list):
@@ -324,6 +333,39 @@ class Scope:
             if t["kind"] == "image" and t["value"] == image:
                 return Decision(True, "in scope", matched_target=t["value"])
         return Decision(False, f"image {image} not in engagement scope")
+
+    def check_cloud(self, account_id: str, endpoint_url: str | None = None) -> Decision:
+        """Authorize a cloud account (and, for labs, its API endpoint).
+
+        Either dimension may be declared by a `cloud` target: the 12-digit
+        account id, or the endpoint URL (moto lab / localstack). Both are
+        compared, so a scope naming only the account still refuses a
+        different endpoint and vice versa.
+        """
+        if "cloud" not in self.categories:
+            return Decision(False, "category 'cloud' not permitted by engagement")
+        if not isinstance(account_id, str) or not account_id.strip():
+            return Decision(False, "cloud account id required")
+        want = account_id.strip().lower()
+        endpoint = None
+        if endpoint_url:
+            try:
+                endpoint = parse_origin(endpoint_url)[:3]
+            except ValueError as e:
+                return Decision(False, f"unparseable cloud endpoint: {e}")
+        for t in self.targets:
+            if t["kind"] != "cloud":
+                continue
+            val = t["value"].strip()
+            if val.lower() == want:
+                return Decision(True, "in scope", matched_target=val)
+            if "://" in val:
+                try:
+                    if parse_origin(val)[:3] == endpoint:
+                        return Decision(True, "in scope", matched_target=val)
+                except ValueError:
+                    continue
+        return Decision(False, f"cloud account {account_id} not in engagement scope")
 
     def prompt_block(self) -> str:
         lines = ["Authorized scope (enforced by the platform; you cannot expand it):"]

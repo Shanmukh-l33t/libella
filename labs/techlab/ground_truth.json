@@ -1,0 +1,42 @@
+{
+  "lab": "techlab",
+  "description": "Deterministic vulnerable/hardened twins of seven server stacks under path prefixes. vuln=127.0.0.1:8821, hardened=127.0.0.1:8822. All credentials and secrets are lab-only fakes.",
+  "prefixes": {"wordpress": "/wp", "php": "/php", "java": "/java", "coldfusion": "/cf",
+               "node": "/node", "iis": "/iis", "apache": "/apache"},
+  "seeded_findings": [
+    {"id": "TL-WP-01", "tech": "wordpress", "path": "/wp/wp-config.php.bak", "cwe": "CWE-538", "status": 200, "needle": "DB_PASSWORD", "present_in": "vuln"},
+    {"id": "TL-WP-02", "tech": "wordpress", "path": "/wp/wp-content/plugins/", "cwe": "CWE-548", "status": 200, "needle": "Index of", "present_in": "vuln"},
+    {"id": "TL-WP-03", "tech": "wordpress", "path": "/wp/wp-json/wp/v2/users", "cwe": "CWE-200", "status": 200, "needle": "\"slug\"", "present_in": "vuln"},
+    {"id": "TL-WP-04", "tech": "wordpress", "path": "/wp?author=1", "cwe": "CWE-200", "status": 301, "needle": "/author/", "follow": false, "present_in": "vuln"},
+    {"id": "TL-WP-05", "tech": "wordpress", "path": "/wp/xmlrpc.php", "cwe": "CWE-307", "status": 200, "needle": "system.listMethods", "present_in": "vuln", "method": "POST", "body": "<?xml version=\"1.0\"?><methodCall><methodName>system.listMethods</methodName><params/></methodCall>", "headers": {"Content-Type": "text/xml"}},
+    {"id": "TL-WP-06", "tech": "wordpress", "path": "/wp/wp-content/plugins/hello-dolly/readme.txt", "cwe": "CWE-200", "status": 200, "needle": "Stable tag:", "present_in": "vuln"},
+    {"id": "TL-PHP-01", "tech": "php", "path": "/php/phpinfo.php", "cwe": "CWE-200", "status": 200, "needle": "PHP Version", "present_in": "vuln"},
+    {"id": "TL-PHP-02", "tech": "php", "path": "/php/index.php.bak", "cwe": "CWE-538", "status": 200, "needle": "<?php", "present_in": "vuln"},
+    {"id": "TL-PHP-03", "tech": "php", "path": "/php/config.php.bak", "cwe": "CWE-538", "status": 200, "needle": "<?php", "present_in": "vuln"},
+    {"id": "TL-PHP-04", "tech": "php", "path": "/php/", "cwe": "CWE-16", "status": 200, "needle": "PHP/", "present_in": "vuln", "where": "header:x-powered-by"},
+    {"id": "TL-JAVA-01", "tech": "java", "path": "/java/actuator/env", "cwe": "CWE-200", "status": 200, "needle": "propertySources", "present_in": "vuln"},
+    {"id": "TL-JAVA-02", "tech": "java", "path": "/java/actuator/heapdump", "cwe": "CWE-200", "status": 200, "needle": "JAVA PROFILE", "present_in": "vuln"},
+    {"id": "TL-JAVA-03", "tech": "java", "path": "/java/actuator", "cwe": "CWE-200", "status": 200, "needle": "_links", "present_in": "vuln"},
+    {"id": "TL-JAVA-04", "tech": "java", "path": "/java/index.action", "cwe": "CWE-209", "status": 200, "needle": "Struts Problem Report", "present_in": "vuln"},
+    {"id": "TL-CF-01", "tech": "coldfusion", "path": "/cf/CFIDE/administrator/", "cwe": "CWE-284", "status": 200, "needle": "ColdFusion Administrator", "present_in": "vuln"},
+    {"id": "TL-CF-02", "tech": "coldfusion", "path": "/cf/CFIDE/componentutils/cfcexplorer.cfc", "cwe": "CWE-200", "status": 200, "needle": "CFC Explorer", "present_in": "vuln"},
+    {"id": "TL-NODE-01", "tech": "node", "path": "/node/.env", "cwe": "CWE-200", "status": 200, "needle": "DB_PASSWORD=", "present_in": "vuln"},
+    {"id": "TL-NODE-02", "tech": "node", "path": "/node/package.json", "cwe": "CWE-200", "status": 200, "needle": "dependencies", "present_in": "vuln"},
+    {"id": "TL-NODE-03", "tech": "node", "path": "/node/debug", "cwe": "CWE-200", "status": 200, "needle": "environ", "present_in": "vuln"},
+    {"id": "TL-NODE-04", "tech": "node", "path": "/node/__libella_missing__", "cwe": "CWE-209", "status": 404, "needle": "node_modules/", "present_in": "vuln"},
+    {"id": "TL-IIS-01", "tech": "iis", "path": "/iis/web.config", "cwe": "CWE-200", "status": 200, "needle": "<configuration", "present_in": "vuln"},
+    {"id": "TL-IIS-02", "tech": "iis", "path": "/iis/trace.axd", "cwe": "CWE-200", "status": 200, "needle": "Application Trace", "present_in": "vuln"},
+    {"id": "TL-IIS-03", "tech": "iis", "path": "/iis/libella~1.aspx", "cwe": "CWE-200", "status": 404, "needle": "404.0", "present_in": "vuln", "hardened_status": 400},
+    {"id": "TL-APACHE-01", "tech": "apache", "path": "/apache/server-status", "cwe": "CWE-200", "status": 200, "needle": "Apache Server Status", "present_in": "vuln"},
+    {"id": "TL-APACHE-02", "tech": "apache", "path": "/apache/.htaccess", "cwe": "CWE-200", "status": 200, "needle": "RewriteEngine", "present_in": "vuln", "hardened_status": 403},
+    {"id": "TL-APACHE-03", "tech": "apache", "path": "/apache/nginx.conf", "cwe": "CWE-200", "status": 200, "needle": "server {", "present_in": "vuln"},
+    {"id": "TL-APACHE-04", "tech": "apache", "path": "/apache/static../WEB-INF/web.xml", "cwe": "CWE-22", "status": 200, "needle": "<web-app", "present_in": "vuln"}
+  ],
+  "negative_controls": [
+    {"id": "NC-01", "endpoint": "/wp/", "signal": "WordPress landing page", "expected": "200 in both modes and still detected as wordpress (hardening removes exposures, not the stack)"},
+    {"id": "NC-02", "endpoint": "/apache/server-status", "signal": "hardened twin", "expected": "404 in hardened mode"},
+    {"id": "NC-03", "endpoint": "/iis/libella~1.aspx", "signal": "patched IIS tilde handling", "expected": "400 in hardened mode (tilde rejected, not enumerated)"},
+    {"id": "NC-04", "endpoint": "every prefix", "signal": "hardened twin", "expected": "zero candidate findings; any finding on hardened mode is a false positive"},
+    {"id": "NC-05", "endpoint": "/php/", "signal": "hardened PHP", "expected": "no X-Powered-By header (expose_php off)"}
+  ]
+}

@@ -54,9 +54,12 @@ class Orchestrator:
         self.db.execute("UPDATE engagements SET status='running', started_at=? WHERE id=?",
                         (time.time(), engagement_id))
         self.db.emit(engagement_id, "engagement_started", {"mode": mode})
-        self._plan_deterministic(engagement_id, scope, eng)
-        if mode == "llm" and self.llm:
-            self._plan_llm(engagement_id, scope, eng)
+        if mode == "agent" and self.llm:
+            self._plan_agent(engagement_id, scope, eng)
+        else:
+            self._plan_deterministic(engagement_id, scope, eng)
+            if mode == "llm" and self.llm:
+                self._plan_llm(engagement_id, scope, eng)
         self._run_loop(engagement_id, scope, eng, mode)
 
     def cancel(self, engagement_id: str):
@@ -172,6 +175,52 @@ class Orchestrator:
                     continue
             self._add_intent(engagement_id, role, objective[:500])
 
+    def _plan_agent(self, engagement_id: str, scope: Scope, eng: dict):
+        """LLM planner decomposes the engagement into specialist intents (gated).
+        Falls back to the deterministic plan on failure. verify/report always added."""
+        targets = json.loads(eng["scope_json"])["targets"]
+        objectives = json.loads(eng["objectives_json"]) if eng.get("objectives_json") else []
+        state = {"targets": targets, "objectives": objectives,
+                 "categories": sorted(scope.categories),
+                 "auth_identities": len(json.loads(eng["auth_json"]).get("identities", []))}
+        system = (
+            "You are the Assessment Planning agent for an authorized penetration test. "
+            + scope.prompt_block()
+            + "\nDecompose the engagement into specialist investigation intents. JSON only: "
+              '{"intents":[{"role":"recon|web|api|authz|infra|correlator|risk","objective":"...","target":"<in-scope url/host>"}]}. '
+              "Start with recon. Assign web/api/authz/infra specialists to the relevant targets. "
+              "Objectives must be specific, testable, and within scope. Max 8 intents. "
+              "Do not plan destructive actions or expand scope."
+        )
+        planned = []
+        if self.llm:
+            try:
+                out = self.llm.complete("planner", system, json.dumps(state), engagement_id,
+                                        json_schema={"type": "object"})
+                for it in (out.get("parsed") or {}).get("intents", [])[:8]:
+                    role = it.get("role")
+                    obj = it.get("objective", "")
+                    target = it.get("target", "")
+                    if role not in ("recon", "web", "api", "authz", "infra", "correlator", "risk") or not obj:
+                        self.db.emit(engagement_id, "compile_reject", {"intent": it, "reason": "bad role/objective"})
+                        continue
+                    if target:
+                        d = scope.check_url(target) if "://" in target else scope.check_host_port(target, 0)
+                        if not d.allowed:
+                            self.db.emit(engagement_id, "compile_reject",
+                                         {"intent": it, "reason": f"out of scope: {d.reason}"})
+                            continue
+                    planned.append(self._add_intent(engagement_id, role, obj[:500]))
+            except LLMError as e:
+                self.db.emit(engagement_id, "degradation", {"code": "agent_planner_failed", "detail": str(e)})
+        if not planned:
+            # fallback: deterministic plan provides the specialist intents
+            self._plan_deterministic(engagement_id, scope, eng)
+            return
+        verify_id = self._add_intent(engagement_id, "verify",
+                                     "Independently verify all candidate findings", depends=planned)
+        self._add_intent(engagement_id, "report", "Render assessment report", depends=[verify_id])
+
     def _state_projection(self, engagement_id: str) -> dict:
         intents = self.db.query(
             "SELECT role, objective, status FROM intents WHERE engagement_id=? ORDER BY created_at DESC LIMIT 30",
@@ -214,7 +263,7 @@ class Orchestrator:
                     self._finish(engagement_id, "done", "all intents resolved")
                     return
             try:
-                self._execute(engagement_id, scope, eng, intent)
+                self._execute(engagement_id, scope, eng, intent, mode)
                 if self._complete(intent, "done"):
                     self.db.emit(engagement_id, "intent_done", {"intent_id": intent["id"]})
             except Exception as e:
@@ -274,13 +323,25 @@ class Orchestrator:
             # final report reflects terminal status (mid-run render is a preview)
             from .report import render_report
             render_report(self.db, self.evidence, engagement_id)
+            from . import memory as mem
+            mem.record_facts(self.db, engagement_id)
 
     # ---- intent execution ----
 
-    def _execute(self, engagement_id: str, scope: Scope, eng: dict, intent: dict):
+    def _execute(self, engagement_id: str, scope: Scope, eng: dict, intent: dict,
+                 mode: str = "deterministic"):
         role = intent["role"]
         obj = intent["objective"]
         self.db.emit(engagement_id, "intent_running", {"intent_id": intent["id"], "role": role})
+        # agent mode: genuine specialist investigation via the autonomous runtime.
+        # verification and reporting stay deterministic/independent in every mode.
+        if mode == "agent" and self.llm and role not in ("verify", "report"):
+            from .agent_runtime import AgentRunner, CHARTERS
+            if role in CHARTERS:
+                ar = AgentRunner(self.db, self.evidence, self.pipeline, self.probe,
+                                 self.registry, self.runner, self.llm, scope, engagement_id)
+                ar.run(intent, role)
+                return
         if role == "recon":
             self._do_recon(engagement_id, scope, obj, intent["id"])
         elif role == "crawl":

@@ -1,0 +1,94 @@
+{
+  "@version": "2.15.0",
+  "@generated": "Fri, 20 Nov 2026 05:00:00",
+  "site": [
+    {
+      "@name": "http://127.0.0.1:8821",
+      "@host": "127.0.0.1",
+      "@port": "8821",
+      "@ssl": "false",
+      "alerts": [
+        {
+          "pluginid": "10021",
+          "alert": "Missing Anti-clickjacking Header",
+          "name": "Missing Anti-clickjacking Header",
+          "riskcode": "2",
+          "confidence": "2",
+          "riskdesc": "Medium (High)",
+          "confidencedesc": "High",
+          "desc": "<p>The response does not include either Content-Security-Policy with 'frame-ancestors' directive or X-Frame-Options.</p>",
+          "instances": [
+            {
+              "uri": "http://127.0.0.1:8821/wp/",
+              "method": "GET",
+              "param": "X-Frame-Options",
+              "attack": "",
+              "evidence": "",
+              "otherinfo": "",
+              "cweid": "1021",
+              "wascid": "15",
+              "pluginid": "10021"
+            }
+          ]
+        },
+        {
+          "pluginid": "40012",
+          "alert": "Cross Site Scripting (Reflected)",
+          "name": "Cross Site Scripting (Reflected)",
+          "riskcode": "3",
+          "confidence": "3",
+          "riskdesc": "High (Medium)",
+          "confidencedesc": "Medium",
+          "desc": "<p>Cross-site Scripting (XSS) is an attack technique.</p>",
+          "instances": [
+            {
+              "uri": "http://127.0.0.1:8821/wp/?s=1",
+              "method": "GET",
+              "param": "s",
+              "attack": "<script>alert(1)</script>",
+              "evidence": "<script>alert(1)</script>",
+              "otherinfo": "",
+              "cweid": "79",
+              "wascid": "8",
+              "pluginid": "40012"
+            }
+          ]
+        },
+        {
+          "pluginid": "10038",
+          "alert": "Content Security Policy (CSP) Header Not Set",
+          "name": "Content Security Policy (CSP) Header Not Set",
+          "riskcode": "1",
+          "confidence": "3",
+          "riskdesc": "Low (High)",
+          "confidencedesc": "High",
+          "desc": "<p>Content Security Policy (CSP) is an added layer of security.</p>",
+          "instances": [
+            {
+              "uri": "http://127.0.0.1:8821/wp/",
+              "method": "GET",
+              "param": "",
+              "attack": "",
+              "evidence": "",
+              "otherinfo": "",
+              "cweid": "693",
+              "wascid": "15",
+              "pluginid": "10038"
+            },
+            {
+              "uri": "http://127.0.0.1:8821/wp/wp-json/",
+              "method": "GET",
+              "param": "",
+              "attack": "",
+              "evidence": "",
+              "otherinfo": "",
+              "cweid": "693",
+              "wascid": "15",
+              "pluginid": "10038"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
