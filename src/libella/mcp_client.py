@@ -24,6 +24,9 @@ PROTOCOL_VERSION = "2024-11-05"
 SETTINGS_KEY = "mcp_servers"
 # Params that make the adapter dial something; every present one is scope-checked.
 TARGET_PARAMS = ("target", "url", "host", "domain", "endpoint", "base_url", "base")
+# A host-shaped value in a dialing-looking argument is still a dial, whatever the name.
+HOSTISH = re.compile(r"[A-Za-z0-9._:\[\]-]{3,253}")
+TARGETISH = re.compile(r"url|host|domain|endpoint|target")
 NAME_RE = re.compile(r"[a-z][a-z0-9_-]{1,40}")
 # A shell as argv[0], or an inline-code flag, is a shell in disguise.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "cmd", "cmd.exe",
@@ -284,11 +287,18 @@ class McpToolset:
 
         dest = None
         for key, value in clean.items():
-            if not isinstance(value, str) or key not in TARGET_PARAMS:
+            if not isinstance(value, str):
+                continue
+            # every argument that can dial is checked, whatever the server called it:
+            # a tool with {"site": "http://..."} or a second "callback" url must not escape
+            if "://" in value:
+                decision = self.scope.check_url(value, self.category)
+            elif key in TARGET_PARAMS or (HOSTISH.fullmatch(value)
+                                          and TARGETISH.search(key.lower())):
+                decision = self.scope.check_host_port(value, 0, self.category)
+            else:
                 continue
             dest = value
-            decision = (self.scope.check_host_port(value, 0, self.category)
-                        if "://" not in value else self.scope.check_url(value, self.category))
             if not decision.allowed:
                 return self._refuse(call_id, name, value, started, decision.reason,
                                     code="out_of_scope")

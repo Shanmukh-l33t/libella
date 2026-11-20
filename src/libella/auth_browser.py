@@ -65,6 +65,9 @@ class AuthBrowser(BrowserCrawler):
         super().__enter__()
         try:
             self._ctx = self._browser.new_context(ignore_https_errors=True)
+            # context-level route: page.route() does not cover popups a target may
+            # open, and a popup inherits this context's cookies
+            self._ctx.route("**/*", self._guard)
             if self._session_cookies:
                 self._ctx.add_cookies(self._session_cookies)
             self._browser = _CtxBrowser(self._ctx)
@@ -321,6 +324,7 @@ class AuthBrowser(BrowserCrawler):
         expected = ident.get("expected", "deny")
         out = {"username": ident.get("username"), "expected": expected}
         ctx = self._ctx.browser.new_context(ignore_https_errors=True)
+        ctx.route("**/*", self._guard)  # popups included, same as the main context
         page = ctx.new_page()
         page.route("**/*", self._guard)
         try:

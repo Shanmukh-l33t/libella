@@ -37,6 +37,14 @@ export const put = <T>(path: string, body: unknown) => api<T>(path, { method: "P
 export const tools = () => get<ToolInfo[]>("/api/tools");
 export const settings = () => get<Settings>("/api/settings");
 
-export function reportUrl(eid: string, format: "md" | "sarif") {
+export function reportUrl(eid: string, format: "md" | "sarif" | "pdf") {
   return `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}&token=${encodeURIComponent(getToken())}`;
+}
+
+/** Query string from defined, non-empty values. */
+export function qs(params: Record<string, string | number | undefined | null>) {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && String(v) !== "") sp.set(k, String(v));
+  const s = sp.toString();
+  return s ? `?${s}` : "";
 }

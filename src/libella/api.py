@@ -245,7 +245,8 @@ def create_api(app: App) -> FastAPI:
             raise HTTPException(400, "endpoint, region and creds (or creds_ref) required")
         from .cloud_audit import assess_cloud
         result = assess_cloud(endpoint, region, creds, app.db, app.evidence, app.pipeline,
-                              Scope(json.loads(eng["scope_json"])), eid)
+                              Scope(json.loads(eng["scope_json"])), eid,
+                              account_id=body.get("account_id"))
         if result.get("refused"):
             raise HTTPException(403, result["reason"])
         return result

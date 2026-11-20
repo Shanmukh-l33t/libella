@@ -11,9 +11,13 @@ import Operations from "./engagement/Operations";
 import AssetsTab from "./engagement/Assets";
 import GraphTab from "./engagement/Graph";
 import FindingsTab from "./engagement/FindingsTab";
+import TrafficTab from "./engagement/Traffic";
+import EvidenceTab from "./engagement/Evidence";
+import RemediationTab from "./engagement/Remediation";
 import ReportTab from "./engagement/Report";
 
-const TABS = ["overview", "operations", "assets", "graph", "findings", "report"];
+const TABS = ["overview", "operations", "assets", "traffic", "evidence", "graph", "findings", "remediation", "report"];
+const MODES = ["deterministic", "llm", "agent"];
 const STARTABLE = ["draft", "done", "failed", "cancelled", "budget_exhausted"];
 
 export default function Engagement() {
@@ -26,7 +30,10 @@ export default function Engagement() {
   const [events, setEvents] = useState<Event[]>([]);
   const [since, setSince] = useState<number | null>(null);
   const [live, setLive] = useState(0);
-  const [mode, setMode] = useState("deterministic");
+  const [mode, setMode] = useState(() => {
+    const m = params.get("mode") || "";
+    return MODES.includes(m) ? m : "deterministic";
+  });
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
@@ -132,9 +139,11 @@ export default function Engagement() {
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="ghost" icon={<RefreshCw size={13} />} aria-label="Refresh engagement" onClick={() => { eng.reload(); setLive((v) => v + 1); }} />
             {(canStart || e.status === "paused") && (
-              <Select aria-label="Execution mode" value={mode} onChange={(ev) => setMode(ev.target.value)} className="h-8 w-[150px] text-xs">
+              <Select aria-label="Execution mode" value={mode} onChange={(ev) => setMode(ev.target.value)} className="h-8 w-[150px] text-xs"
+                title="Deterministic runs the fixed check pipeline. LLM planner adds model-proposed intents. Agent runs specialist reasoning loops (requires a configured LLM).">
                 <option value="deterministic">Deterministic</option>
                 <option value="llm">LLM planner</option>
+                <option value="agent">Agent</option>
               </Select>
             )}
             {canStart && <Button size="sm" variant="primary" icon={<Play size={13} />} loading={busy === "start"} onClick={() => act("start")}>{e.status === "draft" ? "Start" : "Run again"}</Button>}
@@ -152,16 +161,22 @@ export default function Engagement() {
         { id: "overview", label: "Overview" },
         { id: "operations", label: "Operations" },
         { id: "assets", label: "Assets" },
+        { id: "traffic", label: "Traffic" },
+        { id: "evidence", label: "Evidence" },
         { id: "graph", label: "Graph" },
         { id: "findings", label: "Findings" },
+        { id: "remediation", label: "Remediation" },
         { id: "report", label: "Report" },
       ]} />
 
       {tab === "overview" && <Overview eid={id} eng={e} live={live} events={events} />}
       {tab === "operations" && <Operations eid={id} live={live} />}
       {tab === "assets" && <AssetsTab eid={id} live={live} />}
+      {tab === "traffic" && <TrafficTab eid={id} live={live} />}
+      {tab === "evidence" && <EvidenceTab eid={id} live={live} />}
       {tab === "graph" && <GraphTab eid={id} live={live} />}
       {tab === "findings" && <FindingsTab eid={id} live={live} />}
+      {tab === "remediation" && <RemediationTab eid={id} live={live} />}
       {tab === "report" && <ReportTab eid={id} eng={e} live={live} />}
 
       <Modal open={confirmCancel} onClose={() => setConfirmCancel(false)} title="Cancel this engagement?"

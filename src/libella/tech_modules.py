@@ -24,9 +24,12 @@ TECH_SIGNATURES = {
     "nginx": ("nginx/",),
 }
 
-# (tech, path, regex on body, title, cwe, severity, impact, fix [, status, cap, owasp])
-Row = namedtuple("Row", "tech path sig title cwe sev impact fix status cap owasp",
-                 defaults=[200, 0, "A05:2021 Security Misconfiguration"])
+# (tech, path, regex on body, title, cwe, severity, impact, fix
+#  [, status, cap, owasp, control_path])
+# control_path: for rows with no signature the response must differ from a plain
+# miss, otherwise a normal 404 page "proves" the row.
+Row = namedtuple("Row", "tech path sig title cwe sev impact fix status cap owasp ctrl",
+                 defaults=[200, 0, "A05:2021 Security Misconfiguration", None])
 
 ROWS = [
     # ---- WordPress ----
@@ -122,7 +125,7 @@ ROWS = [
         "CWE-200", "low",
         "Short names leak file and directory naming, aiding targeted requests.",
         "Set NtfsDisable8dot3NameCreation=1 and apply the IIS tilde hardening.",
-        status=404),
+        status=404, ctrl="/libella_no_such_file.aspx"),
     # ---- Apache / Nginx ----
     Row("apache", "/server-status", r"(?i)apache server status", "Apache server-status exposed",
         "CWE-200", "medium",
@@ -185,12 +188,21 @@ class TechAssess:
 
     def _row(self, tech: str, base: str, row: Row) -> dict | None:
         url = base + row.path
-        r = self._req(url, **({"body_cap": row.cap} if row.cap else {}))
+        opts = {"body_cap": row.cap} if row.cap else {}
+        r = self._req(url, **opts)
         if not r.get("ok") or r["status"] != row.status:
             return None
         m = re.search(row.sig, r["body"]) if row.sig else None
         if row.sig and not m:
             return None
+        if not row.sig:
+            # no signature: the response only counts if a plain miss answers differently
+            ctrl = self._req(base + row.ctrl, **(opts)) if row.ctrl else None
+            if not ctrl or not ctrl.get("ok"):
+                return None
+            same = (ctrl["status"], len(ctrl["body"])) == (r["status"], len(r["body"]))
+            if same:
+                return None
         quote = m.group(0)[:200] if m else (r["body"][:80] or f"HTTP {r['status']}")
         # same path as a generic sensitive-path check -> same dedup key, one finding
         dedup = f"path:{url}" if row.path in SENSITIVE_PATHS else f"tech:{tech}:{url}"

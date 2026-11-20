@@ -43,6 +43,29 @@ export const statusTone = (s: string): Tone => STATUS[s] || "neutral";
 const INTENT: Record<string, Tone> = { running: "accent", done: "success", blocked: "critical", open: "neutral", exhausted: "warning", stopped: "info" };
 export const intentTone = (s: string): Tone => INTENT[s] || "neutral";
 
+const RUN: Record<string, Tone> = {
+  running: "accent", completed: "success", failed: "critical", cancelled: "info",
+  budget_exhausted: "warning", queued: "neutral", stopped: "info",
+};
+export const runTone = (s: string): Tone => RUN[s] || "neutral";
+
+const HYP: Record<string, Tone> = { open: "neutral", supported: "success", refuted: "danger", inconclusive: "warning" };
+export const hypothesisTone = (s: string): Tone => HYP[s] || "neutral";
+
+const REM: Record<string, Tone> = {
+  open: "neutral", in_progress: "accent", remediated: "success", fixed: "success",
+  regressed: "critical", closed: "info",
+};
+export const remediationTone = (s: string): Tone => REM[s] || "neutral";
+
+const AUTH: Record<string, Tone> = { active: "success", expired: "warning", failed: "critical" };
+export const authTone = (s: string): Tone => AUTH[s] || "neutral";
+
+export const ACTION_KIND: Record<string, string> = {
+  reason: "Reasoning", tool_call: "Tool call", observation: "Observation",
+  hypothesis: "Hypothesis", conclusion: "Conclusion", delegation: "Delegation",
+};
+
 export const title = (s: string) => s.replace(/_/g, " ");
 
 export const SEV_COLOR: Record<string, string> = {

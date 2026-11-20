@@ -8,12 +8,19 @@ import { Button, Card, ErrorNote, Field, Input, Select, Textarea, cx, useToast }
 interface Row { kind: TargetKind; value: string; include_subdomains: boolean }
 interface Identity { username: string; password: string; login_url: string }
 
-const KINDS: TargetKind[] = ["url", "domain", "cidr", "ip", "repo", "image"];
+const KINDS: TargetKind[] = ["url", "domain", "cidr", "ip", "repo", "image", "cloud"];
 const CATEGORIES = [
   { id: "recon", label: "Recon", hint: "Host discovery, crawling, content mapping." },
   { id: "web", label: "Web", hint: "Header, cookie, transport and exposure checks." },
   { id: "api", label: "API", hint: "Endpoint discovery and schema probing." },
   { id: "infra", label: "Infra", hint: "Service and port posture checks." },
+  { id: "code", label: "Code", hint: "Source audit: semgrep, secrets, dependencies." },
+  { id: "cloud", label: "Cloud", hint: "Read-only AWS posture against a scoped endpoint." },
+];
+const MODES = [
+  { id: "deterministic", label: "Deterministic", hint: "Fixed check pipeline. No model required, fully repeatable." },
+  { id: "llm", label: "LLM planner", hint: "A model proposes extra intents inside the compile gate." },
+  { id: "agent", label: "Agent", hint: "Specialist ReAct loops with hypotheses and delegations. Needs an LLM provider." },
 ];
 const PROFILES = [
   { id: "passive", label: "Passive", hint: "Observe only. Fetches in-scope pages, changes nothing." },
@@ -41,6 +48,9 @@ export default function NewEngagement() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState("deterministic");
+  const [login, setLogin] = useState({ base_url: "", login_url: "", username: "", password: "", success: "", selectors: "" });
+  const [workflow, setWorkflow] = useState({ name: "", steps: "" });
 
   const setRow = (list: Row[], i: number, patch: Partial<Row>, set: (r: Row[]) => void) =>
     set(list.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
@@ -61,6 +71,21 @@ export default function NewEngagement() {
     let testHints: unknown = undefined;
     if (hints.trim()) {
       try { testHints = JSON.parse(hints); } catch { fe.hints = "Test hints must be valid JSON."; }
+    }
+    let selectors: unknown = undefined;
+    if (login.selectors.trim()) {
+      try { selectors = JSON.parse(login.selectors); } catch { fe.selectors = "Selectors must be a JSON object."; }
+    }
+    let steps: unknown = undefined;
+    if (workflow.steps.trim()) {
+      try {
+        steps = JSON.parse(workflow.steps);
+        if (!Array.isArray(steps) || !steps.length) fe.steps = "Steps must be a non-empty JSON array.";
+      } catch { fe.steps = "Steps must be valid JSON."; }
+    }
+    const loginGiven = Object.values(login).some((v) => v.trim());
+    if (loginGiven && !(login.base_url.trim() && login.login_url.trim() && login.username.trim())) {
+      fe.login = "A login flow needs base URL, login URL and username (password optional).";
     }
     setFieldErrors(fe);
     if (Object.keys(fe).length) { setError("Fix the highlighted fields before creating the engagement."); return; }
@@ -93,8 +118,31 @@ export default function NewEngagement() {
         budgets: { ...(duration ? { max_duration_s: Number(duration) } : {}), ...(budget ? { max_usd: Number(budget) } : {}) },
       };
       const res = await post<{ id: string }>("/api/engagements", body);
-      toast("Engagement created as draft.", "success");
-      navigate(`/engagements/${res.id}`);
+      const warnings: string[] = [];
+      if (loginGiven) {
+        try {
+          const ctx = await post<{ status?: string; reason?: string }>(`/api/engagements/${res.id}/auth-contexts`, {
+            base_url: login.base_url.trim(), login_url: login.login_url.trim(),
+            username: login.username.trim(), password: login.password,
+            ...(selectors ? { selectors } : {}),
+            ...(login.success.trim() ? { success_assertion: login.success.trim() } : {}),
+          });
+          if (ctx.status !== "active") warnings.push(`login flow: ${ctx.reason || ctx.status || "failed"}`);
+        } catch (err) {
+          warnings.push(`login flow: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (steps !== undefined) {
+        try {
+          await post(`/api/engagements/${res.id}/workflows`, {
+            name: workflow.name.trim() || "wizard workflow", steps,
+          });
+        } catch (err) {
+          warnings.push(`workflow: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      toast(warnings.length ? `Engagement created. Setup warnings — ${warnings.join("; ")}` : "Engagement created as draft.", warnings.length ? "warning" : "success");
+      navigate(`/engagements/${res.id}${mode !== "deterministic" ? `?mode=${mode}` : ""}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -124,7 +172,7 @@ export default function NewEngagement() {
                 onChange={(e) => setRow(targets, i, { kind: e.target.value as TargetKind }, setTargets)}>
                 {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
               </Select>
-              <Input aria-label={`Target ${i + 1} value`} value={t.value} placeholder={t.kind === "url" ? "https://app.example.com" : t.kind === "domain" ? "example.com" : t.kind === "cidr" ? "10.0.0.0/24" : t.kind === "repo" ? "/abs/path/to/repo (read-only audit)" : t.kind === "image" ? "local-image:tag (container scan)" : "10.0.0.5"}
+              <Input aria-label={`Target ${i + 1} value`} value={t.value} placeholder={t.kind === "url" ? "https://app.example.com" : t.kind === "domain" ? "example.com" : t.kind === "cidr" ? "10.0.0.0/24" : t.kind === "repo" ? "/abs/path/to/repo (read-only audit)" : t.kind === "image" ? "local-image:tag (container scan)" : t.kind === "cloud" ? "123456789012 or https://127.0.0.1:5000 (lab)" : "10.0.0.5"}
                 className="min-w-[240px] flex-1" error={!!fieldErrors.targets}
                 onChange={(e) => setRow(targets, i, { value: e.target.value }, setTargets)} />
               {t.kind === "domain" && (
@@ -157,6 +205,21 @@ export default function NewEngagement() {
         ))}
         {fieldErrors.exclusions && <p className="mb-2 text-xs text-sev-high">{fieldErrors.exclusions}</p>}
         <Button type="button" size="sm" icon={<Plus size={13} />} onClick={() => setExclusions([...exclusions, { kind: "domain", value: "", include_subdomains: false }])}>Add exclusion</Button>
+      </Card>
+
+      <Card title="Assessment mode" description="How the run is driven. Can be changed again when you start the engagement.">
+        <div className="grid gap-2 sm:grid-cols-3">
+          {MODES.map((m) => (
+            <label key={m.id} className={cx("cursor-pointer rounded border p-3 transition-colors duration-150",
+              mode === m.id ? "border-accent bg-accent-soft/50 ring-1 ring-accent/20" : "border-line hover:border-ink-300")}>
+              <span className="flex items-center gap-2">
+                <input type="radio" name="mode" value={m.id} checked={mode === m.id} onChange={() => setMode(m.id)} />
+                <span className="text-sm font-medium text-ink-900">{m.label}</span>
+              </span>
+              <span className="mt-1 block pl-6 text-xs text-ink-500">{m.hint}</span>
+            </label>
+          ))}
+        </div>
       </Card>
 
       <Card title="Profile" description="How much the engine is allowed to touch. Stored per engagement and enforced by the scope engine.">
@@ -229,6 +292,45 @@ export default function NewEngagement() {
           <Field label="GraphQL endpoint (optional)" hint="In-scope URL of a GraphQL endpoint. Enables introspection, injection, field-authz, depth/alias/batch abuse checks.">
             <Input aria-label="GraphQL endpoint URL" placeholder="https://app.example.com/graphql" value={graphql}
               onChange={(e) => setGraphql(e.target.value)} />
+          </Field>
+        </div>
+      </Card>
+
+      <Card title="Login flow (optional)" description="Captured by the browser runtime after the engagement is created: form fill, submit, success assertion, session cookies stored server-side. The password is used once and never persisted.">
+        {fieldErrors.login && <p className="mb-2 text-xs text-sev-high">{fieldErrors.login}</p>}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Base URL" htmlFor="lf-base" hint="In-scope origin the session belongs to.">
+            <Input id="lf-base" value={login.base_url} placeholder="https://app.example.com" onChange={(e) => setLogin({ ...login, base_url: e.target.value })} />
+          </Field>
+          <Field label="Login URL" htmlFor="lf-url" hint="Must be inside scope.">
+            <Input id="lf-url" value={login.login_url} placeholder="https://app.example.com/login" onChange={(e) => setLogin({ ...login, login_url: e.target.value })} />
+          </Field>
+          <Field label="Username" htmlFor="lf-user">
+            <Input id="lf-user" value={login.username} placeholder="tester" onChange={(e) => setLogin({ ...login, username: e.target.value })} />
+          </Field>
+          <Field label="Password" htmlFor="lf-pass" hint="Used for this attempt only.">
+            <Input id="lf-pass" type="password" autoComplete="new-password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} />
+          </Field>
+          <Field label="Success assertion" htmlFor="lf-assert" hint="CSS selector that only exists after login.">
+            <Input id="lf-assert" value={login.success} placeholder="[data-testid=dashboard]" onChange={(e) => setLogin({ ...login, success: e.target.value })} />
+          </Field>
+          <Field label="Field selectors (JSON)" htmlFor="lf-sel" error={fieldErrors.selectors} hint='Optional CSS selectors, e.g. {"username":"#user"} — omit to use standard login input names.'>
+            <Input id="lf-sel" value={login.selectors} className="font-mono text-xs" placeholder='{"username":"#user"}' error={!!fieldErrors.selectors}
+              onChange={(e) => setLogin({ ...login, selectors: e.target.value })} />
+          </Field>
+        </div>
+      </Card>
+
+      <Card title="Workflow (optional)" description="Recorded browser steps run after creation. Each navigation is scope-checked; extract/assert steps capture evidence.">
+        <div className="grid gap-3">
+          <Field label="Workflow name" htmlFor="wf-name">
+            <Input id="wf-name" value={workflow.name} placeholder="checkout funnel" onChange={(e) => setWorkflow({ ...workflow, name: e.target.value })} />
+          </Field>
+          <Field label="Steps (JSON array)" htmlFor="wf-steps" error={fieldErrors.steps}
+            hint='actions: navigate | click | fill | submit | extract | assert'>
+            <Textarea id="wf-steps" rows={5} className="font-mono text-xs" value={workflow.steps} error={!!fieldErrors.steps}
+              placeholder={'[\n  {"action":"navigate","url":"https://app.example.com/"},\n  {"action":"click","selector":"a[href=\\"/billing\\"]"},\n  {"action":"assert","selector":".invoice"}\n]'}
+              onChange={(e) => setWorkflow({ ...workflow, steps: e.target.value })} />
           </Field>
         </div>
       </Card>

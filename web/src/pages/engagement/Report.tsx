@@ -30,6 +30,8 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
           <Button size="sm" icon={<RefreshCw size={13} />} onClick={reload} loading={loading}>Regenerate</Button>
           <Button size="sm" icon={<Download size={13} />} onClick={() => window.open(reportUrl(eid, "md"), "_blank", "noopener")}>Markdown</Button>
           <Button size="sm" icon={<Download size={13} />} onClick={() => window.open(reportUrl(eid, "sarif"), "_blank", "noopener")}>SARIF</Button>
+          <Button size="sm" icon={<Download size={13} />} title="Renders the same report.json through the PDF exporter"
+            onClick={() => window.open(reportUrl(eid, "pdf"), "_blank", "noopener")}>PDF</Button>
         </div>
       </div>
 

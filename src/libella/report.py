@@ -27,6 +27,9 @@ REDACT_PATTERNS = [
     (re.compile(r"\b(?:\d[ -]*?){13,16}\b"), "[REDACTED-CARD]"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[REDACTED-EMAIL]"),
     (re.compile(r"SI_SECRET_[A-Z_]+"), "[REDACTED-CREDENTIAL]"),
+    # opaque bearer tokens carry no label: JWTs appear in bodies, bundles and quotes
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"),
+     "[REDACTED-JWT]"),
 ]
 
 SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie",

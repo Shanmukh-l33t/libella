@@ -6,12 +6,15 @@ layer renders what is stored here, it never authors evidence.
 import time
 
 from .db import DB
-from .findings import STATE_ORDER
+from .findings import STATE_ORDER, FindingPipeline
 from .report import SEV_ORDER
 
 # Remediation lifecycle, in board order. Derived from finding state + assignments.
 BOARD = [("open", "Open"), ("in_progress", "In progress"), ("remediated", "Remediated"),
          ("fixed", "Fixed"), ("regressed", "Regressed"), ("closed", "Closed")]
+# "a fix was shipped" is an operator fact, but only for a finding that was confirmed.
+REMEDIABLE_FROM = {"validated", "reported", "remediated", "retested_fixed",
+                   "retested_persists"}
 
 _FIELDS = ("id", "engagement_id", "title", "severity", "state", "endpoint", "dedup_key",
            "owner", "remediation_notes", "fix_commit", "remediated_at", "updated_at")
@@ -40,9 +43,10 @@ def set_remediation(db: DB, finding_id: str, notes: str | None = None, owner: st
                     fix_commit: str | None = None, state: str | None = None) -> dict:
     """Update remediation fields; entering 'remediated' stamps remediated_at.
 
-    Raises KeyError for an unknown finding, ValueError for an unknown state.
-    shortcut: state is written directly (operator action) instead of going through the
-    FindingPipeline gate; upgrade to pipeline transitions if state must be evidence-gated.
+    Raises KeyError for an unknown finding, ValueError for an unknown state or an
+    illegal transition. State goes through FindingPipeline.transition, so the
+    lifecycle (and the reproduced-verification requirement) is not bypassable
+    from this surface: remediation tracks findings, it does not confirm them.
     """
     f = db.one("SELECT * FROM findings WHERE id=?", (finding_id,))
     if f is None:
@@ -55,10 +59,15 @@ def set_remediation(db: DB, finding_id: str, notes: str | None = None, owner: st
         if val is not None:
             sets.append(f"{col}=?")
             params.append(val)
-    if state is not None:
-        sets.append("state=?")
-        params.append(state)
-        if state == "remediated":
+    if state is not None and state != f["state"]:
+        if state != "remediated":
+            # every other state is a *verdict*: the finding lifecycle decides
+            FindingPipeline(db, None).transition(finding_id, state, reason="remediation update")
+        elif f["state"] not in REMEDIABLE_FROM:
+            raise ValueError(f"cannot mark a {f['state']} finding remediated; validate it first")
+        else:
+            sets.append("state=?")
+            params.append(state)
             sets.append("remediated_at=COALESCE(remediated_at, ?)")
             params.append(now)
     params.append(finding_id)

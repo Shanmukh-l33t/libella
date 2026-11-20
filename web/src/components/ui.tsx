@@ -286,6 +286,15 @@ export function ErrorNote({ error }: { error: string | null }) {
   return <div className="rounded border border-sev-high/30 bg-[#FEF3F2] px-3 py-2 text-sm text-[#912018]">{error}</div>;
 }
 
+/** 404 from a route the backend has not shipped yet: informational, not an error. */
+export function Unavailable({ what }: { what: string }) {
+  return (
+    <div className="rounded border border-dashed border-line bg-canvas px-4 py-3 text-sm text-ink-500">
+      <span className="font-medium text-ink-700">{what}</span> is unavailable on this backend build — it becomes available after the backend update.
+    </div>
+  );
+}
+
 /* ---------------------------------- Code ----------------------------------- */
 
 export function CodeBlock({ content, maxHeight = 320, label }: { content: string; maxHeight?: number; label?: string }) {

@@ -7,6 +7,7 @@ the account it looks at, so a write API is a programming error, not a finding.
 """
 import datetime
 import ipaddress
+import socket
 from urllib.parse import urlparse
 
 import boto3
@@ -15,7 +16,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from .db import DB
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
-from .scope import ALWAYS_BLOCKED, Scope
+from .scope import ALWAYS_BLOCKED, Decision, Scope
 
 READ_ONLY_PREFIXES = ("Describe", "List", "Get", "Lookup", "Head")
 STALE_KEY_DAYS = 90
@@ -459,24 +460,70 @@ def _validate_inputs(endpoint_url: str, region: str, creds: dict) -> None:
         raise ValueError("endpoint must be an http(s) URL")
     try:
         addr = ipaddress.ip_address(p.hostname)
+        ips = [str(addr)]
     except ValueError:
-        addr = None
-    if addr is not None and any(addr in net for net in ALWAYS_BLOCKED):
-        raise ValueError(f"refusing metadata/link-local endpoint {p.hostname}")
+        # a *name* is how the metadata service is usually reached; resolve it
+        try:
+            ips = sorted({i[4][0] for i in socket.getaddrinfo(p.hostname, None,
+                                                              proto=socket.IPPROTO_TCP)})
+        except socket.gaierror:
+            ips = []
+    for ip in ips:
+        try:
+            blocked = any(ipaddress.ip_address(ip) in net for net in ALWAYS_BLOCKED)
+        except ValueError:
+            blocked = True  # unparseable answer is not a clearance
+        if blocked:
+            raise ValueError(f"refusing metadata/link-local endpoint {p.hostname} ({ip})")
     if not isinstance(region, str) or not region.strip():
         raise ValueError("region required")
     if not isinstance(creds, dict) or not {"access_key_id", "secret_access_key"} <= set(creds):
         raise ValueError("creds must carry access_key_id and secret_access_key")
 
 
+def _is_lab_endpoint(endpoint_url: str) -> bool:
+    """Loopback/private target: the controlled moto/localstack lab case."""
+    host = urlparse(endpoint_url).hostname or ""
+    try:
+        ips = [str(ipaddress.ip_address(host))]
+    except ValueError:
+        try:
+            ips = sorted({i[4][0] for i in socket.getaddrinfo(host, None,
+                                                              proto=socket.IPPROTO_TCP)})
+        except socket.gaierror:
+            return False
+    try:
+        return bool(ips) and all(ipaddress.ip_address(ip).is_private for ip in ips)
+    except ValueError:
+        return False
+
+
+def _authorize(scope: Scope, endpoint_url: str, account_id: str | None) -> Decision:
+    """Decide egress authorization from the scope BEFORE anything is dialed.
+
+    The endpoint must be declared in scope, or (lab case) the account must be
+    declared and the endpoint must be a private/loopback address. The identity
+    the endpoint reports afterwards is only a confirmation, never the input:
+    a target that self-reports an authorized account id must not pass.
+    """
+    if scope.check_cloud("-", endpoint_url).allowed:
+        return Decision(True, "endpoint declared in scope")
+    if account_id and scope.check_cloud(account_id).allowed and _is_lab_endpoint(endpoint_url):
+        return Decision(True, "account declared in scope; lab endpoint")
+    return scope.check_cloud(account_id or "-", endpoint_url)
+
+
 def assess_cloud(endpoint_url: str, region: str, creds: dict, db: DB,
                  evidence: EvidenceStore, pipeline: FindingPipeline, scope: Scope,
-                 engagement_id: str, *, intent_id: str | None = None) -> dict:
+                 engagement_id: str, *, intent_id: str | None = None,
+                 account_id: str | None = None) -> dict:
     """Run the read-only posture checks; return a summary of what was found.
 
-    Refuses (and audits) the run when the account/endpoint is out of scope.
-    A single failing check degrades to an observation, never aborts the audit.
+    Refuses (and audits) before any request when the account/endpoint is out of
+    scope, and refuses when the endpoint's own identity contradicts the declared
+    account. A single failing check degrades to an observation, never aborts.
     """
+    declared_account = account_id
     try:
         _validate_inputs(endpoint_url, region, creds)
     except ValueError as e:
@@ -484,10 +531,17 @@ def assess_cloud(endpoint_url: str, region: str, creds: dict, db: DB,
                 {"endpoint": endpoint_url if isinstance(endpoint_url, str) else None,
                  "region": region, "error": str(e)})
         return {"ok": False, "error": str(e), "checks": {}, "findings": []}
+    pre = _authorize(scope, endpoint_url, account_id)
+    if not pre.allowed:
+        db.emit(engagement_id, "scope_refusal", {
+            "url": endpoint_url, "account_id": account_id,
+            "reason": pre.reason, "tool": "cloud_audit"})
+        return {"ok": False, "refused": True, "reason": pre.reason,
+                "account_id": account_id, "checks": {}, "findings": []}
     clients = Clients(endpoint_url, region, creds)
     try:
         identity = clients.client("sts").get_caller_identity()
-    except (ClientError, BotoCoreError) as e:
+    except (ClientError, BotoCoreError, ValueError, KeyError) as e:  # garbage XML degrades
         reason = f"cannot authenticate against {endpoint_url}: {e}"
         db.emit(engagement_id, "cloud_audit_failed", {"endpoint": endpoint_url,
                                                       "region": region, "error": reason})
@@ -500,15 +554,29 @@ def assess_cloud(endpoint_url: str, region: str, creds: dict, db: DB,
             "reason": decision.reason, "tool": "cloud_audit"})
         return {"ok": False, "refused": True, "reason": decision.reason,
                 "account_id": account_id, "checks": {}, "findings": []}
+    if declared_account and account_id != declared_account:
+        # the endpoint claims a different account than the one the operator authorized
+        db.emit(engagement_id, "scope_refusal", {
+            "url": endpoint_url, "account_id": account_id, "declared": declared_account,
+            "reason": "endpoint identity mismatch", "tool": "cloud_audit"})
+        return {"ok": False, "refused": True, "account_id": account_id,
+                "reason": f"endpoint identity {account_id} does not match the declared "
+                          f"account {declared_account}",
+                "checks": {}, "findings": []}
 
     ctx = _Ctx(clients, pipeline, evidence, engagement_id, intent_id, account_id, region)
     results, findings, evidence_ids, errors = {}, [], [], {}
     for name, fn in CHECKS:
         try:
             cands = fn(ctx)
-        except (ClientError, BotoCoreError) as e:
-            errors[name] = str(e)
-            db.emit(engagement_id, "cloud_check_error", {"check": name, "error": str(e)})
+        except ReadOnlyViolation:
+            raise  # a write attempt is a bug in this module, never a target problem
+        except Exception as e:
+            # the endpoint is untrusted: an unexpected shape degrades one check,
+            # it does not abort the audit or 500 the API
+            errors[name] = f"{type(e).__name__}: {e}"[:300]
+            db.emit(engagement_id, "cloud_check_error",
+                    {"check": name, "error": errors[name]})
             continue
         results[name] = len(cands)
         for cand in cands:

@@ -102,6 +102,29 @@ CHARTERS = {
     },
 }
 
+# Cookie attributes that are never sent back in a Cookie header.
+_COOKIE_ATTRS = {"path", "domain", "expires", "max-age", "samesite", "secure", "httponly",
+                 "version", "comment", "priority", "partitioned"}
+
+
+def _cookie_header(resp: dict) -> str:
+    """Cookie header from a probe response.
+
+    shortcut: several Set-Cookie lines arrive comma-joined in the headers dict, so the
+    pairs are recovered by splitting on ';' and dropping attributes; upgrade
+    http_probe to expose resp.cookies if a login ever needs exact fidelity.
+    """
+    raw = next((v for k, v in (resp.get("headers") or {}).items()
+                if k.lower() == "set-cookie"), "")
+    pairs = []
+    for part in raw.replace(", ", "; ").split(";"):
+        name, sep, value = part.strip().partition("=")
+        if not sep or not name or " " in name or name.lower() in _COOKIE_ATTRS:
+            continue
+        pairs.append(f"{name}={value}")
+    return "; ".join(pairs)
+
+
 CHECK_METHODS = {
     "xss": "reflected_xss", "sqli": "sqli", "ssti": "ssti", "traversal": "path_traversal",
     "redirect": "open_redirect", "cors": "cors", "headers": "security_headers",
@@ -236,7 +259,6 @@ class AgentRunner:
             eng = self.db.one("SELECT auth_json FROM engagements WHERE id=?", (self.eng,))
             auth = json.loads(eng["auth_json"]) if eng else {}
             hints = auth.get("test_hints", {})
-            import httpx
             for ident in auth.get("identities", []):
                 lu = ident.get("login_url")
                 if not lu or not self.scope.check_url(lu).allowed:
@@ -247,19 +269,24 @@ class AgentRunner:
                 cands += c.cookie_flags(lu, method="POST",
                                         body=f"{uf}={ident['username']}&{pf}={ident['password']}",
                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
-                cl = httpx.Client(timeout=15, verify=False, trust_env=False)
+                # the login goes through the scoped probe: rate-limited, per-hop
+                # scope-checked, peer-verified and captured as evidence like every
+                # other credentialed request. A private httpx client was not.
+                lr = self.probe.request(
+                    self.eng, self.scope, lu, method="POST",
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    body=f"{uf}={ident['username']}&{pf}={ident['password']}",
+                    tool="baseline_login")
+                cookie = _cookie_header(lr) if lr.get("ok") else ""
                 try:
-                    cl.post(lu, data={uf: ident["username"], pf: ident["password"]})
-                    cookie = "; ".join(f"{k}={v}" for k, v in cl.cookies.items())
                     if cookie and "idor" in hints and hints["idor"].get("identity") == ident["username"]:
                         for oid in hints["idor"].get("foreign_ids", []):
                             ou = hints["idor"]["url_template"].format(id=oid)
                             if self.scope.check_url(ou).allowed:
-                                cands += c.idor(ou, cookie, hints["idor"]["foreign_marker"], ident["username"])
-                except httpx.HTTPError:
-                    pass
-                finally:
-                    cl.close()
+                                cands += c.idor(ou, cookie, hints["idor"]["foreign_marker"],
+                                                ident["username"])
+                except (KeyError, TypeError, ValueError, IndexError):
+                    pass  # a malformed idor hint is a config error, not a crash
             if "ssrf" in hints:
                 h = hints["ssrf"]
                 if self.scope.check_url(h["internal_url"]).allowed:
@@ -538,7 +565,15 @@ class AgentRunner:
                     continue
                 executed.add(sig)
                 dup_count = 0
-            result = self._exec_action(action, args, run_id, intent["id"], iterations, produced)
+            # one malformed action (bad hint config, adapter edge case) must not kill
+            # the run: it degrades to an error the model can react to
+            try:
+                result = self._exec_action(action, args, run_id, intent["id"], iterations,
+                                           produced)
+            except Exception as e:
+                result = {"error": f"{type(e).__name__}: {e}"[:300]}
+                self._step(run_id, intent["id"], iterations, "tool_call",
+                           f"{action} failed: {result['error']}")
             history.append({"action": action, "result": result})
             if action == "finish" and result.get("finish"):
                 summary = result.get("summary", "")

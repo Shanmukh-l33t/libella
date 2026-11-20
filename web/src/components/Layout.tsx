@@ -18,13 +18,17 @@ export default function Layout() {
             <span className="text-[15px] font-semibold tracking-tight text-ink-900">Libella</span>
             <span className="hidden text-2xs uppercase tracking-widest text-ink-300 sm:inline">pentest workbench</span>
           </NavLink>
-          <nav className="flex items-center gap-1">
+          <nav className="no-scrollbar flex items-center gap-1 overflow-x-auto">
             {[
-              { to: "/", label: "Engagements", end: true },
+              { to: "/", label: "Command center", end: true },
+              { to: "/engagements", label: "Engagements" },
+              { to: "/tools", label: "Tools" },
+              { to: "/models", label: "Models" },
+              { to: "/compare", label: "Compare" },
               { to: "/settings", label: "Settings" },
             ].map((l) => (
               <NavLink key={l.to} to={l.to} end={l.end}
-                className={({ isActive }) => cx("rounded px-2.5 py-1.5 text-sm transition-colors",
+                className={({ isActive }) => cx("whitespace-nowrap rounded px-2.5 py-1.5 text-sm transition-colors",
                   isActive ? "bg-ink-100 font-medium text-ink-900" : "text-ink-500 hover:text-ink-900")}>
                 {l.label}
               </NavLink>

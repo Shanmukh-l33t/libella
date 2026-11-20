@@ -1,6 +1,5 @@
 """End-to-end acceptance: full assessment lifecycle + new subsystem APIs through
 the real application (TestClient), against an in-process vulnerable lab."""
-import json
 import threading
 import time
 
