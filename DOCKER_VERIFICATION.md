@@ -36,3 +36,15 @@ The documented single-container installation works from a clean image:
 build, run, authenticate, create engagement, execute real assessment,
 inspect validated findings, export report. No manual tool installation
 required on the host.
+
+## v0.2 image verification (2026-11-20)
+
+- `docker build -t libella:v0.2 .` SUCCESS (adds trivy, gitleaks, semgrep,
+  dirb wordlists; LIBELLA_TEMPLATE_DIR / LIBELLA_WORDLIST_DIR configured).
+- Container health: all 9 tools available (nmap, nuclei, httpx, subfinder,
+  ffuf, semgrep, trivy_fs, gitleaks, trivy_image).
+- Real code-audit engagement via container API against a read-only mounted
+  repo (/labs/vulnrepo, scope kind repo, category code): status done,
+  6/6 seeded findings recorded (CWE-798 x2, CWE-94, CWE-78, CWE-502,
+  CWE-489) with file:line evidence, state observed (static findings are
+  not auto-validated; runtime correlation is roadmap).
