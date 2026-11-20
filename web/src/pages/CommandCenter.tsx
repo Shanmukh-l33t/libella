@@ -107,7 +107,7 @@ export default function CommandCenter() {
         <Card title="Get started" description="Four short setup steps before your first assessment. None of them touches a target."
           actions={<Button variant="primary" onClick={() => navigate("/setup")}>Open setup</Button>}>
           <ol className="grid gap-1 text-sm text-ink-700 sm:grid-cols-2">
-            {["Check the backend and data store", "Connect an AI provider, or stay offline", "See which scanners are installed", "Launch the local demo lab"].map((s, i) => (
+            {["Check the backend and data store", "Connect an AI provider, or stay offline", "Review installed tools", "Review results or create a draft"].map((s, i) => (
               <li key={s} className="flex gap-2">
                 <span className="w-3 shrink-0 tabular-nums text-ink-300">{i + 1}</span>
                 <span>{s}</span>

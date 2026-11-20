@@ -94,13 +94,15 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | Captured session credentials sealed at rest | TESTED | exchanges request/response header columns are Fernet ciphertext; evidence blobs keep redacted headers; replay reads the sealed column. tests/traffic/test_credential_capture.py |
 | SARIF / JSON / Markdown reports | TESTED | deterministic rendering; files replaced atomically, one artifact row per unchanged state (tests/report/test_report_atomic.py) |
 | PDF / HTML / DOCX / XLSX / CSV exports | TESTED | report_formats.py + report_pdf.py; redaction inherited, CSV formula guard; every format downloaded and validated through the built UI (benchmarks/check_report_exports.py, tests/report/test_report_formats.py) |
-| Target API credential diagnostic | TESTED | scoped, bounded, honest auth classification (200 alone is not "authorized"); credential never returned; wizard UI (tests/test_target_credentials.py, benchmarks/check_credential_ui.py) |
+| Target API credential diagnostic | NOT SHIPPED | prototype withdrawn pending a server-approved destination boundary |
 
 ## Platform / UX
 
 | Capability | Status | Notes |
 |---|---|---|
 | Web UI (dashboard, wizard, live ops, graph, findings, evidence, settings) | TESTED | web/ built; see screenshots |
+| First-run setup | TESTED | empty workspace → environment and provider checks → tool inventory → draft form, driven in Chromium against a local provider fixture; no assessment is started |
+| Tool version checks | TESTED (API) | authenticated, on-demand check for registered version commands; tests/test_tool_diagnostics.py. Startup/version only, not scanner readiness |
 | SSE live updates with cursor replay | TESTED | |
 | Token auth, loopback default | TESTED | audit API tests |
 | Docker single-container deploy | TESTED | Dockerfile + compose |

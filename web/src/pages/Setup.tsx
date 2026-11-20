@@ -4,12 +4,12 @@ import { ArrowLeft, ArrowRight, CheckCircle2, Circle, CircleSlash, PlugZap, Rock
 import { post, put } from "../api";
 import type { Engagement, Settings as S, ToolInfo } from "../types";
 import { useApi } from "../lib/hooks";
-import { Badge, Button, Card, CodeBlock, EmptyState, ErrorNote, Field, Input, Skeleton, cx, useToast } from "../components/ui";
+import { Badge, Button, Card, EmptyState, ErrorNote, Field, Input, Skeleton, cx, useToast } from "../components/ui";
 
 type Health = { status: string; version: string };
 type ProviderResult = { status: string; message: string; latency_ms: number | null };
 
-const STEPS = ["Environment", "AI provider", "Scanners", "Launch"];
+const STEPS = ["Environment", "AI provider", "Tools", "Next steps"];
 const effectiveUrl = (url?: string) => url?.trim().replace(/\/+$/, "") || "https://api.openai.com/v1";
 
 export default function Setup() {
@@ -179,11 +179,11 @@ export default function Setup() {
         )}
 
         {step === 2 && (
-          <Card title={<span className="inline-flex items-center gap-1.5"><Wrench size={14} className="text-ink-500" /> Scanner readiness</span>}
+          <Card title={<span className="inline-flex items-center gap-1.5"><Wrench size={14} className="text-ink-500" /> Tool inventory</span>}
             description={tools.data
               ? `${installed} of ${tools.data.length} installed. A check whose tool is missing is skipped and recorded as a degradation, never as a clean result.`
               : "Checks whose tool is missing are skipped and recorded as degradations."}
-            actions={<Button size="sm" disabled={tools.loading} onClick={tools.reload}>Recheck</Button>} padded={false}>
+            actions={<Button size="sm" onClick={() => navigate("/tools")}>Check tool versions</Button>} padded={false}>
             <div className="px-4"><ErrorNote error={tools.error} /></div>
             {tools.loading && !tools.data ? <Skeleton className="m-4 h-32" />
               : !registry.length ? <EmptyState title="No scanners registered" description="This backend build exposes no tool adapters; deterministic checks that need one will be skipped." />
@@ -212,14 +212,8 @@ export default function Setup() {
 
         {step === 3 && (
           <>
-            <Card title={<span className="inline-flex items-center gap-1.5"><Rocket size={14} className="text-ink-500" /> Launch the demo lab</span>}
-              description="PairLab is a local twin app you control, with 16 seeded vulnerability classes and matching ground truth.">
-              <p className="text-sm text-ink-700">
-                Start the vulnerable twin on your machine, then create an engagement with the target{" "}
-                <span className="font-mono text-xs text-ink-900">http://127.0.0.1:8801</span> and the{" "}
-                <span className="font-medium text-ink-900">Safe active</span> profile. Only targets you add are touched.
-              </p>
-              <div className="mt-3"><CodeBlock label="terminal" content="python labs/pairlab/app.py" maxHeight={56} /></div>
+            <Card title={<span className="inline-flex items-center gap-1.5"><Rocket size={14} className="text-ink-500" /> Next steps</span>}
+              description="Review previous results or create a draft engagement. Setup does not run an assessment.">
               <div className="mt-4 flex flex-wrap gap-2">
                 <Button variant="primary" icon={<Rocket size={14} />} onClick={() => navigate("/engagements/new")}>Create an engagement</Button>
                 <Button onClick={() => navigate("/engagements")}>View engagements</Button>
@@ -230,9 +224,7 @@ export default function Setup() {
                   : "Could not read the engagement list."}
               </p>
             </Card>
-            <p className="text-xs text-ink-500">
-              Prefer a dry run without a lab? Create an engagement against any system you own or are authorized to test, and choose Passive to fetch pages without changing anything.
-            </p>
+
           </>
         )}
       </section>

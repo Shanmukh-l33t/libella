@@ -3,12 +3,14 @@
 A binary on PATH is not a working scanner. This probe executes only the
 tool's own version flag (no target, no engagement params), with no shell,
 captured output and a short timeout, and reports ready/broken/missing. It
-never dials anything, so it needs no scope decision.
+takes no target. Executables are trusted local installations, not sandboxed.
 """
 import os
 import re
-import subprocess
+import tempfile
+import threading
 import time
+from pathlib import Path
 
 from . import ToolSpec, resolve_binary
 
@@ -32,6 +34,7 @@ _LABELLED_VERSION_RE = re.compile(r"version:?\s*v?(\d+\.\d+(?:\.\d+)?)", re.I)
 
 # shortcut: keyed by binary name only; a replaced binary reads stale for <=30s.
 _CACHE: dict[str, tuple[float, dict]] = {}
+_PROBE_LOCK = threading.Lock()
 
 
 def clear_cache() -> None:
@@ -50,39 +53,45 @@ def _probe(binary: str) -> dict:
     hit = _CACHE.get(binary)
     if hit and time.monotonic() - hit[0] < CACHE_TTL_S:
         return dict(hit[1])
-    args = VERSION_ARGS.get(os.path.basename(binary), ["--version"])
+    args = VERSION_ARGS.get(os.path.basename(binary))
     path = resolve_binary(binary)
     if path is None:
         result = {"status": "missing", "version": None,
                   "detail": f"binary '{binary}' not found"}
+    elif not args:
+        result = {"status": "unverified", "version": None, "detail": "No version probe configured."}
     else:
+        from .runner import _run_capped
+
         try:
-            p = subprocess.run([path, *args], capture_output=True, text=True,
-                               errors="replace", timeout=PROBE_TIMEOUT_S, shell=False)
-        except subprocess.TimeoutExpired:
-            result = {"status": "broken", "version": None,
-                      "detail": f"'{' '.join(args)}' timed out after {PROBE_TIMEOUT_S:g}s"}
-        except OSError as e:
-            result = {"status": "broken", "version": None, "detail": f"cannot execute: {e}"}
+            with tempfile.TemporaryDirectory() as home:
+                stdout, stderr, code, timed_out, _ = _run_capped(
+                    [os.path.abspath(path), *args], Path(home),
+                    {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "LANG": "C.UTF-8"},
+                    PROBE_TIMEOUT_S)
+        except OSError:
+            result = {"status": "broken", "version": None, "detail": "Could not execute the version probe."}
         else:
-            out = f"{p.stdout}\n{p.stderr}".strip()
-            version = _parse_version(out)
-            if p.returncode == 0 and version:
+            version = _parse_version((stdout + b"\n" + stderr).decode(errors="replace"))
+            if timed_out:
+                result = {"status": "broken", "version": None, "detail": "Version probe timed out."}
+            elif code == 0 and version:
                 result = {"status": "ready", "version": version,
-                          "detail": f"'{' '.join(args)}' -> {version}"}
-            elif p.returncode == 0:
+                          "detail": f"Version command returned {version}."}
+            elif code == 0:
                 result = {"status": "broken", "version": None,
-                          "detail": f"exit 0 but no version in output: {out[:160]}"}
+                          "detail": "The command returned no recognizable version."}
             else:
                 result = {"status": "broken", "version": None,
-                          "detail": f"exit {p.returncode}: {out[:160]}"}
+                          "detail": f"Version command exited with code {code}."}
     _CACHE[binary] = (time.monotonic(), result)
     return dict(result)
 
 
 def diagnose(spec: ToolSpec) -> dict:
-    """One readiness row for a tool: ready | broken | missing."""
+    """Check whether an allowlisted version command starts; not scanner readiness."""
     if spec.binary is None:
-        return {"name": spec.name, "status": "ready", "version": None,
-                "detail": "in-process handler; no external binary to probe"}
-    return {"name": spec.name, **_probe(spec.binary)}
+        return {"name": spec.name, "status": "unverified", "version": None,
+                "detail": "In-process adapter; no version probe configured."}
+    with _PROBE_LOCK:
+        return {"name": spec.name, **_probe(spec.binary)}

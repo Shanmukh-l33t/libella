@@ -15,7 +15,9 @@ MISSING = "libella-no-such-scanner-xyz"
 
 
 @pytest.fixture(autouse=True)
-def _fresh_cache():
+def _fresh_cache(monkeypatch):
+    for name in ("fake-scan", "fake-noisy", "fake-broken", "fake-mute", "fake-hang"):
+        monkeypatch.setitem(diagnostics.VERSION_ARGS, name, ["--version"])
     diagnostics.clear_cache()
     yield
     diagnostics.clear_cache()
@@ -127,5 +129,30 @@ def test_registry_diagnostics_returns_one_row_per_registered_tool(tmp_path):
     rows = reg.diagnostics()
 
     assert [r["name"] for r in rows] == ["in_process", "real", "absent"]
-    assert [r["status"] for r in rows] == ["ready", "ready", "missing"]
+    assert [r["status"] for r in rows] == ["unverified", "ready", "missing"]
     assert all(set(r) == {"name", "status", "version", "detail"} for r in rows)
+
+
+def test_unknown_tool_is_not_executed(tmp_path):
+    marker = tmp_path / "executed"
+    exe = _script(tmp_path, "unknown-probe", f'touch "{marker}"')
+    assert diagnostics.diagnose(_spec(exe))["status"] == "unverified"
+    assert not marker.exists()
+
+
+def test_version_check_route_requires_auth_and_hides_tool_output(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from libella.api import App, create_api
+
+    app = App(tmp_path / "data")
+    monkeypatch.setenv("LIBELLA_FIXTURE_TEST", "synthetic-value")
+    exe = _script(tmp_path, "fake-broken", 'echo "$LIBELLA_FIXTURE_TEST"; echo fixture-private; exit 3')
+    app.registry.register(_spec(exe, name="fixture"))
+    path = "/api/tools/fixture/version-check"
+    with TestClient(create_api(app)) as client:
+        assert client.post(path).status_code == 401
+        auth = {"Authorization": f"Bearer {app.token}"}
+        assert client.post("/api/tools/unknown/version-check", headers=auth).status_code == 404
+        res = client.post(path, headers=auth)
+        assert res.json()["status"] == "broken"
+        assert "synthetic-value" not in res.text and "fixture-private" not in res.text

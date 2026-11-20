@@ -588,6 +588,16 @@ def create_api(app: App) -> FastAPI:
     def tools():
         return app.registry.available()
 
+    @api.post("/api/tools/{name}/version-check", dependencies=[Depends(auth)])
+    def tool_version_check(name: str):
+        from .tools.diagnostics import diagnose
+        # Caller picks a registered tool only; executable and arguments are server-side.
+        try:
+            spec = app.registry.get(name)
+        except KeyError:
+            raise HTTPException(404, "Tool not registered.") from None
+        return diagnose(spec)
+
     @api.get("/api/settings", dependencies=[Depends(auth)])
     def get_settings():
         cfg = app.llm_settings()

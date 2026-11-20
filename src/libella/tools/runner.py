@@ -175,7 +175,7 @@ def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float, should_st
     so a timeout or a cancel kills its whole process group (no orphaned
     scanner children continuing to touch the target).
     """
-    proc = subprocess.Popen(argv, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
+    proc = subprocess.Popen(argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, start_new_session=True)
     out, err = bytearray(), bytearray()
     truncated = [False]

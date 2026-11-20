@@ -1,10 +1,12 @@
 import { Fragment, useState } from "react";
 import { CheckCircle2, CircleSlash, Wrench, X } from "lucide-react";
-import { qs } from "../api";
+import { post, qs } from "../api";
 import type { Engagement, ToolCall, ToolInfo } from "../types";
 import { useApi } from "../lib/hooks";
 import { fmtDuration, fmtTime } from "../lib/format";
-import { Badge, Card, CodeBlock, EmptyState, ErrorNote, JsonViewer, Select, Table, TableSkeleton } from "../components/ui";
+import { Badge, Button, Card, CodeBlock, EmptyState, ErrorNote, JsonViewer, Select, Table, TableSkeleton } from "../components/ui";
+
+type VersionCheck = { status: string; version: string | null; detail: string };
 
 export default function Tools() {
   const registry = useApi<ToolInfo[]>("/api/tools");
@@ -15,6 +17,20 @@ export default function Tools() {
   const calls = useApi<ToolCall[]>(selected ? `/api/engagements/${selected}/tool-calls${qs({ live: 1 })}` : null);
   const [spec, setSpec] = useState<ToolInfo | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [checking, setChecking] = useState<string | null>(null);
+  const [versions, setVersions] = useState<Record<string, VersionCheck>>({});
+
+  async function checkVersion(name: string) {
+    setChecking(name);
+    try {
+      const result = await post<VersionCheck>(`/api/tools/${encodeURIComponent(name)}/version-check`);
+      setVersions((rows) => ({ ...rows, [name]: result }));
+    } catch {
+      setVersions((rows) => ({ ...rows, [name]: { status: "unverified", version: null, detail: "The backend could not complete the version check." } }));
+    } finally {
+      setChecking(null);
+    }
+  }
 
   const tools = registry.data || [];
   const available = tools.filter((t) => t.available).length;
@@ -66,6 +82,11 @@ export default function Tools() {
           <Badge tone={spec.available ? "success" : "neutral"}>{spec.available ? "installed" : "missing"}</Badge></span>}
           description={spec.description}
           actions={<button onClick={() => setSpec(null)} aria-label="Close tool spec" className="rounded p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-900"><X size={14} /></button>}>
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <Button size="sm" disabled={checking !== null} loading={checking === spec.name} onClick={() => void checkVersion(spec.name)}>Check version</Button>
+            <p className="text-xs text-ink-500">Checks startup and version only. Does not run an assessment.</p>
+            {versions[spec.name] && <p role="status" className="w-full text-sm text-ink-700">{versions[spec.name].detail}</p>}
+          </div>
           <div className="grid gap-4 lg:grid-cols-2">
             <JsonViewer value={spec.parameters || {}} maxHeight={360} />
             <div className="space-y-2 text-xs">
