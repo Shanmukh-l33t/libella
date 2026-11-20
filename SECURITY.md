@@ -37,10 +37,14 @@ See THREAT_MODEL.md. Summary of enforced controls:
 
 ## Known residual risks (honest list)
 
-Earlier versions wrote the instance token to startup logs and accepted it in URLs.
+The v0.4.0 release wrote the instance token to startup logs and used it in URLs.
 Treat the old token as disclosed to anyone who could read those logs. Stop all
 Libella processes using the data directory. With the upgraded code, run
 `libella --data-dir <directory> --rotate-token`, then restart the service.
+Rotation requires an encrypted token record and its original key. Pre-encryption
+databases need migration first: retain a protected backup and do not serve traffic
+until migration and rotation both succeed. Never substitute a new encryption key
+to get past a decryption failure.
 `LIBELLA_TOKEN` is for first initialization; changing it does not rotate an existing
 instance. Retrieve the replacement with `libella --data-dir <directory> --show-token`
 on a private terminal (in Compose, `docker compose exec libella libella --data-dir /data --show-token`).

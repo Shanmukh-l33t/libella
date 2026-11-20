@@ -25,7 +25,10 @@ def _operator_token(data_dir: Path, rotate: bool):
         row = db.execute("SELECT value_json FROM settings WHERE key='api_token'").fetchone()
         if not row:
             raise ValueError("missing stored token")
-        current = box.decrypt(json.loads(row[0]))
+        stored = json.loads(row[0])
+        if not isinstance(stored, str):
+            raise ValueError("invalid stored token record")
+        current = box.decrypt(stored)
         if rotate:
             db.execute("UPDATE settings SET value_json=? WHERE key='api_token'",
                        (json.dumps(box.encrypt(secrets.token_urlsafe(32))),))
@@ -48,7 +51,7 @@ def cli():
             p.error("show-token requires a private terminal (no pipes or redirection)")
         try:
             _operator_token(Path(args.data_dir), args.rotate_token)
-        except (InvalidToken, ValueError, TypeError, AttributeError, OSError, sqlite3.Error):
+        except (InvalidToken, ValueError, TypeError, OSError, sqlite3.Error):
             p.exit(1, "Cannot access stored credential; check the data directory, database and encryption key.\n")
         if args.rotate_token:
             print("Stored token replaced. Restart Libella to invalidate the old token.")
