@@ -166,7 +166,8 @@ specific modules (WordPress/PHP/Java/ColdFusion/Node/IIS/Apache/Nginx), ZAP
 adapter, plugin/MCP extension framework; deep investigation graph + cross-run
 memory + drift; independent verification + retest; PDF/MD/JSON/SARIF reports +
 remediation tracking + historical comparison; premium operational UI (Command
-Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph).
+Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph,
+read-only Validation workspace, WSTG coverage review).
 653 tests, 1 skipped (as of branch `defensive-readiness`, v0.5.0 in development);
 the PairLab benchmark gate is 16/16 seeds with 0 false positives and is not
 re-run by that suite. Two independent adversarial audits (35 defects fixed).
