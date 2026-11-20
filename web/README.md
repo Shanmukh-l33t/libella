@@ -25,6 +25,7 @@ The backend serves `web/dist` at `/` when it exists. `dist/404.html` lets Starle
 refreshes (the response status stays 404, which browsers ignore for rendering).
 
 SSE uses `EventSource`, which cannot set headers: the client mints a single-use,
-60-second ticket from `POST /api/ticket` and passes it as `?ticket=`. The long-lived
+60-second ticket bound to that engagement's stream (`POST /api/ticket` with
+`{"engagement_id": "<eid>"}`) and passes it as `?ticket=`. The long-lived
 token is never put in a URL. Report downloads go through `fetch` with the bearer
 header and save the blob locally.

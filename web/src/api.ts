@@ -1,6 +1,8 @@
 import type { Settings, ToolInfo } from "./types";
 
 // In memory only: never persisted to browser storage or echoed into a URL.
+// Pre-hardening builds kept the token under this key; drop any leftover copy on load.
+try { localStorage.removeItem("libella.token"); } catch { /* storage blocked */ }
 let token = "";
 export const getToken = () => token;
 export const setToken = (t: string) => { token = t.trim(); };
@@ -38,8 +40,9 @@ export const put = <T>(path: string, body: unknown) => api<T>(path, { method: "P
 export const tools = () => get<ToolInfo[]>("/api/tools");
 export const settings = () => get<Settings>("/api/settings");
 
-/** EventSource cannot send headers: a single-use 60s ticket stands in for the bearer token. */
-export const mintTicket = () => post<{ ticket: string }>("/api/ticket").then((r) => r.ticket);
+/** EventSource cannot send headers: a single-use 60s ticket for this engagement's stream. */
+export const mintTicket = (eid: string) =>
+  post<{ ticket: string }>("/api/ticket", { engagement_id: eid }).then((r) => r.ticket);
 
 /** Downloads use fetch so the bearer header travels instead of a token in the URL. */
 export async function downloadReport(eid: string, format: "md" | "sarif" | "pdf" | "dojo") {

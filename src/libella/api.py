@@ -104,30 +104,43 @@ def create_api(app: App) -> FastAPI:
     api.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
                        allow_methods=["*"], allow_headers=["*"])
 
-    # one-shot SSE tickets: ticket -> expiry. Only for GETs that cannot send headers.
+    # one-shot SSE tickets: ticket -> (exact stream path, monotonic deadline). A ticket
+    # opens one engagement's stream and nothing else, so a URL that leaks cannot
+    # authorize another GET route.
     # shortcut: in-process store, so tickets only work with a single uvicorn worker;
     # upgrade to an HMAC-signed ticket if the API ever runs multiple workers.
-    tickets: dict[str, float] = {}
+    TICKET_TTL, MAX_TICKETS = 60.0, 64
+    tickets: dict[str, tuple[str, float]] = {}
+    tickets_lock = threading.Lock()
 
     def auth(request: Request):
         if request.url.path in ("/api/health", "/"):
             return
-        tok = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        if tok and secrets.compare_digest(tok, app.token):
+        scheme, _, tok = request.headers.get("Authorization", "").partition(" ")
+        if scheme == "Bearer" and tok and secrets.compare_digest(tok, app.token):
             return
         ticket = request.query_params.get("ticket", "")
-        if request.method == "GET" and ticket and tickets.pop(ticket, 0) > time.time():
-            return  # EventSource cannot set headers; a ticket is single-use and short-lived
+        if ticket:
+            with tickets_lock:  # pop first: a mismatched or late use burns the ticket
+                target, deadline = tickets.pop(ticket, ("", 0.0))
+            if request.method == "GET" and target == request.url.path and deadline > time.monotonic():
+                return  # EventSource cannot set headers; ticket is single-use, 60s, one stream
         raise HTTPException(401, "invalid token")
 
     @api.post("/api/ticket", dependencies=[Depends(auth)])
-    def issue_ticket():
-        now = time.time()
-        for k in [k for k, exp in tickets.items() if exp <= now]:
-            tickets.pop(k, None)
+    def issue_ticket(body: dict):
+        eid = body.get("engagement_id")
+        if not isinstance(eid, str) or not eid:
+            raise HTTPException(400, "engagement_id required")
+        now = time.monotonic()
         t = secrets.token_urlsafe(24)
-        tickets[t] = now + 60
-        return {"ticket": t, "expires_in": 60}
+        with tickets_lock:
+            for k in [k for k, (_, exp) in tickets.items() if exp <= now]:
+                tickets.pop(k, None)
+            while len(tickets) >= MAX_TICKETS:  # bound memory; oldest ticket goes first
+                tickets.pop(next(iter(tickets)))
+            tickets[t] = (f"/api/engagements/{eid}/stream", now + TICKET_TTL)
+        return {"ticket": t, "expires_in": int(TICKET_TTL)}
 
     # Public liveness probe: no tool probing, no inventory (see docs/healthcheck.md).
     @api.get("/api/health")

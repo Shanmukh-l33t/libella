@@ -41,7 +41,7 @@ export function useStream(eid: string | null, since: number | null, onEvent: (ki
     const connect = async () => {
       if (closed) return;
       let ticket = "";
-      try { ticket = await mintTicket(); } catch { /* 401 surfaces as a failed stream; retry waits */ }
+      try { ticket = await mintTicket(eid); } catch { /* 401 surfaces as a failed stream; retry waits */ }
       if (closed) return;
       es = new EventSource(`/api/engagements/${eid}/stream?since=${cursor}&ticket=${encodeURIComponent(ticket)}`);
       es.onopen = () => { retry = 0; setConnected(true); };
