@@ -10,7 +10,10 @@ from .secrets import SecretBox, is_encrypted
 
 # Columns holding live session material: ciphertext at rest, plaintext through
 # DB.query()/one(). Writers must pass values through DB.seal().
-SECRET_COLUMNS = {"engagements": ("auth_json",), "auth_contexts": ("cookies_json",)}
+# exchanges: captured request/response headers carry live Cookie/Authorization
+# and Set-Cookie values, so the whole JSON column is sealed (not just a value).
+SECRET_COLUMNS = {"engagements": ("auth_json",), "auth_contexts": ("cookies_json",),
+                  "exchanges": ("req_headers_json", "resp_headers_json")}
 _SECRET_FIELDS = frozenset(c for cols in SECRET_COLUMNS.values() for c in cols)
 
 SCHEMA = """

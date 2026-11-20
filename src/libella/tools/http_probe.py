@@ -4,6 +4,7 @@ Scope checked before every request AND on every redirect hop. Peer IP
 verified after connect (closes DNS-rebinding at observation time). Every
 exchange is captured as evidence with full request/response.
 """
+import json
 import time
 import threading
 from urllib.parse import urljoin
@@ -12,6 +13,7 @@ import httpx
 
 from ..db import DB, new_id
 from ..evidence import EvidenceStore
+from ..report import redact_headers
 from ..scope import Scope
 
 BODY_CAP = 256 * 1024
@@ -159,10 +161,14 @@ class HttpProbe:
     def _record(self, engagement_id, intent_id, tool, method, url, resp,
                 content, req_headers, body, duration_ms, peer_ip) -> dict:
         req_body = body.decode(errors="replace") if isinstance(body, bytes) else (body or "")
+        # The blob on disk keeps only redacted header values; the live values live
+        # in the sealed exchanges columns, which replay reads back through DB.
+        req_h = redact_headers(dict(req_headers or {}))
+        resp_h = redact_headers(dict(resp.headers))
         blob = {
             "request": {"method": method, "url": url,
-                        "headers": dict(req_headers or {}), "body": req_body[:BODY_CAP]},
-            "response": {"status": resp.status_code, "headers": dict(resp.headers),
+                        "headers": req_h, "body": req_body[:BODY_CAP]},
+            "response": {"status": resp.status_code, "headers": resp_h,
                          "body": content.decode(errors="replace"),
                          "body_sha256": __import__("hashlib").sha256(content).hexdigest()},
             "peer_ip": peer_ip, "duration_ms": round(duration_ms, 1),
@@ -174,7 +180,8 @@ class HttpProbe:
             "req_headers_json, resp_headers_json, req_body, duration_ms, tool, peer_ip, created_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (eid, engagement_id, ev["id"], method, url, resp.status_code,
-             __import__("json").dumps(req_headers or {}), __import__("json").dumps(dict(resp.headers)),
+             self.db.seal(json.dumps(dict(req_headers or {}))),
+             self.db.seal(json.dumps(dict(resp.headers))),
              req_body[:8192], round(duration_ms, 1), tool, peer_ip, time.time()),
         )
         return {"id": eid, "evidence_id": ev["id"]}

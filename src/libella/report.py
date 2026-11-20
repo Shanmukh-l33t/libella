@@ -4,12 +4,17 @@ Outputs: Markdown, JSON, SARIF 2.1.0. Redaction pass over secrets/PII.
 Coverage and degradation sections are mandatory: a blocked scan must never
 read as 'all clear'.
 """
+import hashlib
 import json
+import os
 import re
+import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote
 
+from . import __version__
 from .db import DB
 from .evidence import EvidenceStore
 
@@ -59,6 +64,26 @@ def redact_headers(headers: dict | None) -> dict:
     """Mask credential-bearing header values before they leave the process."""
     return {k: ("[REDACTED]" if k.lower() in SENSITIVE_HEADERS else v)
             for k, v in (headers or {}).items()}
+
+
+# Serializes the write+ledger step so two concurrent GETs of one state record once.
+# shortcut: per process; two processes can still append one artifact row each.
+_RENDER_LOCK = threading.Lock()
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Readers must never see a half-written report: temp file, then os.replace."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def _md(value) -> str:
@@ -216,7 +241,7 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",
         "runs": [{
-            "tool": {"driver": {"name": "Libella", "version": "0.1.0",
+            "tool": {"driver": {"name": "Libella", "version": __version__,
                                 "informationUri": "https://github.com/Shanmukh-l33t/libella"}},
             "results": [{
                 "ruleId": f["cwe"] or "libella/finding",
@@ -233,9 +258,20 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
 
     outdir = Path(outdir) if outdir else Path(evidence.root) / engagement_id / "report"
     outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / "report.md").write_text(md_text)
-    (outdir / "report.json").write_text(json.dumps(report, indent=2, default=str))
-    (outdir / "report.sarif").write_text(json.dumps(sarif, indent=2))
-    ev = evidence.put_json(engagement_id, report, "report")
-    db.emit(engagement_id, "report_rendered", {"evidence_id": ev["id"], "path": str(outdir)})
+    _write_atomic(outdir / "report.md", md_text)
+    _write_atomic(outdir / "report.json", json.dumps(report, indent=2, default=str))
+    _write_atomic(outdir / "report.sarif", json.dumps(sarif, indent=2))
+    # One artifact row per unchanged state: a report GET is a read, not an event.
+    state = hashlib.sha256(json.dumps({**report, "generated_at": None}, sort_keys=True,
+                                      default=str).encode()).hexdigest()
+    with _RENDER_LOCK:
+        last = db.one("SELECT payload_json FROM events WHERE engagement_id=? "
+                      "AND kind='report_rendered' ORDER BY seq DESC LIMIT 1", (engagement_id,))
+        prev = json.loads(last["payload_json"]) if last else {}
+        if prev.get("state") == state and prev.get("evidence_id"):
+            return {"outdir": str(outdir), "evidence_id": prev["evidence_id"],
+                    "summary": report["summary"]}
+        ev = evidence.put_json(engagement_id, report, "report")
+        db.emit(engagement_id, "report_rendered",
+                {"evidence_id": ev["id"], "path": str(outdir), "state": state})
     return {"outdir": str(outdir), "evidence_id": ev["id"], "summary": report["summary"]}

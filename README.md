@@ -37,8 +37,9 @@ engagement authorization object before it executes.
 
 ## Verified results (real execution, not claims)
 
-PairLab benchmark (labs/pairlab): a vulnerable/hardened twin app with 13
-seeded vulnerability classes and machine-readable ground truth.
+PairLab benchmark (labs/pairlab): a vulnerable/hardened twin app with 16
+seeded vulnerability classes (PL-01..PL-16, 6 negative controls) and
+machine-readable ground truth.
 
 | Mode | Seeded vulns detected + independently validated | False positives | Duration |
 |---|---|---|---|
@@ -165,8 +166,11 @@ adapter, plugin/MCP extension framework; deep investigation graph + cross-run
 memory + drift; independent verification + retest; PDF/MD/JSON/SARIF reports +
 remediation tracking + historical comparison; premium operational UI (Command
 Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph).
-448 tests; two independent adversarial audits (35 defects fixed). CI/issue-tracker
-hooks and scheduled retest are planned, not claimed. See CAPABILITY_MATRIX.md.
+598 tests, 1 skipped (as of branch `data-protection`, v0.5.0 in development);
+the PairLab benchmark gate is 16/16 seeds with 0 false positives and is not
+re-run by that suite. Two independent adversarial audits (35 defects fixed).
+CI/issue-tracker hooks and scheduled retest are planned, not claimed. See
+CAPABILITY_MATRIX.md.
 
 ## License
 

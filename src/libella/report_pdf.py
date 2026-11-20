@@ -3,6 +3,8 @@
 Rendering is presentation-only: every string is redacted through report.redact()
 before it reaches the page, and platypus paginates long content automatically.
 """
+import os
+import tempfile
 import time
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -162,6 +164,10 @@ def render_pdf(report_json: dict, out_path: str | Path) -> Path:
     """Write a redacted PDF for a report.json dict; returns the written path."""
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Build beside the target and replace, so a concurrent GET never serves a
+    # partially written PDF.
+    fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=str(out.parent))
+    os.close(fd)
     st = _styles()
     eng = report_json.get("engagement") or {}
     summary = report_json.get("summary") or {}
@@ -170,7 +176,7 @@ def render_pdf(report_json: dict, out_path: str | Path) -> Path:
     scope = report_json.get("scope") or {}
     generated = report_json.get("generated_at")
 
-    doc = BaseDocTemplate(str(out), pagesize=A4, title=f"Libella report {eng.get('id', '')}",
+    doc = BaseDocTemplate(tmp, pagesize=A4, title=f"Libella report {eng.get('id', '')}",
                           author="Libella", leftMargin=18 * mm, rightMargin=18 * mm,
                           topMargin=18 * mm, bottomMargin=20 * mm)
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")
@@ -245,4 +251,10 @@ def render_pdf(report_json: dict, out_path: str | Path) -> Path:
                    "evidence is content-addressed and hash-chained. All report text passes a "
                    "redaction pass for credentials, tokens and personal data.", st["body"]))
     doc.build(flow)
+    try:
+        os.replace(tmp, out)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     return out

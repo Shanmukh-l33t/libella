@@ -1,6 +1,6 @@
 [project]
 name = "libella"
-version = "0.1.0"
+version = "0.5.0"
 description = "Autonomous penetration-testing workbench. Evidence-first, scope-enforced, multi-agent."
 license = "Apache-2.0"
 requires-python = ">=3.12"

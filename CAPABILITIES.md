@@ -10,7 +10,7 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | Engagement creation with enforceable scope | TESTED | tests/test_scope.py, API validation |
 | Scope enforcement at exec boundary (DNS-resolved, exclusions, ports, categories) | TESTED | tests/audit/test_scope_bypass.py |
 | Redirect-hop scope re-check + peer-IP verification | TESTED | http_probe.py, audit tests |
-| Deterministic assessment pipeline (no LLM) | TESTED | PairLab 13/13 validated, 0 FP |
+| Deterministic assessment pipeline (no LLM) | TESTED | PairLab 16/16 seeds validated, 0 FP |
 | LLM planning mode (typed deltas, compile gate, budgets) | TESTED | benchmarks/run_llm_mode.py: 8/8 testable seeds validated, out-of-scope proposals rejected |
 | Leased intents, fencing, expiry sweep, bounded retries | TESTED | orchestrator.py, audit race tests |
 | Duplicate-work prevention | TESTED | duplicate_work_prevented events |
@@ -87,11 +87,12 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 |---|---|---|
 | Content-addressed evidence + hash chain | TESTED | tamper/chain-break tests |
 | Derived provenance (not model-declared) | TESTED | unbound evidence stays suspected |
-| Independent replay verification | TESTED | 13/13 PairLab validations |
+| Independent replay verification | TESTED | 16/16 PairLab seeds replay-validated |
 | Retest after remediation (fixed/persists/inconclusive) | TESTED | verifier.retest + gate tests |
 | Dedup by root cause | TESTED | pipeline tests |
 | Secret redaction in reports/evidence | TESTED | audit secrets tests |
-| SARIF / JSON / Markdown reports | TESTED | deterministic rendering |
+| Captured session credentials sealed at rest | TESTED | exchanges request/response header columns are Fernet ciphertext; evidence blobs keep redacted headers; replay reads the sealed column. tests/traffic/test_credential_capture.py |
+| SARIF / JSON / Markdown reports | TESTED | deterministic rendering; files replaced atomically, one artifact row per unchanged state (tests/report/test_report_atomic.py) |
 
 ## Platform / UX
 
@@ -109,7 +110,7 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 - Host: Linux x86_64, 6 cores, 15GB RAM. Python 3.12. nuclei 3.x with
   13,808 templates, httpx 1.12.0, nmap, subfinder, ffuf installed.
 - PairLab twins: labs/pairlab/app.py (Flask, localhost). Ground truth:
-  labs/pairlab/ground_truth.json (13 seeds, 6 negative controls).
+  labs/pairlab/ground_truth.json (16 seeds PL-01..PL-16, 6 negative controls).
 - Deterministic-only run: ~8s/engagement. With nuclei: ~155s/engagement.
 - Juice Shop (bkimminich/juice-shop:latest, localhost:3001): 53 assets
   discovered (HTML crawl + JS bundle route mining), 1 validated finding

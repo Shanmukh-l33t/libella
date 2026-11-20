@@ -189,7 +189,15 @@ def replay(db: DB, evidence: EvidenceStore, probe: HttpProbe, scope: Scope,
     if not isinstance(url, str) or not url:
         return {"ok": False, "error": "captured request has no url"}
     method = str(req.get("method") or row["method"] or "GET").upper()
-    headers = {k: v for k, v in (req.get("headers") or {}).items()
+    # Headers come from the sealed column (the evidence blob keeps them redacted);
+    # pre-sealing captures have only the blob, so fall back to it.
+    try:
+        recorded = json.loads(row.get("req_headers_json") or "null")
+    except json.JSONDecodeError:
+        recorded = None
+    if not isinstance(recorded, dict):
+        recorded = None
+    headers = {k: v for k, v in (recorded or req.get("headers") or {}).items()
                if k.lower() not in HOP_BY_HOP}
     body = req.get("body") or None
     ov = overrides or {}

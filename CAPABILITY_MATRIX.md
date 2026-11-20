@@ -71,7 +71,10 @@ Research: research/analysis-*.md, inventory-*.md, REA_LOG.md (provable REA invoc
   17 findings independently replay-validated, 0 missed, $0.17, 526s, clean
   convergence (web/api/authz completed), 2 hypotheses, evidence chain intact.
 - Deterministic mode: 16/16, 0 FP hardened (baseline).
-- Full suite: 448 passed, 1 skipped (ZAP live). Lint clean.
+- Full suite: 598 passed, 1 skipped (ZAP live), lint clean — counted on branch
+  `data-protection`, version 0.5.0 (not yet tagged). The benchmark gate is not part
+  of that suite: PairLab last recorded 16/16 vuln, 0 FP hardened, and was not re-run
+  on this branch.
 - Independent audit2: 13 defects fixed (4 high, 7 medium, 2 low), 31 regression tests.
 - End-to-end acceptance test passes through the real API (lifecycle + traffic
   replay + graph + memory + PDF + remediation + chain).
@@ -93,4 +96,4 @@ Parent: agent_runtime + graph + memory + orchestrator integration + verification
 - CI/CD + issue-tracker integration; scheduled retest; assessment templates.
 - Reference benchmarking (same labs, comparable workflows) once references executed.
 - Independent adversarial re-audit of new modules; end-to-end acceptance gate.
-- Release v0.4.0 with full artifacts.
+- Release v0.5.0 (versions bumped in pyproject/__init__; artifacts not yet published).
