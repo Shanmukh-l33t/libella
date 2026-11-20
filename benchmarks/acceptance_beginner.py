@@ -111,6 +111,16 @@ def main(out: Path):
             with sync_playwright() as pw:
                 browser = pw.chromium.launch()
                 ctx = browser.new_context(viewport={"width": 1440, "height": 900}, accept_downloads=True)
+                ctx.add_init_script("""(() => {
+                  window.__sse = [];
+                  const ES = window.EventSource;
+                  window.EventSource = function (url, opts) {
+                    const es = new ES(url, opts);
+                    const add = es.addEventListener.bind(es);
+                    es.addEventListener = (k, fn, o) => add(k, (ev) => { window.__sse.push([Date.now(), k, Number(ev.lastEventId) || 0]); fn(ev); }, o);
+                    return es;
+                  };
+                })();""")
                 page = ctx.new_page()
                 errors = []
                 page.on("pageerror", lambda e: errors.append(str(e)))
@@ -176,13 +186,24 @@ def main(out: Path):
                     assert seen_running, "never observed the running state"
                     # the live workspace must reflect completion without a manual reload
                     # the engagement header (h1 + status badge) must flip to Done without a reload
-                    expect(page.locator("h1").first.locator("xpath=..")).to_contain_text("Done", timeout=30000)
+                    # innerText: the badge holds "done" and CSS capitalizes it; assert what the user sees
+                    try:
+                        expect(page.locator("h1").first.locator("xpath=..")).to_contain_text(
+                            "Done", timeout=30000, use_inner_text=True)
+                    except AssertionError:
+                        sse = page.evaluate("window.__sse.slice(-15)")
+                        raise AssertionError(f"header did not show Done 30s after completion; last SSE events (ms epoch, kind, seq): {sse}; now={int(time.time()*1000)}")
                     ui_lag = round(time.time() - done_at, 1)
+                    # delivery latency per event: server created_at -> browser receipt (same host clock)
+                    created = {e["seq"]: e["created_at"] for e in api.get(f"/api/engagements/{eid}/events?since=0").json()}
+                    lat = sorted(r[0] / 1000 - created[r[2]] for r in page.evaluate("window.__sse") if r[2] in created)
+                    sse_latency = {"events": len(lat), "p50_s": round(lat[len(lat) // 2], 3) if lat else None,
+                                   "max_s": round(lat[-1], 3) if lat else None}
                     page.screenshot(path=out / "a3-done.png")
                     calls = api.get(f"/api/engagements/{eid}/tool-calls").json()
                     ran = [c for c in calls if str(c.get("scope_decision", "")).startswith("executed")]
                     return {"tool_calls_executed": len(ran), "tools": sorted({c["tool"] for c in ran}),
-                            "ui_done_lag_s": ui_lag}
+                            "ui_done_lag_s": ui_lag, "sse_latency": sse_latency}
                 run = st("5 run to completion with live state", live)
 
                 def findings():

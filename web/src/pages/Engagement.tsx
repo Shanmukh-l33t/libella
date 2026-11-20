@@ -57,12 +57,28 @@ export default function Engagement() {
     feed.current.set(seq, { seq, kind, payload });
     setEvents([...feed.current.values()].sort((a, b) => b.seq - a.seq).slice(0, 400));
     // A preview emits this event itself; refetching it grows the evidence store forever.
-    if (kind === "report_rendered" || timer.current) return;
+    if (kind === "report_rendered") return;
+    // Lifecycle changes refresh at once: a debounce timer can be throttled to once a
+    // minute in a background tab, which left a finished run reading "Running".
+    if (kind.startsWith("engagement_")) {
+      if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+      setLive((v) => v + 1);
+      eng.reload();
+      return;
+    }
+    if (timer.current) return;
     timer.current = setTimeout(() => {
       timer.current = null;
       setLive((v) => v + 1);
       eng.reload();
     }, 600);
+  }, [eng]);
+
+  // Coming back to the tab must show current state, not whatever the throttled timers last fetched.
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") { setLive((v) => v + 1); eng.reload(); } };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [eng]);
 
   const connected = useStream(id, since, pushEvent);
