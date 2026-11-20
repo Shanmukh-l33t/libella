@@ -100,36 +100,39 @@ class Orchestrator:
             recon_ids.append(self._add_intent(engagement_id, "recon", f"Fingerprint and probe {u}"))
         for d in domains:
             self._add_intent(engagement_id, "recon", f"Passive subdomain discovery for {d}")
-        crawl_ids, check_ids = [], []
+        crawl_ids, check_ids, audit_ids = [], [], []
         if "web" in scope.categories:
             crawl_ids = [self._add_intent(engagement_id, "crawl", f"Crawl {u}", depends=recon_ids)
                          for u in urls]
             check_ids = [self._add_intent(engagement_id, "web_checks", f"Web security checks on {u}",
                                           depends=crawl_ids) for u in urls]
             for u in urls:
-                self._add_intent(engagement_id, "nuclei_scan", f"Template scan {u}", depends=recon_ids)
+                audit_ids.append(self._add_intent(engagement_id, "nuclei_scan",
+                                                  f"Template scan {u}", depends=recon_ids))
         for u in urls:
             if u.startswith("https://"):
-                self._add_intent(engagement_id, "infra_scan",
-                                 f"TLS and service audit {u}", depends=recon_ids)
+                audit_ids.append(self._add_intent(engagement_id, "infra_scan",
+                                                  f"TLS and service audit {u}", depends=recon_ids))
         auth = json.loads(eng["auth_json"])
         if auth.get("openapi") and urls:
-            self._add_intent(engagement_id, "api_audit",
-                             f"OpenAPI-driven API audit {urls[0]}", depends=recon_ids)
+            audit_ids.append(self._add_intent(engagement_id, "api_audit",
+                                              f"OpenAPI-driven API audit {urls[0]}", depends=recon_ids))
         if auth.get("graphql"):
-            self._add_intent(engagement_id, "graphql_audit",
-                             f"GraphQL audit {auth['graphql']}", depends=recon_ids)
+            audit_ids.append(self._add_intent(engagement_id, "graphql_audit",
+                                              f"GraphQL audit {auth['graphql']}", depends=recon_ids))
         for t in targets:
             if t["kind"] == "repo":
-                self._add_intent(engagement_id, "code_audit",
-                                 f"Source and supply-chain audit {t['value']}")
+                audit_ids.append(self._add_intent(engagement_id, "code_audit",
+                                                  f"Source and supply-chain audit {t['value']}"))
             if t["kind"] == "image":
-                self._add_intent(engagement_id, "container_scan",
-                                 f"Container image scan {t['value']}")
-        self._add_intent(engagement_id, "verify", "Independently verify all candidate findings",
-                         depends=check_ids)
+                audit_ids.append(self._add_intent(engagement_id, "container_scan",
+                                                  f"Container image scan {t['value']}"))
+        # verify must wait for EVERY finding-producing intent; report waits for verify
+        verify_id = self._add_intent(engagement_id, "verify",
+                                     "Independently verify all candidate findings",
+                                     depends=check_ids + audit_ids)
         self._add_intent(engagement_id, "report", "Render assessment report",
-                         depends=check_ids)
+                         depends=[verify_id])
 
     def _plan_llm(self, engagement_id: str, scope: Scope, eng: dict):
         """LLM proposes additional intents; compile gate validates before write."""

@@ -50,8 +50,10 @@ COPY --from=tools /root/nuclei-templates /opt/nuclei-templates
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN pip install --no-cache-dir . semgrep graphene playwright \
-    && playwright install --with-deps chromium
+    && playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/ms-playwright
 COPY --from=web /web/dist /app/web/dist
 ENV LIBELLA_DATA=/data \
     LIBELLA_HOST=0.0.0.0 \
