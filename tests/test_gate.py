@@ -1,0 +1,191 @@
+"""Offline gate: fail on new verified high/critical, never on unknown coverage."""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+import pytest
+
+from libella.db import DB
+from libella.evidence import EvidenceStore
+from libella.gate import evaluate, main, normalize, write_junit
+from libella.report import render_report
+
+ROOT = Path(__file__).resolve().parents[1]
+
+LOW = {"title": "Missing HSTS", "severity": "low", "state": "reported",
+       "endpoint": "https://a.example/", "cwe": "CWE-319"}
+HIGH = {"title": "Debug endpoint leaks config", "severity": "high", "state": "validated",
+        "endpoint": "https://a.example/debug", "cwe": "CWE-200"}
+CRITICAL = {"title": "SQL injection in category", "severity": "critical", "state": "validated",
+            "endpoint": "https://a.example/api/products", "cwe": "CWE-89"}
+
+
+def doc(findings=(), status="done", intents=2, done=2, blocked=0, degradations=(),
+        total=None, confirmed=None):
+    return {
+        "engagement": {"id": "eng", "status": status},
+        "summary": {"intents": intents, "intents_done": done, "intents_blocked": blocked,
+                    "findings_total": len(findings) if total is None else total,
+                    "confirmed": sum(f["state"] in {"validated", "reported", "retested_persists"}
+                                     for f in findings) if confirmed is None else confirmed},
+        "findings": list(findings),
+        "degradations": [{"code": c, "detail": "x"} for c in degradations],
+    }
+
+
+def gate(baseline, current):
+    return evaluate(normalize(baseline) if baseline else None, normalize(current))
+
+
+def test_new_verified_high_and_critical_fail():
+    r = gate(doc([LOW, HIGH]), doc([LOW, HIGH, CRITICAL]))
+    assert r["passed"] is False
+    assert [f["title"] for f in r["violations"]] == [CRITICAL["title"]]
+    assert all(c["status"] == "ok" for c in r["coverage"])
+
+
+def test_existing_verified_high_does_not_fail():
+    assert gate(doc([HIGH]), doc([HIGH]))["passed"] is True
+
+
+@pytest.mark.parametrize("finding", [
+    {**CRITICAL, "state": "observed"},
+    {**CRITICAL, "state": "suspected"},
+    {**CRITICAL, "severity": "medium"},
+    {**CRITICAL, "state": "retested_fixed"},
+    {**CRITICAL, "state": "ruled_out"},
+])
+def test_unverified_lower_or_closed_findings_do_not_fail(finding):
+    assert gate(doc([LOW]), doc([LOW, finding]))["passed"] is True
+
+
+def test_newly_verified_finding_fails_even_if_baseline_saw_it_unverified():
+    r = gate(doc([{**CRITICAL, "state": "observed"}]), doc([CRITICAL]))
+    assert [f["title"] for f in r["violations"]] == [CRITICAL["title"]]
+
+
+@pytest.mark.parametrize("overrides,item,status", [
+    ({"status": "failed"}, "engagement-status", "failed"),
+    ({"status": "draft"}, "engagement-status", "unknown"),
+    ({"intents": 0, "done": 0}, "intents", "missing"),
+    ({"blocked": 1}, "intents", "failed"),
+    ({"done": 1}, "intents", "unknown"),
+    ({"degradations": ["tls_unreachable"]}, "degradations", "unknown"),
+    ({"total": 9}, "findings-totals", "unknown"),
+    ({"confirmed": 0}, "findings-totals", "unknown"),
+])
+def test_incomplete_coverage_never_passes(overrides, item, status):
+    r = gate(None, doc([LOW], **overrides))
+    assert r["passed"] is False
+    assert {"name": item, "status": status} in [{"name": c["name"], "status": c["status"]}
+                                                for c in r["coverage"]]
+
+
+def test_missing_baseline_finding_is_coverage_missing_not_fixed():
+    r = gate(doc([LOW]), doc([]))
+    assert r["passed"] is False
+    assert [(c["name"], c["status"]) for c in r["coverage"] if c["status"] != "ok"] == [
+        ("baseline-findings", "missing")]
+
+
+def test_junit_escapes_untrusted_text_and_stays_parseable(tmp_path):
+    nasty = {**CRITICAL, "title": "Bad <tag> & ]]> \x00\x1b end"}
+    r = gate(doc([]), doc([nasty]))
+    out = tmp_path / "gate.xml"
+    write_junit(out, result=r)
+
+    raw = out.read_text(encoding="utf-8")
+    assert "\x00" not in raw and "\x1b" not in raw
+    suite = ET.parse(out).getroot()
+    assert suite.get("tests") == str(len(r["coverage"]) + 1)
+    assert suite.get("failures") == "1" and suite.get("errors") == "0"
+    failure = suite.find(".//testcase[@classname='libella.gate.finding']/failure")
+    assert "Bad <tag> & ]]> " in failure.get("message")
+    assert failure.get("message").endswith("end")
+
+
+@pytest.mark.parametrize("payload", [
+    "{not json",
+    json.dumps({"engagement": {"status": "done"}, "findings": [], "degradations": []}),
+    json.dumps({**doc([]), "findings": [{**CRITICAL, "severity": "severe"}]}),
+])
+def test_malformed_input_is_exit_2_with_error_junit(tmp_path, payload, capsys):
+    cur = tmp_path / "cur.json"
+    cur.write_text(payload)
+    junit = tmp_path / "gate.xml"
+    assert main(["--current", str(cur), "--junit", str(junit)]) == 2
+    assert "input error" in capsys.readouterr().err
+    suite = ET.parse(junit).getroot()
+    assert suite.get("tests") == "1" and suite.get("errors") == "1"
+    assert suite.find("testcase/error") is not None
+
+
+def test_findings_are_exit_1_not_input_error(tmp_path, capsys):
+    base, cur = tmp_path / "base.json", tmp_path / "cur.json"
+    base.write_text(json.dumps(doc([HIGH])))
+    cur.write_text(json.dumps(doc([HIGH, CRITICAL])))
+    junit = tmp_path / "gate.xml"
+    assert main(["--baseline", str(base), "--current", str(cur), "--junit", str(junit)]) == 1
+    err = capsys.readouterr()
+    assert "input error" not in err.err
+    suite = ET.parse(junit).getroot()
+    assert suite.get("failures") == "1" and suite.get("errors") == "0"
+
+
+def _persisted_report(tmp_path, name, findings, status="done", intents=("done", "done")):
+    db = DB(tmp_path / f"{name}.db")
+    ev = EvidenceStore(db, tmp_path / f"{name}-evidence")
+    db.execute(
+        "INSERT INTO engagements(id,name,profile,status,scope_json,auth_json,budgets_json,"
+        "created_at,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (name, name, "safe_active", status, json.dumps({"targets": []}), "{}", "{}",
+         0.0, 0.0, 0.0))
+    for i, intent_status in enumerate(intents):
+        db.execute(
+            "INSERT INTO intents(id,engagement_id,role,objective,status,created_at) "
+            "VALUES(?,?,?,?,?,?)", (f"i_{name}_{i}", name, "web", "check", intent_status, 0.0))
+    for i, f in enumerate(findings):
+        db.execute(
+            "INSERT INTO findings(id,engagement_id,title,cwe,severity,confidence,state,"
+            "endpoint,description,impact,remediation,dedup_key,evidence_ids_json,"
+            "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"f_{name}_{i}", name, f["title"], f["cwe"], f["severity"], "high", f["state"],
+             f["endpoint"], "desc", "impact", "fix", f"k{i}", "[]", 0.0, 0.0))
+    res = render_report(db, ev, name, tmp_path / f"{name}-out")
+    return Path(res["outdir"]) / "report.json"
+
+
+def _run_gate(*args):
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    return subprocess.run([sys.executable, "-m", "libella.gate", *map(str, args)],
+                          cwd=ROOT, env=env, capture_output=True, text=True)
+
+
+def test_end_to_end_persisted_assessment_reports(tmp_path):
+    base = _persisted_report(tmp_path, "gate_base", [LOW, HIGH])
+    clean = _persisted_report(tmp_path, "gate_clean", [LOW, HIGH])
+    dirty = _persisted_report(tmp_path, "gate_dirty", [LOW, HIGH, CRITICAL])
+
+    ok = _run_gate("--baseline", base, "--current", clean, "--junit", tmp_path / "ok.xml")
+    assert ok.returncode == 0, ok.stderr
+    assert "PASS" in ok.stdout and "input error" not in ok.stderr
+    suite = ET.parse(tmp_path / "ok.xml").getroot()
+    assert suite.get("failures") == "0" and suite.get("errors") == "0"
+
+    bad = _run_gate("--baseline", base, "--current", dirty, "--junit", tmp_path / "bad.xml")
+    assert bad.returncode == 1, bad.stderr
+    assert CRITICAL["title"] in bad.stdout
+    suite = ET.parse(tmp_path / "bad.xml").getroot()
+    assert suite.get("failures") == "1" and suite.get("errors") == "0"
+
+
+def test_end_to_end_failed_assessment_fails_even_with_no_findings(tmp_path):
+    cur = _persisted_report(tmp_path, "gate_failed", [], status="failed", intents=("blocked",))
+    proc = _run_gate("--current", cur, "--junit", tmp_path / "failed.xml")
+    assert proc.returncode == 1
+    names = [c.get("name") for c in ET.parse(tmp_path / "failed.xml").getroot()
+             .findall(".//testcase")]
+    assert "engagement-status-failed" in names and "intents-failed" in names
