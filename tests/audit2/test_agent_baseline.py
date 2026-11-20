@@ -11,7 +11,7 @@ import threading
 import time
 
 import pytest
-from flask import Flask, make_response, request
+from flask import Flask, make_response
 
 from libella.agent_runtime import AgentRunner
 from libella.db import DB
