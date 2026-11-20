@@ -10,7 +10,7 @@ import sqlite3
 import urllib.parse
 
 import requests
-from flask import Flask, g, jsonify, redirect, request, session, make_response
+from flask import Flask, jsonify, redirect, request, session, make_response
 from werkzeug.security import generate_password_hash, check_password_hash
 
 MODE = os.environ.get("LAB_MODE", "vuln")

@@ -379,6 +379,8 @@ class Orchestrator:
                 result["api_requests"] = bres.get("api_requests", [])
                 result["browser_pages"] = bres.get("pages", [])
                 result["screenshots"] = bres.get("screenshots", [])
+                if bres.get("degraded"):
+                    result["browser_degradation"] = "; ".join(bres["degraded"])
             else:
                 result["browser_degradation"] = "playwright/chromium not installed; static JS mining only"
         except Exception as e:

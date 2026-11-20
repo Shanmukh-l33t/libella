@@ -51,7 +51,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-RUN pip install --no-cache-dir . semgrep graphene playwright \
+RUN pip install --no-cache-dir . semgrep playwright \
     && playwright install --with-deps chromium \
     && chmod -R a+rX /opt/ms-playwright
 COPY --from=web /web/dist /app/web/dist

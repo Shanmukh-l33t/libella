@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "flask>=3",
-       "graphene>=3", "playwright>=1.40"]  # flask/graphene: labs; playwright: browser crawl
+       "playwright>=1.40"]  # flask: labs; playwright: browser crawl
 
 [project.scripts]
 libella = "libella.main:cli"
