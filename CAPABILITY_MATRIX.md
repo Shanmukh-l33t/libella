@@ -71,7 +71,7 @@ Research: research/analysis-*.md, inventory-*.md, REA_LOG.md (provable REA invoc
   17 findings independently replay-validated, 0 missed, $0.17, 526s, clean
   convergence (web/api/authz completed), 2 hypotheses, evidence chain intact.
 - Deterministic mode: 16/16, 0 FP hardened (baseline).
-- Full suite: 598 passed, 1 skipped (ZAP live), lint clean — counted on branch
+- Full suite: 653 passed, 1 skipped (ZAP live), lint clean — counted on branch
   `data-protection`, version 0.5.0 (not yet tagged). The benchmark gate is not part
   of that suite: PairLab last recorded 16/16 vuln, 0 FP hardened, and was not re-run
   on this branch.

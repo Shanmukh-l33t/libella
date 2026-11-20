@@ -166,7 +166,7 @@ adapter, plugin/MCP extension framework; deep investigation graph + cross-run
 memory + drift; independent verification + retest; PDF/MD/JSON/SARIF reports +
 remediation tracking + historical comparison; premium operational UI (Command
 Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph).
-598 tests, 1 skipped (as of branch `data-protection`, v0.5.0 in development);
+653 tests, 1 skipped (as of branch `defensive-readiness`, v0.5.0 in development);
 the PairLab benchmark gate is 16/16 seeds with 0 false positives and is not
 re-run by that suite. Two independent adversarial audits (35 defects fixed).
 CI/issue-tracker hooks and scheduled retest are planned, not claimed. See
