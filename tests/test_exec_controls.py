@@ -158,6 +158,24 @@ def test_run_loop_stops_when_the_window_has_closed(app, lab):
     assert app.db.one("SELECT status FROM intents WHERE id='i_open'")["status"] == "open"
 
 
+def test_closed_window_never_replays_for_verification(app, lab, monkeypatch):
+    """Once the authorized window has passed, finishing may report but not touch the target."""
+    now = time.time()
+    eid = _eng(app, _spec(lab), window=(now - 7200, now - 60), status="running")
+    app.db.execute(
+        "INSERT INTO findings(id, engagement_id, title, severity, confidence, state, "
+        "evidence_ids_json, created_at, updated_at) VALUES('f_open', ?, 'candidate', 'low', "
+        "'low', 'suspected', '[]', ?, ?)", (eid, now, now))
+    orch = app.orchestrator()
+    calls = []
+    monkeypatch.setattr(orch.verifier, "verify", lambda *a, **k: calls.append(a))
+    eng = _row(app, eid)
+    orch._run_loop(eid, Scope(json.loads(eng["scope_json"])), eng, "deterministic")
+    assert _row(app, eid)["status"] == "window_closed"
+    assert calls == []
+    assert any(d.get("code") == "verification_skipped_window_closed" for d in _degradations(app, eid))
+
+
 # ---- 2. max_concurrency is a real ceiling ----
 
 def test_concurrency_gate_never_exceeds_its_limit():

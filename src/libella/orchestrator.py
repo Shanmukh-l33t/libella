@@ -469,12 +469,18 @@ class Orchestrator:
         if status in ("done", "budget_exhausted", "window_closed"):
             # independent verification + report always run at termination, so findings
             # are validated and reported even if the investigation budget capped early.
+            # A closed window forbids further target traffic: report only, no replays.
             try:
                 eng = self.db.one("SELECT scope_json FROM engagements WHERE id=?", (engagement_id,))
                 scope = Scope(json.loads(eng["scope_json"]))
                 cands = self.db.query(
                     "SELECT id FROM findings WHERE engagement_id=? AND state IN ('suspected','observed')",
                     (engagement_id,))
+                if status == "window_closed" and cands:
+                    self.db.emit(engagement_id, "degradation", {
+                        "code": "verification_skipped_window_closed",
+                        "detail": f"{len(cands)} candidate(s) left unverified: the authorized window closed"})
+                    cands = []
                 for f in cands:
                     try:
                         self.verifier.verify(engagement_id, scope, f["id"])
