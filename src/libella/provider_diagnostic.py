@@ -32,7 +32,8 @@ MESSAGES = {
 }
 
 
-def _base(value: str) -> str:
+def normalize_base(value: str) -> str:
+    """Canonical provider base URL; ValueError unless HTTPS or literal-loopback HTTP."""
     if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 or c in "\\?#" for c in value):
         raise ValueError
     p = urlsplit(value)
@@ -46,6 +47,14 @@ def _base(value: str) -> str:
         raise ValueError from None
 
 
+def same_base(a: str | None, b: str | None) -> bool:
+    a, b = a or DEFAULT_URL, b or DEFAULT_URL
+    try:
+        return normalize_base(a) == normalize_base(b)
+    except ValueError:
+        return a.rstrip("/") == b.rstrip("/")
+
+
 def diagnostic_result(status: str, started: float | None = None) -> dict:
     return {"status": status, "message": MESSAGES[status],
             "latency_ms": round((time.monotonic() - started) * 1000) if started is not None else None}
@@ -53,26 +62,23 @@ def diagnostic_result(status: str, started: float | None = None) -> dict:
 
 async def test_connection(saved: dict, draft: dict) -> dict:
     try:
-        base = _base(draft.get("base_url", saved.get("base_url")) or DEFAULT_URL)
+        base = normalize_base(draft.get("base_url", saved.get("base_url")) or DEFAULT_URL)
     except ValueError:
         return diagnostic_result("invalid_url")
     allowed = {DEFAULT_URL}
     for value in os.environ.get("LIBELLA_PROVIDER_TEST_URLS", "").split(","):
         if value.strip():
             try:
-                allowed.add(_base(value.strip()))
+                allowed.add(normalize_base(value.strip()))
             except ValueError:
                 continue
     if base not in allowed:
         return diagnostic_result("endpoint_not_allowed")
 
     key = draft.get("api_key") or ""
-    if not key:
-        try:
-            if base == _base(saved.get("base_url") or DEFAULT_URL):
-                key = saved.get("api_key") or ""
-        except ValueError:
-            pass
+    key = key.strip()
+    if not key and same_base(base, saved.get("base_url")):
+        key = saved.get("api_key") or ""
     if base == DEFAULT_URL and not key:
         return diagnostic_result("key_required")
     if not isinstance(key, str) or not key.isascii() or any(ord(c) < 33 or ord(c) > 126 for c in key):
@@ -108,11 +114,12 @@ async def _complete(base: str, key: str, model: str) -> str:
             if status >= 500:
                 return "provider_unavailable"
             raw = bytearray()
-            if response.headers.get("content-encoding", "identity").lower() == "identity":
-                async for chunk in response.aiter_raw():
-                    if len(raw) + len(chunk) > MAX_REPLY:
-                        return "response_too_large"
-                    raw.extend(chunk)
+            # shortcut: cap applies to decoded bytes, so one compressed chunk can briefly
+            # expand in memory; acceptable for admin-allowlisted endpoints only.
+            async for chunk in response.aiter_bytes():
+                if len(raw) + len(chunk) > MAX_REPLY:
+                    return "response_too_large"
+                raw.extend(chunk)
     try:
         payload = json.loads(raw)
     except (ValueError, RecursionError):

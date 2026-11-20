@@ -88,6 +88,10 @@ def main(out: Path):
                 page.get_by_role("button", name="Save provider settings").click()
                 expect(page.get_by_text("Leave blank to use the saved key.")).to_be_visible()
                 assert page.get_by_label("API key").input_value() == ""
+                assert app.llm_settings()["api_key"] == "local-fixture-secret"  # saved server-side
+                masked = page.evaluate("""async (t) => (await fetch('/api/settings',
+                    {headers: {Authorization: 'Bearer ' + t}})).text()""", app.token)
+                assert '"api_key":"[SET]"' in masked and "local-fixture-secret" not in masked
                 expect(page.get_by_text("Settings saved.", exact=True)).to_have_count(0, timeout=8000)
                 page.set_viewport_size({"width": 390, "height": 844})
                 page.screenshot(path=out / "provider-mobile.png")

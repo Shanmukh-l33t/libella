@@ -110,7 +110,9 @@ export default function Settings() {
               </div>
               <div role="status" aria-live="polite">
                 {result && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink-700">
-                  <Badge tone={result.status === "connected" ? "success" : "danger"}>{result.status === "connected" ? "Connected" : "Not verified"}</Badge>
+                  <Badge tone={result.status === "connected" ? "success" : result.status === "busy" ? "info" : "danger"}>
+                    {result.status === "connected" ? "Connected" : result.status === "busy" ? "Busy" : "Not verified"}
+                  </Badge>
                   <span>{result.message}{result.latency_ms !== null ? ` (${result.latency_ms} ms)` : ""}</span>
                 </div>}
               </div>

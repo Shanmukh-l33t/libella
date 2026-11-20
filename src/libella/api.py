@@ -22,7 +22,7 @@ from .llm import LLM
 from .orchestrator import Orchestrator
 from . import __version__, mcp_client  # plugin/MCP extension framework
 from .plugins import PluginHost
-from .provider_diagnostic import DEFAULT_URL, diagnostic_result, test_connection
+from .provider_diagnostic import normalize_base, diagnostic_result, same_base, test_connection
 from .report import render_report
 from .scope import Scope
 from .secrets import SecretBox, is_encrypted
@@ -534,12 +534,18 @@ def create_api(app: App) -> FastAPI:
             new = body["llm"]
             if not isinstance(new, dict) or ("base_url" in new and not isinstance(new["base_url"], str)):
                 raise HTTPException(400, "Invalid provider settings.")
+            if isinstance(new.get("api_key"), str):
+                new["api_key"] = new["api_key"].strip()
             if new.get("api_key") in ("[SET]", "", None):
                 new.pop("api_key", None)
             if "base_url" in new:
-                old_base = (cfg.get("base_url") or DEFAULT_URL).rstrip("/")
-                new_base = (new["base_url"] or DEFAULT_URL).rstrip("/")
-                if old_base != new_base:
+                if new["base_url"].strip():
+                    try:
+                        new["base_url"] = normalize_base(new["base_url"].strip())
+                    except ValueError:
+                        raise HTTPException(400, "Use an HTTPS base URL without credentials, a query, "
+                                                 "or a fragment. Plain HTTP is allowed only for a loopback IP.") from None
+                if not same_base(cfg.get("base_url"), new["base_url"]):
                     cfg.pop("api_key", None)
             cfg.update(new)
             app.db.execute("INSERT INTO settings(key, value_json) VALUES('llm_config', ?) "
@@ -547,6 +553,7 @@ def create_api(app: App) -> FastAPI:
                            (app.box.encrypt(json.dumps(cfg)),))
         return {"ok": True}
 
+    # shortcut: per-process lock, so "busy" only holds with a single uvicorn worker (as tickets above).
     provider_test_lock = threading.Lock()
 
     @api.post("/api/settings/provider-test", dependencies=[Depends(auth)])
