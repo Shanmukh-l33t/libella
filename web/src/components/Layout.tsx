@@ -21,6 +21,7 @@ export default function Layout() {
           <nav className="no-scrollbar flex items-center gap-1 overflow-x-auto">
             {[
               { to: "/", label: "Command center", end: true },
+              { to: "/setup", label: "Setup" },
               { to: "/engagements", label: "Engagements" },
               { to: "/validation", label: "Validation" },
               { to: "/tools", label: "Tools" },

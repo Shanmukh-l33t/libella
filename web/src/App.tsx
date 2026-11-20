@@ -14,6 +14,7 @@ import Models from "./pages/Models";
 import Compare from "./pages/Compare";
 import Coverage from "./pages/Coverage";
 import Settings from "./pages/Settings";
+import Setup from "./pages/Setup";
 import { getToken } from "./api";
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<CommandCenter />} />
           <Route path="/engagements" element={<Engagements />} />
+          <Route path="/setup" element={<Setup />} />
           <Route path="/engagements/new" element={<NewEngagement />} />
           <Route path="/engagements/:id" element={<Engagement />} />
           <Route path="/findings/:id" element={<Finding />} />
