@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import __version__
+from . import coverage
 from .db import DB
 from .evidence import EvidenceStore
 
@@ -170,6 +171,18 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
                         "cost_usd": r["cost_usd"]} for r in agent_runs],
         "generated_at": time.time(),
     }
+    # Methodology coverage is part of the report, not an appendix: an untested
+    # category must never read as clean.
+    cov = coverage.workspace(db, engagement_id)
+    report["coverage"] = {
+        "framework": cov["framework"], "summary": cov["summary"],
+        "categories": [{"id": c["id"], "name": c["name"], "tests": len(c["tests"]),
+                        "counts": c["counts"]} for c in cov["categories"]],
+        "not_tested": [{"id": t["id"], "title": t["title"], "status": t["status"]}
+                       for c in cov["categories"] for t in c["tests"]
+                       if t["automatic"]["status"] not in coverage.COMPLETED
+                       and t["status"] != "covered"],
+    }
     for f in findings:
         vs = [v for v in verifications if v["finding_id"] == f["id"]]
         report["findings"].append({
@@ -214,6 +227,33 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
                       f"{r['iterations']} iterations, exit `{_md(r['exit_reason'])}`")
     if eng["status"] not in ("done",):
         md.append(f"\n> Assessment ended with status `{eng['status']}`. Results may be incomplete.\n")
+    c = report["coverage"]
+    cs = c["summary"]
+    md.append("\n## WSTG 4.2 coverage\n")
+    md.append("Derived from what this engagement executed, not from what was planned. "
+              "A test that is not tested is not a pass.\n")
+    md.append(f"- Applicable: {cs['applicable']} of {cs['total']} ({_md(c['framework']['version'])}) | "
+              f"supported by a Libella check: {cs['supported']} | attempted: {cs['attempted']} | "
+              f"completed: {cs['completed']} | with findings: {cs['with_findings']}")
+    md.append(f"- Skipped by profile or dependency: {cs['skipped']} | manual review required: "
+              f"{cs['manual_required']} | not tested: {cs['not_tested']}\n")
+    md.append("| Category | tests | completed | findings | skipped | manual | untested |")
+    md.append("|---|---|---|---|---|---|---|")
+    for cat in c["categories"]:
+        k = cat["counts"]
+        done = k["completed_no_issue"] + k["finding_unverified"] + k["finding_verified"]
+        md.append(f"| {_md(cat['id'])} {_md(cat['name'])} | {cat['tests']} | {done} | "
+                  f"{k['finding_unverified'] + k['finding_verified']} | "
+                  f"{k['skipped_policy'] + k['skipped_dependency']} | "
+                  f"{k['requires_manual']} | {cat['tests'] - done} |")
+    untested = {}
+    for t in c["not_tested"]:
+        untested.setdefault(t["id"].rsplit("-", 1)[0], []).append(t["id"])
+    if untested:
+        md.append("\n### Not tested\n")
+        for prefix in sorted(untested):
+            md.append(f"- {prefix} ({len(untested[prefix])}): {', '.join(untested[prefix])}")
+    md.append("")
     md.append("\n## Findings\n")
     if not findings:
         md.append("No findings recorded. Check coverage limitations above before interpreting this as secure.\n")

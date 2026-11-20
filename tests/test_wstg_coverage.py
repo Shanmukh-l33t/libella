@@ -1,8 +1,9 @@
-"""OWASP WSTG 4.2 coverage workspace: catalog-derived, evidence-honest, passive.
+"""OWASP WSTG 4.2 coverage workspace: manual review ledger over the auto ledger.
 
-Coverage is a review ledger, not a scanner: every catalog test starts unknown and
-only becomes covered with evidence that belongs to the same engagement. These
-tests also assert the workspace never queues intents or tool calls.
+Every catalog test always carries an automatic status derived from execution;
+an operator may record a review on top. The manual record needs evidence or a
+reason, and neither side may overwrite the other. These tests also assert the
+workspace never queues intents or tool calls.
 """
 import json
 import sys
@@ -61,28 +62,35 @@ def test_catalog_is_the_wstg_4_2_test_list():
     assert by_id["WSTG-CLNT-13"] == "Testing for Cross Site Script Inclusion"
 
 
-def test_workspace_starts_with_every_test_unknown(client):
+def test_workspace_starts_with_no_review_and_an_honest_automatic_status(client):
     w = client.get("/api/engagements/eng_cov/coverage/wstg").json()
     assert w["framework"]["version"] == "4.2"
     assert w["engagement_id"] == "eng_cov"
-    assert w["summary"] == {"total": 96, "covered": 0, "manual": 0, "unsupported": 0,
-                            "unknown": 96}
+    s = w["summary"]
+    assert s["total"] == 96 and sum(s["statuses"].values()) == 96
+    assert s["manual"] == {"covered": 0, "manual": 0, "unsupported": 0}
     assert [c["id"] for c in w["categories"]] == [f"WSTG-{c}" for c in CATEGORIES]
-    assert {t["status"] for c in w["categories"] for t in c["tests"]} == {"unknown"}
+    # a run that has not executed anything claims no test as completed
+    assert s["completed"] == 0 and s["not_tested"] == s["applicable"]
+    assert {t["status"] for c in w["categories"] for t in c["tests"]} <= {
+        "requires_manual", "not_supported", "inconclusive"}
+    assert s["statuses"]["inconclusive"] == s["supported"]
     assert w["categories"][0]["name"] == "Information Gathering"
 
 
 def test_manual_review_requires_a_note(client):
-    r = _put(client, "WSTG-INFO-05", status="manual")
+    r = _put(client, "WSTG-INFO-01", status="manual")
     assert r.status_code == 400 and "note" in r.json()["detail"]
-    r = _put(client, "WSTG-INFO-05", status="manual",
+    r = _put(client, "WSTG-INFO-01", status="manual",
              note="Read cached headers by hand; no cache-control on authenticated pages.")
     assert r.status_code == 200
     w = r.json()
-    assert w["summary"]["manual"] == 1 and w["summary"]["unknown"] == 95
-    item = _item(w, "WSTG-INFO-05")
-    assert item["status"] == "manual" and item["note"].startswith("Read cached headers")
-    assert item["updated_at"]
+    assert w["summary"]["manual"]["manual"] == 1
+    item = _item(w, "WSTG-INFO-01")
+    assert item["status"] == "manual" and item["manual"]["note"].startswith("Read cached headers")
+    assert item["manual"]["updated_at"]
+    # the automatic derivation stays visible next to the review
+    assert item["automatic"]["status"] == "requires_manual"
 
 
 def test_unsupported_must_state_why(client):
@@ -91,7 +99,7 @@ def test_unsupported_must_state_why(client):
              note="No mail submission surface in scope.")
     assert r.status_code == 200
     assert _item(r.json(), "WSTG-INPV-10")["status"] == "unsupported"
-    assert r.json()["summary"]["unsupported"] == 1
+    assert r.json()["summary"]["manual"]["unsupported"] == 1
 
 
 def test_covered_requires_evidence_from_this_engagement(app, client):
@@ -107,17 +115,21 @@ def test_covered_requires_evidence_from_this_engagement(app, client):
     r = _put(client, "WSTG-ATHN-01", status="covered", evidence_id=own["id"])
     assert r.status_code == 200
     item = _item(r.json(), "WSTG-ATHN-01")
-    assert item["status"] == "covered" and item["evidence_id"] == own["id"]
-    assert r.json()["summary"]["covered"] == 1
+    assert item["status"] == "covered" and item["manual"]["evidence_id"] == own["id"]
+    assert r.json()["summary"]["manual"]["covered"] == 1
+    # a manual "covered" counts as a completed test in the denominators
+    assert r.json()["summary"]["completed"] >= 1
 
 
-def test_unknown_status_clears_the_entry(client):
+def test_unknown_status_clears_the_review_only(client):
     _put(client, "WSTG-CONF-06", status="manual", note="Checked OPTIONS by hand.")
     r = _put(client, "WSTG-CONF-06", status="unknown")
     assert r.status_code == 200
     item = _item(r.json(), "WSTG-CONF-06")
-    assert item["status"] == "unknown" and not item["note"] and not item["evidence_id"]
-    assert r.json()["summary"]["unknown"] == 96
+    assert item["manual"] is None
+    assert not item["status"] == "manual"
+    assert item["automatic"]["status"] == "requires_manual"
+    assert r.json()["summary"]["manual"]["manual"] == 0
 
 
 def test_unknown_test_or_engagement_is_rejected(client):
