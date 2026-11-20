@@ -87,7 +87,9 @@ Intent statuses: open, running, done, blocked, exhausted, stopped.
      MD/SARIF (open /report?format=...&token=...); "Regenerate" calls GET.
 4. Finding detail (/findings/:id): full metadata, description/impact/
    remediation, state badge + transition actions (rule out with reason),
-   Verify button (POST verify, show verdict), Retest button. Evidence
+   Verify button (POST verify, show verdict), Retest button. A Remediation card
+   persists owner, due date and remediation status (independent of verification)
+   and shows the finding's activity history. Evidence
    viewer: list bound exchanges; each shows method/url/status/duration and
    expandable request/response (monospace, redacted content from API).
    Verification history table (attempt, verdict, detail). Evidence chain

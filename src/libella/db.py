@@ -155,7 +155,8 @@ class DB:
         """Add columns to pre-existing tables (idempotent)."""
         additions = {
             "findings": [("remediation_notes", "TEXT"), ("owner", "TEXT"),
-                         ("fix_commit", "TEXT"), ("remediated_at", "REAL")],
+                         ("fix_commit", "TEXT"), ("remediated_at", "REAL"),
+                         ("due_at", "TEXT"), ("remediation_state", "TEXT DEFAULT 'open'")],
             "exchanges": [("replay_of", "TEXT"), ("tags_json", "TEXT DEFAULT '[]'")],
         }
         for table, cols in additions.items():

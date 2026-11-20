@@ -420,11 +420,21 @@ def create_api(app: App) -> FastAPI:
         from .remediation import set_remediation
         try:
             return set_remediation(app.db, fid, notes=body.get("notes"), owner=body.get("owner"),
-                                   fix_commit=body.get("fix_commit"), state=body.get("state"))
+                                   fix_commit=body.get("fix_commit"), due_at=body.get("due_at"),
+                                   remediation_state=body.get("remediation_state"),
+                                   state=body.get("state"))
         except KeyError:
             raise HTTPException(404, "finding not found")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+
+    @api.get("/api/findings/{fid}/activity", dependencies=[Depends(auth)])
+    def finding_activity_route(fid: str, limit: int = 50):
+        from .remediation import finding_activity
+        try:
+            return finding_activity(app.db, fid, limit)
+        except KeyError:
+            raise HTTPException(404, "finding not found")
 
     @api.get("/api/engagements/{eid}/remediation-board", dependencies=[Depends(auth)])
     def remediation_board_route(eid: str):

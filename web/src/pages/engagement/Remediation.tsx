@@ -27,7 +27,7 @@ export default function Remediation({ eid, live }: { eid: string; live: number }
         <div>
           <h2 className="text-sm font-semibold text-ink-900">Remediation board</h2>
           <p className="mt-0.5 text-xs text-ink-500">
-            Status is derived from finding state and ownership. A retest decides fixed vs regressed — never a note.
+            Status comes from the persisted remediation state; a retest decides fixed vs regressed — never a note.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -73,7 +73,9 @@ export default function Remediation({ eid, live }: { eid: string; live: number }
                         <div className="mt-1 line-clamp-2 text-xs font-medium leading-snug text-ink-900">{f.title}</div>
                         <div className="mt-1 flex items-center justify-between gap-2 text-2xs text-ink-500">
                           <span className="truncate">{f.owner || "unassigned"}</span>
-                          {f.fix_commit && <span className="shrink-0 font-mono">{f.fix_commit.slice(0, 8)}</span>}
+                          <span className={cx("shrink-0", f.due_at && "tabular-nums")}>
+                            {f.due_at ? `due ${f.due_at}` : f.fix_commit ? <span className="font-mono">{f.fix_commit.slice(0, 8)}</span> : null}
+                          </span>
                         </div>
                       </button>
                     ))}
@@ -101,19 +103,23 @@ function dot(status: string) {
 function RemediationPanel({ finding, onClose, onSaved }: { finding: Finding; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
   const [owner, setOwner] = useState(finding.owner || "");
+  const [due, setDue] = useState(finding.due_at || "");
+  const [rmState, setRmState] = useState(finding.remediation_state || "open");
   const [notes, setNotes] = useState(finding.remediation_notes || "");
   const [commit, setCommit] = useState(finding.fix_commit || "");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const save = async (state?: string) => {
-    setBusy(state || "save");
+  const save = async (nextState?: string) => {
+    setBusy(nextState || "save");
     setError(null);
     try {
-      await post(`/api/findings/${finding.id}/remediation`, { owner, notes, fix_commit: commit, ...(state ? { state } : {}) });
-      toast(state === "remediated" ? "Marked remediated — retest to confirm." : "Remediation saved.", "success");
+      await post(`/api/findings/${finding.id}/remediation`, {
+        owner, notes, fix_commit: commit, due_at: due, remediation_state: nextState || rmState,
+      });
+      toast(nextState === "resolved" ? "Marked resolved — retest to confirm." : "Remediation saved.", "success");
       onSaved();
-      if (state) onClose();
+      if (nextState) onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -141,7 +147,7 @@ function RemediationPanel({ finding, onClose, onSaved }: { finding: Finding; onC
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={severityTone(finding.severity)}>{finding.severity}</Badge>
-            <Badge tone={remediationTone(finding.state === "remediated" ? "remediated" : finding.state === "retested_fixed" ? "fixed" : finding.state === "retested_persists" ? "regressed" : "open")}>{title(finding.state)}</Badge>
+            <Badge tone={remediationTone(rmState)}>{title(rmState)}</Badge>
             {finding.owner && <Badge tone="accent">{finding.owner}</Badge>}
           </div>
           <h3 className="mt-1 break-words text-sm font-medium text-ink-900">{finding.title}</h3>
@@ -153,18 +159,28 @@ function RemediationPanel({ finding, onClose, onSaved }: { finding: Finding; onC
       <div className="grid gap-4 p-4 lg:grid-cols-2">
         <div className="space-y-3">
           <Field label="Owner" htmlFor="rm-owner" hint="Who is fixing it.">
-            <Input id="rm-owner" value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="team or person" />
+            <Input id="rm-owner" value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="team or person" maxLength={120} />
           </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Remediation status" htmlFor="rm-state" hint="Owner's workflow; verification is separate.">
+              <Select id="rm-state" value={rmState} onChange={(e) => setRmState(e.target.value)}>
+                {["open", "in_progress", "resolved"].map((s) => <option key={s} value={s}>{title(s)}</option>)}
+              </Select>
+            </Field>
+            <Field label="Due date" htmlFor="rm-due" hint="YYYY-MM-DD">
+              <Input id="rm-due" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+            </Field>
+          </div>
           <Field label="Fix commit" htmlFor="rm-commit" hint="Commit or change reference; not verified by the engine.">
-            <Input id="rm-commit" value={commit} onChange={(e) => setCommit(e.target.value)} placeholder="abc1234" className="font-mono text-xs" />
+            <Input id="rm-commit" value={commit} onChange={(e) => setCommit(e.target.value)} placeholder="abc1234" className="font-mono text-xs" maxLength={200} />
           </Field>
           <Field label="Remediation notes" htmlFor="rm-notes">
-            <Textarea id="rm-notes" rows={5} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="what changed and why it removes the root cause" />
+            <Textarea id="rm-notes" rows={5} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="what changed and why it removes the root cause" maxLength={4000} />
           </Field>
           <ErrorNote error={error} />
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" size="sm" loading={busy === "save"} onClick={() => save()}>Save</Button>
-            <Button size="sm" loading={busy === "remediated"} onClick={() => save("remediated")}>Mark remediated</Button>
+            <Button size="sm" loading={busy === "resolved"} onClick={() => save("resolved")}>Mark resolved</Button>
             <Button size="sm" icon={<RotateCcw size={13} />} loading={busy === "retest"} onClick={retest} title="Re-run the check and record a retest verdict">Trigger retest</Button>
             <Link to={`/findings/${finding.id}`} className="link self-center text-xs">Open finding</Link>
           </div>
@@ -174,14 +190,16 @@ function RemediationPanel({ finding, onClose, onSaved }: { finding: Finding; onC
           <dl className="grid grid-cols-2 gap-3">
             <div><dt className="text-ink-500">State</dt><dd className="text-ink-900">{title(finding.state)}</dd></div>
             <div><dt className="text-ink-500">Updated</dt><dd className="text-ink-900">{fmtTime(finding.updated_at)}</dd></div>
+            <div><dt className="text-ink-500">Due</dt><dd className="text-ink-900">{finding.due_at || "—"}</dd></div>
             <div><dt className="text-ink-500">Remediated</dt><dd className="text-ink-900">{fmtTime(finding.remediated_at)}</dd></div>
             <div><dt className="text-ink-500">Evidence</dt><dd className="text-ink-900">{finding.evidence_ids?.length || 0} artifacts</dd></div>
           </dl>
           <div>
             <div className="text-ink-500">Lifecycle</div>
             <p className="mt-0.5 leading-relaxed text-ink-700">
-              Suspected → observed → validated is evidence-gated. Remediated means the owner reported a fix; only a retest moves it to
-              fixed (check no longer reproduces) or regressed (still reproduces).
+              Suspect → observed → validated is evidence-gated. Remediation status (open / in progress / resolved) is the owner's
+              workflow and needs no verification; a retest alone moves the finding to fixed (check no longer reproduces) or
+              regressed (still reproduces).
             </p>
           </div>
           {finding.remediation && (
