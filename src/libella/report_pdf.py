@@ -83,7 +83,8 @@ def _risk_table(findings, st):
         data.append([_p(sev.upper(), ParagraphStyle("sv", parent=st["cell"],
                                                     textColor=SEV_COLOR[sev])),
                      _p(n, st["cell"]), _p(f"{100 * n / total:.0f}%", st["cell"])])
-    data.append([_p("<b>Total</b>", st["cell"]), _p(f"<b>{len(findings)}</b>", st["cell"]),
+    # constant markup, not report content: build the Paragraph directly so _p does not escape it
+    data.append([Paragraph("<b>Total</b>", st["cell"]), Paragraph(f"<b>{len(findings)}</b>", st["cell"]),
                  _p("100%" if findings else "0%", st["cell"])])
     t = Table(data, colWidths=[50 * mm, 40 * mm, 40 * mm])
     t.setStyle(TableStyle([

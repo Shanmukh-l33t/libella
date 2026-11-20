@@ -241,7 +241,7 @@ export default function TargetCredentials({ eid, eng }: { eid: string; eng: Enga
                         {result.location_host ? <span className="font-mono text-ink-500">→ {result.location_host}</span> : null}
                       </div>
                       <p className="mt-1 text-ink-700">{result.message}</p>
-                      {result.classification !== "accepted" && (
+                      {result.classification === "responded_success" && (
                         <p className="mt-1 text-ink-500">A 200 response alone is not proof of authorization.</p>
                       )}
                     </div>
