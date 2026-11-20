@@ -33,7 +33,8 @@ data font, clear section headers. Dark mode optional (skip if time-boxed).
 
 ## API contract (backend at same origin; dev proxy to 127.0.0.1:8787)
 
-- GET /api/health (no auth) -> {status, version, tools:[{name,available,...}]}
+- GET /api/health (no auth) -> {status, version} (liveness only, no inventory)
+- GET /api/tools (auth) -> [{name, description, category, available, parameters, ...}]
 - POST /api/engagements {name, scope:{targets:[{kind:url|domain|cidr|ip,value,include_subdomains?}], exclusions:[...], allowed_ports?, categories:[recon,web,api,infra], rate_limit_rps, max_concurrency, advanced_validation?}, profile, auth:{identities:[{username,password,login_url,username_field,password_field}], test_hints?}, budgets:{max_duration_s,max_usd}, objectives?} -> {id}
 - GET /api/engagements -> list (scope, budgets, auth sanitized, summary finding count)
 - GET /api/engagements/{id} -> detail + spend

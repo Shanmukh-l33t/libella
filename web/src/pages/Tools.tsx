@@ -7,7 +7,8 @@ import { fmtDuration, fmtTime } from "../lib/format";
 import { Badge, Card, CodeBlock, EmptyState, ErrorNote, JsonViewer, Select, Table, TableSkeleton } from "../components/ui";
 
 export default function Tools() {
-  const registry = useApi<{ version: string; tools: ToolInfo[] }>("/api/health");
+  const registry = useApi<ToolInfo[]>("/api/tools");
+  const info = useApi<{ version: string }>("/api/health");
   const engagements = useApi<Engagement[]>("/api/engagements");
   const [eid, setEid] = useState("");
   const selected = eid || engagements.data?.[0]?.id || "";
@@ -15,7 +16,7 @@ export default function Tools() {
   const [spec, setSpec] = useState<ToolInfo | null>(null);
   const [open, setOpen] = useState<string | null>(null);
 
-  const tools = registry.data?.tools || [];
+  const tools = registry.data || [];
   const available = tools.filter((t) => t.available).length;
   const failed = (calls.data || []).filter((c) => c.error || (c.exit_code && c.exit_code !== 0));
 
@@ -25,7 +26,7 @@ export default function Tools() {
         <h1 className="text-xl font-semibold tracking-tight text-ink-900">Tool center</h1>
         <p className="mt-1 text-sm text-ink-500">
           {registry.loading ? "Loading…" : `${available} of ${tools.length} tools available`} · every invocation is scope-checked and audited
-          {registry.data?.version ? ` · backend ${registry.data.version}` : ""}
+          {info.data?.version ? ` · backend ${info.data.version}` : ""}
         </p>
       </div>
 

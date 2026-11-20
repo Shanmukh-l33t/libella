@@ -34,6 +34,18 @@ def test_health_is_public_and_others_are_not(client, app):
     assert client.get("/api/tools", headers={"Authorization": f"Bearer {app.token}"}).status_code == 200
 
 
+def test_health_leaks_no_inventory_and_probes_nothing(client, monkeypatch):
+    from libella import __version__
+
+    def boom(name):
+        raise AssertionError(f"anonymous health probed tool binary {name!r}")
+
+    monkeypatch.setattr("libella.tools.resolve_binary", boom)
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "version": __version__}
+
+
 def test_token_of_wrong_length_is_rejected_cleanly(client, app):
     r = client.get("/api/tools", headers={"Authorization": "Bearer " + "x" * 5000})
     assert r.status_code == 401

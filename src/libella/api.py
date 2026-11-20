@@ -18,7 +18,7 @@ from .evidence import EvidenceStore
 from .findings import FindingPipeline
 from .llm import LLM
 from .orchestrator import Orchestrator
-from . import mcp_client  # plugin/MCP extension framework
+from . import __version__, mcp_client  # plugin/MCP extension framework
 from .plugins import PluginHost
 from .report import render_report
 from .scope import Scope
@@ -100,7 +100,7 @@ class App:
 
 
 def create_api(app: App) -> FastAPI:
-    api = FastAPI(title="Libella", version="0.1.0")
+    api = FastAPI(title="Libella", version=__version__)
     api.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
                        allow_methods=["*"], allow_headers=["*"])
 
@@ -129,9 +129,10 @@ def create_api(app: App) -> FastAPI:
         tickets[t] = now + 60
         return {"ticket": t, "expires_in": 60}
 
+    # Public liveness probe: no tool probing, no inventory (see docs/healthcheck.md).
     @api.get("/api/health")
     def health():
-        return {"status": "ok", "version": "0.1.0", "tools": app.registry.available()}
+        return {"status": "ok", "version": __version__}
 
     @api.post("/api/engagements", dependencies=[Depends(auth)])
     def create_engagement(body: dict):
