@@ -82,7 +82,7 @@ def _probe(binary: str) -> dict:
                 result = {"status": "broken", "version": None,
                           "detail": "The command returned no recognizable version."}
             else:
-                result = {"status": "broken", "version": None,
+                result = {"status": "broken", "version": version,
                           "detail": f"Version command exited with code {code}."}
     _CACHE[binary] = (time.monotonic(), result)
     return dict(result)

@@ -1,0 +1,21 @@
+id: libella-readiness-fixture
+
+info:
+  name: Libella readiness fixture
+  author: libella
+  severity: info
+  description: Matches the loopback page the readiness probe serves.
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: body
+        words:
+          - "libella-readiness-fixture"

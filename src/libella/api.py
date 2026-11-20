@@ -588,6 +588,9 @@ def create_api(app: App) -> FastAPI:
     def tools():
         return app.registry.available()
 
+    from .routes_tools import register as register_tool_routes
+    register_tool_routes(api, app, auth)
+
     @api.post("/api/tools/{name}/version-check", dependencies=[Depends(auth)])
     def tool_version_check(name: str):
         from .tools.diagnostics import diagnose
