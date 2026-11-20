@@ -15,6 +15,14 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: pip install -e ".[dev]"
+      - name: Install scanner toolchain (code/supply-chain tests)
+        run: |
+          pip install semgrep
+          curl -fsSL -o /tmp/trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz
+          tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy
+          curl -fsSL -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks
+          chmod +x /usr/local/bin/trivy /usr/local/bin/gitleaks
       - name: Lint
         run: ruff check src/ tests/ benchmarks/
       - name: Unit tests

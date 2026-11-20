@@ -122,14 +122,16 @@ def _exec(spec, params, ctx, db, evidence, engagement_id, intent_id) -> dict:
         if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
             raise ValueError("adapter must return a non-empty list[str] argv")
     except ValueError as e:
-        _audit(db, call_id, engagement_id, intent_id, spec.name, [], "refused: " + str(e),
+        _audit(db, call_id, engagement_id, intent_id, spec.name, [],
+               f"file://{params.get('repo', '?')}", "refused: " + str(e),
                None, started, None, str(e))
         return {"ok": False, "error": f"invalid_params: {e}", "call_id": call_id}
 
     binary = _binary(argv[0])
     if binary is None:
         err = f"tool binary '{argv[0]}' not installed"
-        _audit(db, call_id, engagement_id, intent_id, spec.name, [], "refused: missing binary",
+        _audit(db, call_id, engagement_id, intent_id, spec.name, [],
+               f"file://{params.get('repo', '?')}", "refused: missing binary",
                None, started, None, err)
         return {"ok": False, "error": f"missing_tool: {err}", "call_id": call_id,
                 "degradation": "missing_tool"}

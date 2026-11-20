@@ -11,6 +11,14 @@ from pathlib import Path
 
 from libella.codeaudit import CATALOG, assess_repo
 
+# Scanner-dependent suite: skip where the binaries are absent (dev machines).
+# CI installs them; test_missing_tools.py covers the absent-tool paths.
+from libella.codeaudit import _binary  # noqa: E402
+
+pytestmark = pytest.mark.skipif(
+    not all(_binary(b) for b in ("semgrep", "trivy", "gitleaks")),
+    reason="semgrep/trivy/gitleaks required for scanner integration tests")
+
 GT = json.loads((Path(__file__).resolve().parents[2]
                  / "labs/vulnrepo/ground_truth.json").read_text())
 SEEDS = GT["findings"]
