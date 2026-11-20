@@ -71,8 +71,8 @@ Research: research/analysis-*.md, inventory-*.md, REA_LOG.md (provable REA invoc
   17 findings independently replay-validated, 0 missed, $0.17, 526s, clean
   convergence (web/api/authz completed), 2 hypotheses, evidence chain intact.
 - Deterministic mode: 16/16, 0 FP hardened (baseline).
-- Full suite: 446 passed, 1 skipped (ZAP live). Lint clean.
-- Independent audit2: 11 defects fixed (4 high), 29 regression tests.
+- Full suite: 448 passed, 1 skipped (ZAP live). Lint clean.
+- Independent audit2: 13 defects fixed (4 high, 7 medium, 2 low), 31 regression tests.
 - End-to-end acceptance test passes through the real API (lifecycle + traffic
   replay + graph + memory + PDF + remediation + chain).
 - Provable REA (9+ invocations, evidence IDs) + reference execution (ARTEX,

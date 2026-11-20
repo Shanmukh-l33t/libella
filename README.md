@@ -162,7 +162,7 @@ adapter, plugin/MCP extension framework; deep investigation graph + cross-run
 memory + drift; independent verification + retest; PDF/MD/JSON/SARIF reports +
 remediation tracking + historical comparison; premium operational UI (Command
 Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph).
-446 tests; two independent adversarial audits (33 defects fixed). CI/issue-tracker
+448 tests; two independent adversarial audits (35 defects fixed). CI/issue-tracker
 hooks and scheduled retest are planned, not claimed. See CAPABILITY_MATRIX.md.
 
 ## License
