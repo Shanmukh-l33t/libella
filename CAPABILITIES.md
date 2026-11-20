@@ -93,6 +93,8 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | Secret redaction in reports/evidence | TESTED | audit secrets tests |
 | Captured session credentials sealed at rest | TESTED | exchanges request/response header columns are Fernet ciphertext; evidence blobs keep redacted headers; replay reads the sealed column. tests/traffic/test_credential_capture.py |
 | SARIF / JSON / Markdown reports | TESTED | deterministic rendering; files replaced atomically, one artifact row per unchanged state (tests/report/test_report_atomic.py) |
+| PDF / HTML / DOCX / XLSX / CSV exports | TESTED | report_formats.py + report_pdf.py; redaction inherited, CSV formula guard; every format downloaded and validated through the built UI (benchmarks/check_report_exports.py, tests/report/test_report_formats.py) |
+| Target API credential diagnostic | TESTED | scoped, bounded, honest auth classification (200 alone is not "authorized"); credential never returned; wizard UI (tests/test_target_credentials.py, benchmarks/check_credential_ui.py) |
 
 ## Platform / UX
 

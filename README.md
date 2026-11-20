@@ -135,7 +135,7 @@ evidence store + static React UI. Supervisor planner emits leased worker
 intents (fencing tokens, expiry sweep, bounded retries). Workers execute
 typed tool adapters and deterministic checks. An independent verifier
 replays proof requests. Reports render deterministically from typed state
-(Markdown, JSON, SARIF) with secret redaction.
+(Markdown, JSON, SARIF, PDF, HTML, DOCX, XLSX, CSV) with secret redaction.
 
 Read ARCHITECTURE.md for the decision record and THREAT_MODEL.md for the
 security model and known limits.
@@ -167,8 +167,8 @@ replay; web (16 classes), OpenAPI API (5), GraphQL (7), TLS, source/supply-chain
 (6 + OSV), AWS cloud posture (moto-verified), container scanning, technology-
 specific modules (WordPress/PHP/Java/ColdFusion/Node/IIS/Apache/Nginx), ZAP
 adapter, plugin/MCP extension framework; deep investigation graph + cross-run
-memory + drift; independent verification + retest; PDF/MD/JSON/SARIF reports +
-remediation tracking + historical comparison; premium operational UI (Command
+memory + drift; independent verification + retest; PDF/HTML/DOCX/XLSX/CSV/MD/JSON/SARIF
+reports + remediation tracking + historical comparison; premium operational UI (Command
 Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph,
 read-only Validation workspace, WSTG coverage review).
 653 tests, 1 skipped (as of branch `defensive-readiness`, v0.5.0 in development);

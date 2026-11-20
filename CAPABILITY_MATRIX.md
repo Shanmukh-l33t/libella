@@ -57,7 +57,8 @@ Research: research/analysis-*.md, inventory-*.md, REA_LOG.md (provable REA invoc
 | Evidence workspace | A traffic | UI WS | IN-DEV |
 | Findings explorer | A/Sh | exists | VERIFIED |
 | Reports MD/JSON/SARIF | Sh | report.py | VERIFIED |
-| PDF export | Sh typst | report_pdf (WS) | IN-DEV |
+| PDF/HTML/DOCX/XLSX/CSV export | Sh | report_pdf.py + report_formats.py | VERIFIED (browser download of every format) |
+| Target API credential test | Sh | target_credentials.py + wizard UI | VERIFIED |
 | Remediation board | (none) | remediation (WS) | IN-DEV |
 | Historical comparison | (none) | compare_engagements (WS) | IN-DEV |
 | Models/usage | P/A | UI WS | IN-DEV |
