@@ -865,6 +865,10 @@ def create_api(app: App) -> FastAPI:
         return {"server": server, "available": True,
                 "tools": [s.schema() for s in specs]}
 
+    # target credentials: sealed at rest, tested only inside an authorized scope
+    from .routes_target_auth import register as register_target_auth
+    register_target_auth(api, app, auth)
+
     # static frontend (built). Resolve robustly: env override, container path,
     # then source-tree relative (pip-installed packages live in site-packages,
     # so __file__-relative alone breaks in the image).

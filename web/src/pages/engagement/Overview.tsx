@@ -7,6 +7,7 @@ import type { Asset, Engagement, Event, Finding, Intent, ToolCall } from "../../
 import { useApi } from "../../lib/hooks";
 import { SEV_COLOR, SEV_ORDER, fmtTime, title } from "../../lib/format";
 import { Badge, Card, EmptyState, ErrorNote, Skeleton, Stat, cx } from "../../components/ui";
+import TargetCredentials from "../../components/TargetCredentials";
 
 const STATE_ORDER = ["suspected", "observed", "validated", "reported", "remediated", "retested_fixed", "retested_persists", "ruled_out"];
 
@@ -186,6 +187,8 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
               </div>
             )}
           </Card>
+
+          <TargetCredentials eid={eid} eng={eng} />
         </div>
 
         <Card title="Activity" description="Live event stream, newest first." padded={false}
