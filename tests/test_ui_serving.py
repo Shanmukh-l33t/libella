@@ -26,3 +26,14 @@ def test_ui_absent_is_graceful(tmp_path, monkeypatch):
     app = App(tmp_path / "data")
     client = TestClient(create_api(app))
     assert client.get("/api/health").status_code == 200
+
+
+def test_ui_deep_links_refresh_without_hiding_unknown_apis(tmp_path, monkeypatch):
+    dist = tmp_path / 'dist'
+    dist.mkdir()
+    (dist / 'index.html').write_text('<html>libella-ui</html>')
+    monkeypatch.setenv('LIBELLA_WEB_DIST', str(dist))
+    client = TestClient(create_api(App(tmp_path / 'data')))
+    assert client.get('/engagements/example?tab=report').text == '<html>libella-ui</html>'
+    assert client.get('/api/not-a-route').status_code == 404
+    assert client.get('/assets/not-found.js').status_code == 404

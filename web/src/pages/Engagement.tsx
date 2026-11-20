@@ -56,7 +56,8 @@ export default function Engagement() {
   const pushEvent = useCallback((kind: string, payload: any, seq: number) => {
     feed.current.set(seq, { seq, kind, payload });
     setEvents([...feed.current.values()].sort((a, b) => b.seq - a.seq).slice(0, 400));
-    if (timer.current) return;
+    // A preview emits this event itself; refetching it grows the evidence store forever.
+    if (kind === "report_rendered" || timer.current) return;
     timer.current = setTimeout(() => {
       timer.current = null;
       setLive((v) => v + 1);

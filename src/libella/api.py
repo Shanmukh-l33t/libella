@@ -745,6 +745,11 @@ def create_api(app: App) -> FastAPI:
             webdist = p
             break
     if webdist:
+        @api.exception_handler(404)
+        async def spa_refresh(request, exc):
+            if request.url.path.startswith(('/api/', '/assets/')):
+                return JSONResponse({'detail': 'Not Found'}, status_code=404)
+            return FileResponse(webdist / 'index.html')
         api.mount("/", StaticFiles(directory=str(webdist), html=True), name="web")
 
     return api
