@@ -5,7 +5,6 @@ params; this runner re-checks scope, executes without a shell, caps output,
 and writes an audit row for every call (including refusals).
 """
 import json
-import shutil
 import subprocess
 import threading
 import time

@@ -1,7 +1,6 @@
 """Prompt-injection surface: model output and target content are data only."""
 import json
 
-import pytest
 
 from libella.scope import Scope
 
@@ -77,7 +76,7 @@ def test_execution_gate_refuses_an_out_of_scope_objective(app, mk_eng, lab):
     orch._execute(eid, Scope(json.loads(eng["scope_json"])), eng, intent)
     calls = app.db.query("SELECT * FROM tool_calls WHERE engagement_id=?", (eid,))
     assert calls and calls[0]["scope_decision"].startswith("refused"), calls
-    assert "out_of_scope" in (calls[0]["scope_decision"] or "")
+    assert "not in engagement scope" in (calls[0]["scope_decision"] or "")
 
 
 def test_llm_roles_cannot_reach_privileged_steps(app, mk_eng, lab):

@@ -30,5 +30,13 @@ packages = ["src/libella"]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint]
+# Explicit, version-stable rule set (ruff >=0.17 expanded defaults).
+select = ["E4", "E7", "E9", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/*" = ["E402"]  # sys.path bootstrap before imports is intentional
+"tests/*" = ["E402"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,5 +1,4 @@
 """Evidence ledger + finding pipeline gate tests."""
-import json
 import pytest
 from libella.db import DB
 from libella.evidence import EvidenceStore

@@ -3,7 +3,6 @@ import json
 import re
 from urllib.parse import urlsplit
 
-import pytest
 
 from libella.report import _csv_escape, redact, render_report
 

@@ -3,7 +3,6 @@ import json
 
 import pytest
 
-from libella.findings import FindingPipeline
 from libella.scope import Scope
 
 

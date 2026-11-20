@@ -79,8 +79,11 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
   return (
     <div className="space-y-4">
       {eng.status !== "done" && eng.status !== "draft" && (
-        <div className="rounded border border-line bg-canvas px-4 py-2.5 text-xs text-ink-500">
-          Status is <span className="font-medium text-ink-700">{title(eng.status)}</span>
+        <div className={cx("rounded border px-4 py-2.5 text-xs",
+          ["failed", "budget_exhausted", "cancelled"].includes(eng.status)
+            ? "border-[#FEDF89] bg-[#FFFAEB] text-[#B54708]"
+            : "border-line bg-canvas text-ink-500")}>
+          Status is <span className="font-medium">{title(eng.status)}</span>
           {eng.status_detail && !["running", "paused"].includes(eng.status) ? ` — ${eng.status_detail}` : ""}. Results below are partial; the report records coverage limits.
         </div>
       )}
@@ -151,7 +154,7 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
                 <dt className="text-xs text-ink-500">Targets</dt>
                 <dd className="mt-1 flex flex-wrap gap-1">
                   {(eng.scope?.targets || []).map((t, i) => (
-                    <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs">{t.kind}:{t.value}</span>
+                    <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs">{t.kind} · {t.value}</span>
                   ))}
                 </dd>
               </div>
@@ -159,7 +162,7 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
                 <dt className="text-xs text-ink-500">Exclusions</dt>
                 <dd className="mt-1 flex flex-wrap gap-1">
                   {(eng.scope?.exclusions || []).length
-                    ? eng.scope.exclusions.map((t, i) => <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs text-ink-500">{t.kind}:{t.value}</span>)
+                    ? eng.scope.exclusions.map((t, i) => <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs text-ink-500">{t.kind} · {t.value}</span>)
                     : <span className="text-sm text-ink-500">none</span>}
                 </dd>
               </div>

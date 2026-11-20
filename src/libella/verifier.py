@@ -167,4 +167,5 @@ class Verifier:
             self.pipeline.transition(finding_id, "retested_fixed", reason="retest: proof no longer reproduces")
         elif verdict == "persists":
             self.pipeline.transition(finding_id, "retested_persists", reason="retest: proof still reproduces")
+        self.db.emit(engagement_id, "retest", {"finding_id": finding_id, "verdict": verdict})
         return {"verdict": verdict, "detail": detail, "finding_id": finding_id}

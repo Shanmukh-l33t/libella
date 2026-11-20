@@ -11,7 +11,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from libella.api import App
-from libella.scope import Scope
 
 ROOT = Path(__file__).parent.parent
 GT = json.loads((ROOT / "labs/pairlab/ground_truth.json").read_text())

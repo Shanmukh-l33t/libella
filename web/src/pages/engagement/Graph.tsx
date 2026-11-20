@@ -4,7 +4,7 @@ import { X } from "lucide-react";
 import type { GraphData } from "../../types";
 import { useApi } from "../../lib/hooks";
 import { SEV_COLOR, intentTone, stateTone, title } from "../../lib/format";
-import { Badge, Card, EmptyState, ErrorNote, JsonViewer, Skeleton, cx } from "../../components/ui";
+import { Badge, Card, EmptyState, ErrorNote, JsonViewer, Skeleton } from "../../components/ui";
 
 type EntityData = { label: string; etype: string; kind: string; data: Record<string, unknown>; severity?: string; status?: string; state?: string };
 
@@ -12,11 +12,10 @@ function EntityNode({ data }: NodeProps) {
   const d = data as unknown as EntityData;
   const accent = d.etype === "finding" ? SEV_COLOR[d.severity || "info"] : d.etype === "intent" ? (intentTone(d.status || "") === "success" ? "#039855" : intentTone(d.status || "") === "accent" ? "#175CD3" : "#98A2B3") : "#98A2B3";
   return (
-    <div className={cx("group w-[240px] rounded border bg-white px-3 py-2 text-left shadow-card transition-shadow duration-150 hover:shadow-md",
-      d.etype === "finding" ? "border-line" : "border-line")}
-      style={{ borderLeft: `3px solid ${accent}` }}>
+    <div className="group w-[240px] rounded border border-line bg-white px-3 py-2 text-left shadow-card transition-shadow duration-150 hover:shadow-md">
       <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-0 !bg-ink-300" />
       <div className="flex items-center gap-1.5">
+        <span className="h-1.5 w-1.5 rounded-full" style={{ background: accent }} aria-hidden="true" />
         <span className="text-2xs uppercase tracking-wide text-ink-500">{d.etype}</span>
         <span className="ml-auto text-2xs capitalize text-ink-300">{d.etype === "finding" ? d.state : d.kind}</span>
       </div>
@@ -58,14 +57,14 @@ export default function GraphTab({ eid, live }: { eid: string; live: number }) {
 
     const es: Edge[] = (data?.edges || []).map((e, i) => {
       const verified = e.kind === "affects" && e.verified;
-      const color = e.kind === "affects" ? (verified ? "#667085" : "#98A2B3") : e.kind === "depends_on" ? "#98A2B3" : "#C3C8D1";
+      const color = e.kind === "affects" ? (verified ? "#475467" : "#98A2B3") : e.kind === "depends_on" ? "#98A2B3" : "#C3C8D1";
       return {
         id: `e${i}`,
         source: e.source,
         target: e.target,
         type: e.kind === "contains" ? "smoothstep" : "default",
         animated: false,
-        style: { stroke: color, strokeWidth: e.kind === "affects" && !verified ? 1.2 : 1.4, strokeDasharray: e.kind === "affects" && !verified ? "4 3" : e.kind === "depends_on" ? "5 4" : undefined },
+        style: { stroke: color, strokeWidth: e.kind === "affects" && !verified ? 1.3 : 1.6, strokeDasharray: e.kind === "affects" && !verified ? "4 3" : e.kind === "depends_on" ? "5 4" : undefined },
         label: e.kind === "affects" ? (verified ? "affects · verified" : "affects") : undefined,
         labelStyle: { fontSize: 10, fill: "#475467" },
         labelBgStyle: { fill: "#ffffff", fillOpacity: 0.9 },
@@ -84,7 +83,7 @@ export default function GraphTab({ eid, live }: { eid: string; live: number }) {
 
   return (
     <Card padded={false} title="Attack surface graph" description="Assets on the left, findings on the right, intents along the bottom. Solid affects edges are independently verified."
-      actions={<span className="text-2xs text-ink-500">{data.nodes.length} nodes · {data.edges.length} edges</span>}>
+      actions={<span className="text-2xs text-ink-700">{data.nodes.length} nodes · {data.edges.length} edges</span>}>
       <div className="flex h-[600px]">
         <div className="relative min-w-0 flex-1" style={{ background: "#FCFCFD" }}>
           <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={onNodeClick}
@@ -98,7 +97,7 @@ export default function GraphTab({ eid, live }: { eid: string; live: number }) {
                 return d.etype === "finding" ? SEV_COLOR[d.severity || "info"] : d.etype === "intent" ? "#98A2B3" : "#D0D5DD";
               }} maskColor="rgba(249,250,251,0.7)" />
           </ReactFlow>
-          <div className="pointer-events-none absolute bottom-3 left-3 flex gap-3 rounded border border-line bg-white/95 px-2.5 py-1.5 text-2xs text-ink-500">
+          <div className="pointer-events-none absolute bottom-3 left-3 flex gap-3 rounded border border-line bg-white/95 px-2.5 py-1.5 text-2xs text-ink-700">
             <span className="inline-flex items-center gap-1"><span className="h-0 w-3 border-t border-ink-300" /> contains</span>
             <span className="inline-flex items-center gap-1"><span className="h-0 w-3 border-t border-dashed border-ink-300" /> depends on</span>
             <span className="inline-flex items-center gap-1"><span className="h-0 w-3 border-t border-ink-500" /> affects verified</span>
@@ -120,7 +119,7 @@ export default function GraphTab({ eid, live }: { eid: string; live: number }) {
               {selected.etype === "intent" && <Badge tone={intentTone(selected.status || "")}>{title(selected.status || "")}</Badge>}
             </div>
             <JsonViewer value={selected.data} maxHeight={420} />
-            <div className="mt-2 text-2xs text-ink-500">Node colours follow severity for findings and status for intents.</div>
+            <div className="mt-2 text-2xs text-ink-700">Node colours follow severity for findings and status for intents.</div>
           </aside>
         )}
       </div>

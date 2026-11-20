@@ -1,6 +1,6 @@
 """Typed tool contracts + registry. No free-text argument reaches a shell."""
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Callable
 
 
 @dataclass

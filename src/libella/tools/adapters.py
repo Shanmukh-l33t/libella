@@ -6,7 +6,6 @@ kept as an evidence artifact by the runner.
 """
 import json
 import os
-import re
 import xml.etree.ElementTree as ET
 
 from . import ToolSpec

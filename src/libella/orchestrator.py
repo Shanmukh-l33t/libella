@@ -192,15 +192,28 @@ class Orchestrator:
                     return
             try:
                 self._execute(engagement_id, scope, eng, intent)
-                self.db.execute("UPDATE intents SET status='done', finished_at=? WHERE id=?",
-                                (time.time(), intent["id"]))
-                self.db.emit(engagement_id, "intent_done", {"intent_id": intent["id"]})
+                if self._complete(intent, "done"):
+                    self.db.emit(engagement_id, "intent_done", {"intent_id": intent["id"]})
             except Exception as e:
-                self.db.execute(
-                    "UPDATE intents SET status='blocked', finished_at=?, result_json=? WHERE id=?",
-                    (time.time(), json.dumps({"error": str(e)}), intent["id"]))
-                self.db.emit(engagement_id, "degradation",
-                             {"code": "intent_blocked", "intent_id": intent["id"], "detail": str(e)})
+                if self._complete(intent, "blocked", {"error": str(e)}):
+                    self.db.emit(engagement_id, "degradation",
+                                 {"code": "intent_blocked", "intent_id": intent["id"], "detail": str(e)})
+
+    def _complete(self, intent: dict, status: str, result: dict | None = None) -> bool:
+        """Finish an intent only while this worker still holds its lease (fencing).
+
+        A worker whose lease expired and was re-claimed must not overwrite the
+        new owner's state.
+        """
+        cur = self.db.execute(
+            "UPDATE intents SET status=?, finished_at=?, result_json=? WHERE id=? AND claim_token=?",
+            (status, time.time(), json.dumps(result) if result is not None else None,
+             intent["id"], intent.get("claim_token")))
+        if not cur.rowcount:
+            self.db.emit(intent["engagement_id"], "lease_lost",
+                         {"intent_id": intent["id"], "rejected_status": status})
+            return False
+        return True
 
     def _claim_next(self, engagement_id: str):
         rows = self.db.query(
@@ -432,7 +445,7 @@ class Orchestrator:
             candidates += checks.auth_bypass(lu, uf, pf)
             client = httpx.Client(timeout=15, verify=False, trust_env=False)
             try:
-                lr = client.post(lu, data={uf: ident["username"], pf: ident["password"]})
+                client.post(lu, data={uf: ident["username"], pf: ident["password"]})
                 cookie_header = "; ".join(f"{k}={v}" for k, v in client.cookies.items())
                 if cookie_header and "idor" in hints:
                     h = hints["idor"]

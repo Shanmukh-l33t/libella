@@ -61,10 +61,10 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
       <Card title="Scope evaluated" padded={false}>
         <div className="flex flex-wrap gap-1.5 p-4">
           {(data.scope?.targets || []).map((t, i) => (
-            <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs text-ink-700">{t.kind}:{t.value}</span>
+            <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs text-ink-700">{t.kind} · {t.value}</span>
           ))}
           {(data.scope?.exclusions || []).map((t, i) => (
-            <span key={`x${i}`} className="rounded border border-dashed border-line px-1.5 py-0.5 font-mono text-2xs text-ink-500">excluded {t.kind}:{t.value}</span>
+            <span key={`x${i}`} className="rounded border border-dashed border-line px-1.5 py-0.5 font-mono text-2xs text-ink-500">excluded {t.kind} · {t.value}</span>
           ))}
         </div>
       </Card>

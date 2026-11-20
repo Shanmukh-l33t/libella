@@ -102,10 +102,12 @@ export default function Engagement() {
             <div className="flex flex-wrap items-center gap-2.5">
               <h1 className="text-xl font-semibold tracking-tight text-ink-900">{e.name}</h1>
               <Badge tone={statusTone(e.status)} dot>{title(e.status)}</Badge>
-              <span className="hidden items-center gap-1 text-2xs text-ink-500 sm:inline-flex" title="Live event stream">
-                <span className={cx("h-1.5 w-1.5 rounded-full", connected ? "bg-sev-low" : "bg-ink-300", connected && "animate-pulse")} />
-                {connected ? "live" : "offline"}
-              </span>
+              {(e.status === "running" || e.status === "paused") && (
+                <span className="hidden items-center gap-1 text-2xs text-ink-500 sm:inline-flex" title="Live event stream">
+                  <span className={cx("h-1.5 w-1.5 rounded-full", connected ? "bg-sev-low" : "bg-ink-300", connected && "animate-pulse")} />
+                  {connected ? "live" : "offline"}
+                </span>
+              )}
             </div>
             <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-500">
               <button className="inline-flex items-center gap-1 font-mono hover:text-ink-900" title="Copy engagement id"
@@ -120,7 +122,7 @@ export default function Engagement() {
             {e.scope?.targets?.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
                 {e.scope.targets.slice(0, 4).map((t, i) => (
-                  <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs text-ink-700">{t.kind}:{t.value}</span>
+                  <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs text-ink-700">{t.kind} · {t.value}</span>
                 ))}
                 {e.scope.targets.length > 4 && <span className="px-1 text-2xs text-ink-500">+{e.scope.targets.length - 4} more</span>}
               </div>
@@ -135,7 +137,7 @@ export default function Engagement() {
                 <option value="llm">LLM planner</option>
               </Select>
             )}
-            {canStart && <Button size="sm" variant="primary" icon={<Play size={13} />} loading={busy === "start"} onClick={() => act("start")}>Start</Button>}
+            {canStart && <Button size="sm" variant="primary" icon={<Play size={13} />} loading={busy === "start"} onClick={() => act("start")}>{e.status === "draft" ? "Start" : "Run again"}</Button>}
             {e.status === "running" && <Button size="sm" icon={<Pause size={13} />} loading={busy === "pause"} onClick={() => act("pause")}>Pause</Button>}
             {e.status === "paused" && <Button size="sm" variant="primary" icon={<Play size={13} />} loading={busy === "resume"} onClick={() => act("resume")}>Resume</Button>}
             {(e.status === "running" || e.status === "paused") && (
@@ -143,7 +145,6 @@ export default function Engagement() {
             )}
           </div>
         </div>
-        {e.status_detail && !["running", "paused", "draft"].includes(e.status) && <p className="mt-2 text-xs text-ink-500">{e.status_detail}</p>}
         <div className="mt-3"><ErrorNote error={actionError} /></div>
       </div>
 

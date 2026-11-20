@@ -1,7 +1,6 @@
 """API surface: auth on every route, SSE, IDOR, error handling."""
 import json
 
-import pytest
 from fastapi.routing import APIRoute
 
 

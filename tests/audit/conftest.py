@@ -53,8 +53,12 @@ class _Lab:
                     self.send_header("Content-Length", str(lab.huge_bytes))
                     self.send_header("Connection", "close")
                     self.end_headers()
+                    chunk = b"A" * 65536
                     try:
-                        self.wfile.write(b"A" * lab.huge_bytes)
+                        remaining = lab.huge_bytes
+                        while remaining > 0:
+                            self.wfile.write(chunk[:min(len(chunk), remaining)])
+                            remaining -= len(chunk)
                     except Exception:
                         pass
                     return

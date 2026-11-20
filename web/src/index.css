@@ -22,4 +22,8 @@
   .input-error { @apply border-sev-high/70; }
   .chip { @apply inline-flex items-center gap-1.5 h-6 px-2 rounded text-xs font-medium whitespace-nowrap; }
   .link { @apply text-accent hover:text-accent-hover underline-offset-2 hover:underline transition-colors; }
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
 }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }

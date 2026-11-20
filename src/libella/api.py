@@ -10,10 +10,7 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
-from .checks import WebChecks
-from .crawl import Crawler
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
@@ -162,9 +159,18 @@ def create_api(app: App) -> FastAPI:
 
     @api.post("/api/engagements/{eid}/resume", dependencies=[Depends(auth)])
     def resume(eid: str, body: dict | None = None):
+        r = app.db.one("SELECT status FROM engagements WHERE id=?", (eid,))
+        if not r:
+            raise HTTPException(404)
+        if r["status"] not in ("draft", "paused", "failed", "cancelled", "budget_exhausted"):
+            raise HTTPException(409, f"cannot resume from status {r['status']}")
+        t = app._threads.get(eid)
+        if t is not None and t.is_alive():
+            raise HTTPException(409, "engagement worker already running")
         mode = (body or {}).get("mode", "deterministic")
         t = threading.Thread(target=app._run_guarded,
                              args=(app.orchestrator(), eid, mode), daemon=True)
+        app._threads[eid] = t
         app.db.execute("UPDATE engagements SET status='running' WHERE id=?", (eid,))
         t.start()
         return {"resumed": True}
@@ -286,6 +292,8 @@ def create_api(app: App) -> FastAPI:
             data = app.evidence.read(eid)
         except ValueError as e:
             raise HTTPException(409, str(e))
+        except (KeyError, OSError) as e:
+            raise HTTPException(404, f"evidence blob unavailable: {e}")
         from .report import redact
         return JSONResponse({"id": eid, "kind": row["kind"], "sha256": row["sha256"],
                              "content": redact(data.decode(errors="replace"))})
@@ -302,16 +310,31 @@ def create_api(app: App) -> FastAPI:
         ex = app.db.one("SELECT * FROM exchanges WHERE id=?", (xid,))
         if not ex:
             raise HTTPException(404)
+        from .report import redact, redact_headers
+        try:
+            ex["req_headers"] = redact_headers(json.loads(ex.pop("req_headers_json") or "{}"))
+            ex["resp_headers"] = redact_headers(json.loads(ex.pop("resp_headers_json") or "{}"))
+        except json.JSONDecodeError:
+            ex.pop("req_headers_json", None)
+            ex.pop("resp_headers_json", None)
         if ex["evidence_id"]:
-            from .report import redact
-            blob = app.evidence.read_json(ex["evidence_id"])
+            try:
+                blob = app.evidence.read_json(ex["evidence_id"])
+            except ValueError as e:
+                raise HTTPException(409, str(e))
+            except (KeyError, OSError, json.JSONDecodeError) as e:
+                raise HTTPException(404, f"exchange evidence unavailable: {e}")
             blob["request"]["body"] = redact(blob["request"].get("body", ""))
             blob["response"]["body"] = redact(blob["response"].get("body", ""))
+            blob["request"]["headers"] = redact_headers(blob["request"].get("headers"))
+            blob["response"]["headers"] = redact_headers(blob["response"].get("headers"))
             ex["blob"] = blob
         return ex
 
     @api.get("/api/engagements/{eid}/report", dependencies=[Depends(auth)])
     def report(eid: str, format: str = "json"):
+        if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
+            raise HTTPException(404)
         res = render_report(app.db, app.evidence, eid)
         p = Path(res["outdir"])
         if format == "md":

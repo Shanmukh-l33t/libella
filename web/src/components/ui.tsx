@@ -166,7 +166,7 @@ export function Tabs({ tabs, value, onChange }: {
   tabs: { id: string; label: string; count?: number }[]; value: string; onChange: (id: string) => void;
 }) {
   return (
-    <div role="tablist" className="flex gap-1 overflow-x-auto border-b border-line">
+    <div role="tablist" className="no-scrollbar flex gap-1 overflow-x-auto border-b border-line">
       {tabs.map((t) => (
         <button key={t.id} role="tab" aria-selected={value === t.id} onClick={() => onChange(t.id)}
           className={cx("-mb-px flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-sm transition-colors",

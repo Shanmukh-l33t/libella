@@ -3,9 +3,9 @@ what it reads from disk. All argv is built by code, never by a shell."""
 import pytest
 
 from libella.scope import Decision, Scope
-from libella.tools import Registry, ToolSpec, validate_params
-from libella.tools.adapters import FFUF, HTTPX, NMAP, NUCLEI, SUBFINDER, _ffuf_argv, _nuclei_argv
-from libella.tools.runner import MAX_OUTPUT, ToolRunner
+from libella.tools import ToolSpec, validate_params
+from libella.tools.adapters import FFUF, HTTPX, NMAP, SUBFINDER, _ffuf_argv, _nuclei_argv
+from libella.tools.runner import MAX_OUTPUT
 
 
 @pytest.fixture
@@ -48,8 +48,11 @@ def test_host_tool_scopes_the_param_it_scans(runner, lab):
 # --- category mislabelling must not widen authorization ---------------------
 
 def test_runner_refuses_tool_run_under_foreign_category(runner, lab):
+    stub = ToolSpec(name="stub", description="", category="web", binary=None, timeout_s=5,
+                    params={"target": {"type": "string"}}, required=["target"],
+                    handler=lambda p, d: ["true"])
     scope = Scope({"targets": [{"kind": "url", "value": lab.base}], "categories": ["recon"]})
-    r = runner.run(NUCLEI, {"target": lab.base}, scope, "eng_audit", None,
+    r = runner.run(stub, {"target": lab.base}, scope, "eng_audit", None,
                    target=lab.base, category="recon")
     assert r["ok"] is False, r
     assert "category" in r["error"]

@@ -6,7 +6,7 @@ exchange is captured as evidence with full request/response.
 """
 import time
 import threading
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 

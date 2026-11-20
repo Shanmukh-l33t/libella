@@ -1,6 +1,5 @@
 """Evidence ledger: concurrency, forgery, isolation, path safety."""
 import hashlib
-import json
 import threading
 
 import pytest
@@ -40,7 +39,7 @@ def test_concurrent_puts_keep_the_chain_valid(store):
 def test_blob_and_single_row_forgery_detected(store):
     db, ev = store
     a = ev.put("eng", b"one", "test")
-    b = ev.put("eng", b"two", "test")
+    _b = ev.put("eng", b"two", "test")
     # attacker rewrites blob a and repairs its ledger row consistently
     (ev.root / a["path"]).write_bytes(b"rewritten")
     digest = hashlib.sha256(b"rewritten").hexdigest()

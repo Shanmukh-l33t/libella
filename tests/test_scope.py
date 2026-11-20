@@ -40,8 +40,8 @@ def test_exclusion_precedence():
 
 
 def test_metadata_blocked_even_if_private_allowed():
-    s = Scope({"targets": [{"kind": "cidr", "value": "169.254.0.0/16"}],
-               "categories": ["web"]})
+    Scope({"targets": [{"kind": "cidr", "value": "169.254.0.0/16"}],
+           "categories": ["web"]})
     # explicitly targeted metadata range is allowed (lab sim), but not implicitly
     s2 = Scope({"targets": [{"kind": "cidr", "value": "10.0.0.0/8"}], "categories": ["web"]})
     d = s2.check_url("http://169.254.169.254/latest/meta-data/")
