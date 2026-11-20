@@ -9,9 +9,13 @@ Intentional FAKE secrets in lab fixtures: labs/vulnrepo (seeded for the
 code-audit scanner tests) and labs/tlslab/certs (generated self-signed lab
 keys, gitignored, regenerated at startup). Lab-only, obviously fake,
 documented in each lab's ground_truth.json. No real credential is present.
+benchmarks/check_target_credentials_ui.py holds a fixture sentinel that the
+check asserts never surfaces anywhere; it authenticates only to its own
+loopback fixture.
 """
 paths = [
   "labs/vulnrepo/app/creds.py",
   "labs/vulnrepo/app/signing.py",
   "labs/tlslab/certs/",
+  "benchmarks/check_target_credentials_ui.py",
 ]
