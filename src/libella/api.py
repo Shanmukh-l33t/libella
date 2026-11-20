@@ -22,6 +22,7 @@ from .llm import LLM
 from .orchestrator import Orchestrator
 from . import __version__, mcp_client  # plugin/MCP extension framework
 from .plugins import PluginHost
+from .provider_diagnostic import DEFAULT_URL, diagnostic_result, test_connection
 from .report import render_report
 from .scope import Scope
 from .secrets import SecretBox, is_encrypted
@@ -88,11 +89,12 @@ class App:
             self.db.execute("INSERT INTO settings(key, value_json) VALUES('api_token', ?)",
                             (json.dumps(self.box.encrypt(self.token)),))
 
-    def llm(self) -> LLM | None:
+    def llm_settings(self) -> dict:
         row = self.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
-        if not row:
-            return None
-        cfg = json.loads(self.box.decrypt_or_plain(row["value_json"]))
+        return json.loads(self.box.decrypt_or_plain(row["value_json"])) if row else {}
+
+    def llm(self) -> LLM | None:
+        cfg = self.llm_settings()
         if not cfg.get("base_url") and not cfg.get("api_key"):
             return None
         return LLM(self.db, cfg)
@@ -520,8 +522,7 @@ def create_api(app: App) -> FastAPI:
 
     @api.get("/api/settings", dependencies=[Depends(auth)])
     def get_settings():
-        row = app.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
-        cfg = json.loads(app.box.decrypt_or_plain(row["value_json"])) if row else {}
+        cfg = app.llm_settings()
         if cfg.get("api_key"):
             cfg["api_key"] = "[SET]"
         return {"llm": cfg}
@@ -529,16 +530,47 @@ def create_api(app: App) -> FastAPI:
     @api.put("/api/settings", dependencies=[Depends(auth)])
     def put_settings(body: dict):
         if "llm" in body:
-            existing = app.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
-            cfg = json.loads(app.box.decrypt_or_plain(existing["value_json"])) if existing else {}
+            cfg = app.llm_settings()
             new = body["llm"]
+            if not isinstance(new, dict) or ("base_url" in new and not isinstance(new["base_url"], str)):
+                raise HTTPException(400, "Invalid provider settings.")
             if new.get("api_key") in ("[SET]", "", None):
                 new.pop("api_key", None)
+            if "base_url" in new:
+                old_base = (cfg.get("base_url") or DEFAULT_URL).rstrip("/")
+                new_base = (new["base_url"] or DEFAULT_URL).rstrip("/")
+                if old_base != new_base:
+                    cfg.pop("api_key", None)
             cfg.update(new)
             app.db.execute("INSERT INTO settings(key, value_json) VALUES('llm_config', ?) "
                            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
                            (app.box.encrypt(json.dumps(cfg)),))
         return {"ok": True}
+
+    provider_test_lock = threading.Lock()
+
+    @api.post("/api/settings/provider-test", dependencies=[Depends(auth)])
+    async def provider_test(request: Request):
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 8192:
+                raise HTTPException(413, "Provider settings are too large.")
+            raw.extend(chunk)
+        try:
+            draft = json.loads(raw)
+        except (ValueError, RecursionError):
+            raise HTTPException(400, "Invalid provider settings.") from None
+        if not isinstance(draft, dict) or any(
+            k not in {"base_url", "default_model", "api_key"} or not isinstance(v, str) or len(v) > 2048
+            for k, v in draft.items()
+        ):
+            raise HTTPException(400, "Invalid provider settings.")
+        if not provider_test_lock.acquire(blocking=False):
+            return diagnostic_result("busy")
+        try:
+            return await test_connection(app.llm_settings(), draft)
+        finally:
+            provider_test_lock.release()
 
     @api.get("/api/engagements/{eid}/graph", dependencies=[Depends(auth)])
     def graph(eid: str, include: str | None = None):

@@ -30,7 +30,7 @@ class LLM:
         self.base_url = (config.get("base_url") or "https://api.openai.com/v1").rstrip("/")
         self.api_key = config.get("api_key") or ""
         self.models = config.get("models", {})
-        self.default_model = config.get("default_model", "gpt-4o-mini")
+        self.default_model = config.get("default_model") or "gpt-4o-mini"
         self.fallback = config.get("fallback", [])
         self.pricing = {**DEFAULT_PRICING, **config.get("pricing", {})}
         self.timeout = config.get("timeout_s", 120)

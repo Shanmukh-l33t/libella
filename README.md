@@ -122,9 +122,10 @@ Availability is probed at startup and shown in Settings.
 
 ## Configure a model (optional, for LLM planning)
 
-Settings > LLM provider: any OpenAI-compatible endpoint (base URL, API key,
-model). Per-role model selection and fallback are supported. Token and cost
-accounting is recorded per engagement. Deterministic mode needs no model.
+Open **Settings → AI provider**. Use **Test connection** to validate the
+model and key before saving. See [provider setup](docs/provider-connection.md)
+for custom endpoints and what the check proves. Per-role model selection and
+fallback are optional; deterministic mode needs no model.
 
 ## Architecture
 
