@@ -406,9 +406,20 @@ def create_api(app: App) -> FastAPI:
                 edges.append({"source": dep, "target": i["id"], "kind": "depends_on"})
         return {"nodes": nodes, "edges": edges}
 
-    # static frontend (built)
-    webdist = Path(__file__).parent.parent.parent / "web" / "dist"
-    if webdist.exists():
+    # static frontend (built). Resolve robustly: env override, container path,
+    # then source-tree relative (pip-installed packages live in site-packages,
+    # so __file__-relative alone breaks in the image).
+    webdist = None
+    env_dist = os.environ.get("LIBELLA_WEB_DIST")
+    candidates = ([Path(env_dist)] if env_dist else []) + [
+        Path("/app/web/dist"),
+        Path(__file__).parent.parent.parent / "web" / "dist",
+    ]
+    for p in candidates:
+        if p.is_dir() and (p / "index.html").exists():
+            webdist = p
+            break
+    if webdist:
         api.mount("/", StaticFiles(directory=str(webdist), html=True), name="web")
 
     return api
