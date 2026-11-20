@@ -11,6 +11,23 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            response = None
+        missing = response is None or response.status_code == 404
+        if missing and not scope['path'].startswith(('/api/', '/assets/')):
+            return FileResponse(Path(str(self.directory)) / 'index.html', status_code=200)
+        if response is None:
+            raise StarletteHTTPException(status_code=404)
+        return response
 
 from .auth_browser import STEP_ACTIONS, AuthBrowser
 from .browser_crawl import browser_available
@@ -745,11 +762,6 @@ def create_api(app: App) -> FastAPI:
             webdist = p
             break
     if webdist:
-        @api.exception_handler(404)
-        async def spa_refresh(request, exc):
-            if request.url.path.startswith(('/api/', '/assets/')):
-                return JSONResponse({'detail': 'Not Found'}, status_code=404)
-            return FileResponse(webdist / 'index.html')
-        api.mount("/", StaticFiles(directory=str(webdist), html=True), name="web")
+        api.mount("/", SPAStaticFiles(directory=str(webdist), html=True), name="web")
 
     return api
