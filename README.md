@@ -144,8 +144,11 @@ security model and known limits.
 
 - Fail-closed scope: empty scope is rejected at creation.
 - Metadata/link-local ranges blocked unless explicitly targeted.
-- Per-engagement rate, concurrency, duration, and cost budgets; authorized time
-  windows refuse start/resume and stop the run (no replays after the window closes).
+- The planner checks authorized time windows at start, resume and between intents.
+  The built-in HTTP probe and finding/traffic replays also refuse outside the window.
+  A closed-window report is partial. Create a new engagement with a new authorized
+  window rather than reopening the old run. These checks do not preempt every
+  in-flight request, browser action or external process at the deadline.
 - Profiles: passive, production_safe, safe_active, advanced_validation — enforced in
   planning and at execution; skipped work is reported as a coverage limitation.
 - Emergency stop: cancel propagates to intents and subprocesses.

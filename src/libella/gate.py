@@ -23,7 +23,7 @@ STATES = {"suspected", "observed", "validated", "reported", "remediated",
           "retested_fixed", "retested_persists", "ruled_out"}
 SEVERITIES = {"critical", "high", "medium", "low", "info"}
 RISK = {"critical", "high"}
-FAILED_ENGAGEMENT_STATES = {"failed", "cancelled", "budget_exhausted"}
+FAILED_ENGAGEMENT_STATES = {"failed", "cancelled", "budget_exhausted", "window_closed"}
 # Profiles whose declared ceiling is read-only; policy skips are expected there.
 READ_ONLY_PROFILES = {"passive", "production_safe"}
 ACTIVE_PROFILES = {"safe_active", "advanced_validation"}

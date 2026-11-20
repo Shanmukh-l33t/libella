@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .assessment_window import stored_window_refusal
 from .db import DB
 from .evidence import EvidenceStore
 from .scope import Scope
@@ -180,6 +181,10 @@ def replay(db: DB, evidence: EvidenceStore, probe: HttpProbe, scope: Scope,
                  (exchange_id, engagement_id))
     if row is None:
         return {"ok": False, "error": "exchange not found in engagement"}
+    refusal = stored_window_refusal(db, engagement_id)
+    if refusal:
+        _audit(db, engagement_id, exchange_id, {"reason": refusal}, "traffic_replay_refused")
+        return {"ok": False, "error": refusal}
     try:
         blob = evidence.read_json(row["evidence_id"]) if row["evidence_id"] else None
     except (KeyError, OSError, ValueError, json.JSONDecodeError) as e:

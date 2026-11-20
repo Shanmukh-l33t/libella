@@ -80,11 +80,12 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
     <div className="space-y-4">
       {eng.status !== "done" && eng.status !== "draft" && (
         <div className={cx("rounded border px-4 py-2.5 text-xs",
-          ["failed", "budget_exhausted", "cancelled"].includes(eng.status)
+          ["failed", "budget_exhausted", "cancelled", "window_closed"].includes(eng.status)
             ? "border-[#FEDF89] bg-[#FFFAEB] text-[#B54708]"
             : "border-line bg-canvas text-ink-500")}>
           Status is <span className="font-medium">{title(eng.status)}</span>
           {eng.status_detail && !["running", "paused"].includes(eng.status) ? ` — ${eng.status_detail}` : ""}. Results below are partial; the report records coverage limits.
+          {eng.status === "window_closed" && " Create a new engagement with an authorized window to continue."}
         </div>
       )}
       {degradations.map((d) => (

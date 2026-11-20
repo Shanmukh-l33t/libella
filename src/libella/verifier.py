@@ -8,6 +8,7 @@ import json
 import re
 import time
 
+from .assessment_window import stored_window_refusal
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
@@ -61,6 +62,9 @@ class Verifier:
         attempt = (self.db.one(
             "SELECT COALESCE(MAX(attempt),0)+1 AS n FROM verifications WHERE finding_id=?",
             (finding_id,)) or {"n": 1})["n"]
+        refusal = stored_window_refusal(self.db, engagement_id)
+        if refusal:
+            return self._record(finding_id, attempt, "policy_refusal", None, "inconclusive", refusal)
         if not spec or not spec.get("proof_request"):
             return self._record(finding_id, attempt, "no_proof_spec", None,
                                 "inconclusive", "no replayable proof request bound")
@@ -192,6 +196,10 @@ class Verifier:
         if f["state"] not in self.RETESTABLE:
             return {"verdict": "inconclusive", "finding_id": finding_id,
                     "detail": f"finding is '{f['state']}'; retest requires a validated finding"}
+        refusal = stored_window_refusal(self.db, engagement_id)
+        if refusal:
+            self.db.emit(engagement_id, "retest_refused", {"finding_id": finding_id, "detail": refusal})
+            return {"verdict": "inconclusive", "detail": refusal, "finding_id": finding_id}
         spec = self._proof_spec(f)
         if not spec or not spec.get("proof_request"):
             return {"verdict": "inconclusive", "detail": "no replayable proof request"}

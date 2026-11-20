@@ -9,14 +9,13 @@ Workers claim intents with a fencing token + lease; expired leases return
 to the frontier. Budgets, pause, cancel and degradation are enforced here,
 not in prompts.
 """
-import datetime
 import json
-import math
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 
+from .assessment_window import window_state
 from .checks import WebChecks
 from .crawl import Crawler
 from .db import DB, new_id
@@ -35,52 +34,6 @@ LEASE_S = 120
 MODES = ("deterministic", "llm", "agent")
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
          "code_audit", "api_audit", "container_scan", "graphql_audit"}
-
-
-def _parse_window(value, field: str) -> float | None:
-    """ISO8601 (naive means UTC) or epoch seconds -> epoch float. Empty means unset."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        raise ValueError(f"{field} must be an ISO8601 timestamp or epoch seconds")
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            value = float(text)  # numeric string = epoch seconds
-        except ValueError:
-            pass
-    if isinstance(value, (int, float)):
-        if not math.isfinite(value):
-            raise ValueError(f"{field} is not a finite timestamp")
-        return float(value)
-    try:
-        dt = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as e:
-        raise ValueError(f"{field} is not an ISO8601 timestamp or epoch seconds: "
-                         f"{value!r}") from e
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
-    return dt.timestamp()
-
-
-def window_state(eng: dict, now: float | None = None) -> tuple[bool, str]:
-    """(may_run, detail) for an engagement's authorized assessment window.
-
-    A declared window outside `now` refuses; a malformed one raises ValueError so
-    callers fail closed. No window declared means unrestricted.
-    """
-    now = time.time() if now is None else now
-    start = _parse_window(eng.get("window_start"), "window_start")
-    end = _parse_window(eng.get("window_end"), "window_end")
-    if start is not None and now < start:
-        return False, (f"outside the authorized assessment window: window_start "
-                       f"{eng.get('window_start')} has not been reached")
-    if end is not None and now > end:
-        return False, (f"outside the authorized assessment window: window_end "
-                       f"{eng.get('window_end')} has passed")
-    return True, "inside the authorized assessment window"
 
 
 class ConcurrencyGate:

@@ -61,6 +61,21 @@ def test_pdf_is_replaced_not_written_in_place(tmp_path, report_json_path, monkey
     assert "report.pdf" in seen
 
 
+def test_pdf_build_failure_removes_temp_but_preserves_old_report(tmp_path, report_json_path, monkeypatch):
+    import libella.report_pdf as pdf_mod
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected rendering failure")
+
+    out = tmp_path / "report.pdf"
+    out.write_bytes(b"existing report")
+    monkeypatch.setattr(pdf_mod.BaseDocTemplate, "build", fail)
+    with pytest.raises(RuntimeError, match="injected rendering failure"):
+        pdf_mod.render_pdf(json.loads(report_json_path.read_text()), out)
+    assert out.read_bytes() == b"existing report"
+    assert list(tmp_path.glob("*.pdf")) == [out]
+
+
 def test_concurrent_renders_never_expose_a_truncated_json(pair):
     outdir = Path(render_report(pair.db, pair.evidence, "eng_a")["outdir"])
     path = outdir / "report.json"

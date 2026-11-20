@@ -250,8 +250,8 @@ def render_pdf(report_json: dict, out_path: str | Path) -> Path:
                    "finding. Every tool call is scope-checked before execution and audited; "
                    "evidence is content-addressed and hash-chained. All report text passes a "
                    "redaction pass for credentials, tokens and personal data.", st["body"]))
-    doc.build(flow)
     try:
+        doc.build(flow)
         os.replace(tmp, out)
     except BaseException:
         if os.path.exists(tmp):

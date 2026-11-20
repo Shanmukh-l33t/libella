@@ -261,11 +261,17 @@ def create_api(app: App) -> FastAPI:
             raise HTTPException(400, f"mode {mode!r} requires a configured LLM provider; "
                                      "configure one in Settings or start in deterministic mode")
 
+    def _check_closed_window(status: str):
+        if status == "window_closed":
+            raise HTTPException(409, "This assessment window closed. Its results remain available. "
+                                     "Create a new engagement with an authorized window.")
+
     @api.post("/api/engagements/{eid}/start", dependencies=[Depends(auth)])
     def start(eid: str, body: dict | None = None):
         r = app.db.one("SELECT status, profile FROM engagements WHERE id=?", (eid,))
         if not r:
             raise HTTPException(404)
+        _check_closed_window(r["status"])
         if r["status"] not in ("draft", "done", "failed", "cancelled", "budget_exhausted"):
             raise HTTPException(409, f"cannot start from status {r['status']}")
         mode = (body or {}).get("mode", "deterministic")
@@ -283,6 +289,7 @@ def create_api(app: App) -> FastAPI:
         r = app.db.one("SELECT status, profile FROM engagements WHERE id=?", (eid,))
         if not r:
             raise HTTPException(404)
+        _check_closed_window(r["status"])
         if r["status"] not in ("draft", "paused", "failed", "cancelled", "budget_exhausted"):
             raise HTTPException(409, f"cannot resume from status {r['status']}")
         t = app._threads.get(eid)
