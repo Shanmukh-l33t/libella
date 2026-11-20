@@ -13,22 +13,6 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-
-class SPAStaticFiles(StaticFiles):
-    async def get_response(self, path, scope):
-        try:
-            response = await super().get_response(path, scope)
-        except StarletteHTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            response = None
-        missing = response is None or response.status_code == 404
-        if missing and not scope['path'].startswith(('/api/', '/assets/')):
-            return FileResponse(Path(str(self.directory)) / 'index.html', status_code=200)
-        if response is None:
-            raise StarletteHTTPException(status_code=404)
-        return response
-
 from .auth_browser import STEP_ACTIONS, AuthBrowser
 from .browser_crawl import browser_available
 from .db import DB, new_id
@@ -46,6 +30,22 @@ from .tools.adapters import ALL_ADAPTERS
 from .tools.http_probe import HttpProbe
 from .tools.runner import ToolRunner
 from .verifier import Verifier
+
+
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            response = None
+        missing = response is None or response.status_code == 404
+        if missing and not scope['path'].startswith(('/api/', '/assets/')):
+            return FileResponse(Path(str(self.directory)) / 'index.html', status_code=200)
+        if response is None:
+            raise StarletteHTTPException(status_code=404)
+        return response
 
 
 class App:
