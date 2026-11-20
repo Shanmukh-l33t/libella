@@ -170,16 +170,18 @@ class DB:
         rewrites data."""
         # A usable settings ciphertext proves the key; check it before wrapping
         # legacy plaintext under a key that may be the wrong one.
+        settings = []
         for row in self._conn.execute(
-                "SELECT value_json FROM settings WHERE key IN ('api_token','llm_config')"):
-            value = row["value_json"]
-            if value and value.startswith('"'):
-                try:
-                    value = json.loads(value)  # api_token is JSON-encoded, llm_config bare
-                except ValueError:
-                    continue
+                "SELECT key,value_json FROM settings WHERE key IN ('api_token','llm_config')"):
+            token = row['key'] == 'api_token'
+            value = json.loads(row['value_json']) if token else row['value_json']
             if is_encrypted(value):
                 self._box.decrypt(value)
+            else:
+                if not isinstance(value, str) or not value or (not token and not isinstance(json.loads(value), dict)):
+                    raise ValueError('invalid legacy credential record')
+                sealed = self._box.encrypt(value)
+                settings.append((json.dumps(sealed) if token else sealed, row['key']))
         pending = []
         for table, cols in SECRET_COLUMNS.items():
             for row in self._conn.execute(f"SELECT id, {', '.join(cols)} FROM {table}"):
@@ -193,7 +195,8 @@ class DB:
                         pending.append((table, col, self._box.encrypt(value), row["id"]))
         for table, col, sealed, row_id in pending:
             self._conn.execute(f"UPDATE {table} SET {col}=? WHERE id=?", (sealed, row_id))
-        return bool(pending)
+        self._conn.executemany('UPDATE settings SET value_json=? WHERE key=?', settings)
+        return bool(pending or settings)
 
     def seal(self, plaintext: str) -> str:
         """Ciphertext for a SECRET_COLUMNS value, for INSERT/UPDATE parameters."""

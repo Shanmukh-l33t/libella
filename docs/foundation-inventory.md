@@ -8,8 +8,8 @@ audit2 suites (46 passed), and one in-process probe that rendered a report for a
 seeded remediated finding. Everything else is source/doc reading at this commit;
 sections state which is which.
 
-Priority taxonomy used here (the brief's P0–P4, made explicit because the repo
-does not define it):
+The labels below are local audit section IDs, not the implementation priorities
+in the mission brief. A reporting or remediation defect can block release.
 
 | Level | Meaning |
 |---|---|
@@ -21,8 +21,9 @@ does not define it):
 
 ## 1. Module inventory
 
-Verified = exercised by tests at this commit and consistent with its claim;
-partial = works with a limit stated here; gap = claim without enforcement.
+The test column identifies available tests. Except for the 46 selected tests and
+report probe noted above, “verified” below describes historical evidence, not a
+fresh execution of that test or independent proof of product coverage.
 
 | Area | Modules | Tests | State |
 |---|---|---|---|
@@ -42,8 +43,7 @@ partial = works with a limit stated here; gap = claim without enforcement.
 ## 2. Test and evidence inventory
 
 - 449 tests collected at `d71d5a1`; the doc claim "448 passed, 1 skipped" is
-  consistent (the 4 `tests/test_operator_cli.py` tests exist only in main-tip
-  `2086b4c`, which is not this tree).
+  consistent. `tests/test_operator_cli.py` was added later on the hardening branch.
 - `tests/audit/` 93, `tests/audit2/` 31 — matches AUDIT.md / AUDIT2.md.
 - No frontend tests: CI builds `web/` and nothing asserts behaviour.
 - No committed benchmark artifacts: `benchmark_runs/` is gitignored, so every

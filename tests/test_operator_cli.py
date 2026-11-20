@@ -1,7 +1,9 @@
 """Operator credential handling: no external services or assessments."""
 import os
+import json
 import pty
 import secrets
+import sqlite3
 import subprocess
 import sys
 
@@ -53,7 +55,7 @@ def test_operator_recovery_and_rotation(tmp_path, monkeypatch):
         assert token.encode() not in rotated.stdout + rotated.stderr
 
 
-@pytest.mark.parametrize('option', ['--rotate-token', '--show-token'])
+@pytest.mark.parametrize('option', ['--rotate-token', '--show-token', '--migrate-storage'])
 def test_unknown_data_dir_not_initialized(tmp_path, option):
     directory = tmp_path / 'absent'
     result = subprocess.run(command(directory, option), capture_output=True)
@@ -74,3 +76,25 @@ def test_wrong_key_cannot_reset_or_disclose_the_token(tmp_path, monkeypatch):
     for secret in (rows[0]['value_json'], app.token):
         assert secret.encode() not in result.stdout + result.stderr
     assert db.query(sql) == rows
+
+
+def test_offline_migration_then_rotation(tmp_path, monkeypatch):
+    monkeypatch.delenv('LIBELLA_SECRET_KEY', raising=False)
+    old, provider_key = secrets.token_urlsafe(), secrets.token_urlsafe()
+    path = tmp_path / 'libella.db'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL)')
+        db.executemany('INSERT INTO settings VALUES(?,?)', [
+            ('api_token', json.dumps(old)), ('llm_config', json.dumps({'api_key': provider_key})),
+        ])
+    db.close()
+    for option in ('--migrate-storage', '--migrate-storage', '--rotate-token'):
+        result = subprocess.run(command(tmp_path, option), capture_output=True, check=True)
+        for secret in (old, provider_key):
+            assert secret.encode() not in result.stdout + result.stderr
+            assert all(secret.encode() not in p.read_bytes() for p in tmp_path.glob('libella.db*'))
+    app = App(tmp_path)
+    assert app.token != old
+    value = app.db.query("SELECT value_json FROM settings WHERE key='llm_config'")[0]['value_json']
+    assert json.loads(app.box.decrypt(value)) == {'api_key': provider_key}
+    app.db.close()

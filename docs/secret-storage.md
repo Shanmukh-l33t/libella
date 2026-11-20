@@ -16,7 +16,7 @@ text. `login_flow_json` is *not* encrypted: the login flow deliberately never
 persists the password, and it carries only URLs, selectors and the success
 assertion.
 
-`DB.query()` / `DB.one()` decrypt these columns transparently, so callers keep
+`DB.query()` / `DB.one()` decrypt the engagement and cookie columns transparently, so callers keep
 working with JSON text. Writers must pass secret values through `DB.seal()`;
 `POST /api/engagements` and `AuthBrowser.login_flow()` do. Anything that reads
 the SQLite file directly sees ciphertext only.
@@ -37,8 +37,10 @@ The same key protects `settings`, engagement auth and session cookies. It is
 ## Legacy plaintext migration
 
 Rows written before this hardening (or by a writer that bypassed `DB.seal()`)
-are recognized unambiguously: a Fernet token always begins with `gAAAAA`
-(version byte `0x80` plus zeroed high timestamp bytes). On `DB` open:
+are distinguished by the historical Fernet prefix `gAAAAA`, not by a versioned
+database envelope. With all users of the database stopped and a protected backup,
+run `libella --data-dir <directory> --migrate-storage`. This opens no network
+listener and loads no plugins. On `DB` open:
 
 - plaintext rows are encrypted in place, then committed;
 - existing ciphertext is *verified* first, so a wrong or lost key aborts the
@@ -46,7 +48,7 @@ are recognized unambiguously: a Fernet token always begins with `gAAAAA`
 - after a migration the WAL is checkpointed (`TRUNCATE`) and the database is
   `VACUUM`ed, so the replaced plaintext pages do not remain in the live
   database or WAL;
-- the migration is idempotent and cheap when there is nothing to do.
+- the migration is idempotent, but checks the stored credential rows on every open.
 
 A value that looks like ciphertext but does not decrypt (truncated token, key
 mismatch) is never treated as plaintext. Reads fail closed.

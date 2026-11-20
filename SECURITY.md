@@ -42,7 +42,8 @@ Treat the old token as disclosed to anyone who could read those logs. Stop all
 Libella processes using the data directory. With the upgraded code, run
 `libella --data-dir <directory> --rotate-token`, then restart the service.
 Rotation requires an encrypted token record and its original key. Pre-encryption
-databases need migration first: retain a protected backup and do not serve traffic
+databases need migration first: retain a protected backup, run
+`libella --data-dir <directory> --migrate-storage` offline, and do not serve traffic
 until migration and rotation both succeed. Never substitute a new encryption key
 to get past a decryption failure.
 `LIBELLA_TOKEN` is for first initialization; changing it does not rotate an existing

@@ -8,9 +8,7 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
-from cryptography.fernet import InvalidToken
-
-from .secrets import SecretBox
+from .secrets import SecretBox, SecretError
 
 
 def _operator_token(data_dir: Path, rotate: bool):
@@ -45,13 +43,22 @@ def cli():
     modes = p.add_mutually_exclusive_group()
     modes.add_argument("--show-token", action="store_true", help="display the stored token on a private terminal")
     modes.add_argument("--rotate-token", action="store_true", help="replace the stored token with the service stopped")
+    modes.add_argument("--migrate-storage", action="store_true", help="upgrade an existing stopped database without serving requests")
     args = p.parse_args()
-    if args.show_token or args.rotate_token:
+    if args.show_token or args.rotate_token or args.migrate_storage:
         if args.show_token and not sys.stdout.isatty():
             p.error("show-token requires a private terminal (no pipes or redirection)")
         try:
+            if args.migrate_storage:
+                from .db import DB
+                path = Path(args.data_dir) / 'libella.db'
+                if not path.is_file():
+                    p.error('no existing database in the specified data directory')
+                DB(path).close()
+                print('Storage migration complete. Retain the database encryption key.')
+                return
             _operator_token(Path(args.data_dir), args.rotate_token)
-        except (InvalidToken, ValueError, TypeError, OSError, sqlite3.Error):
+        except (SecretError, ValueError, TypeError, OSError, sqlite3.Error):
             p.exit(1, "Cannot access stored credential; check the data directory, database and encryption key.\n")
         if args.rotate_token:
             print("Stored token replaced. Restart Libella to invalidate the old token.")
