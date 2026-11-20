@@ -37,6 +37,20 @@ build, run, authenticate, create engagement, execute real assessment,
 inspect validated findings, export report. No manual tool installation
 required on the host.
 
+## v0.3 image verification (2026-11-20)
+
+- `docker build -t libella:v0.3 .` SUCCESS (adds graphene, Playwright +
+  Chromium at /opt/ms-playwright via PLAYWRIGHT_BROWSERS_PATH, libatomic1).
+- browser_available() True inside the container as the non-root runtime user.
+- Real GraphQL engagement via container API against host graphlab (:8821,
+  scope url target, categories recon+api, auth.graphql + 3 identities):
+  status done, 7/7 findings INDEPENDENTLY VALIDATED (CWE-89 injection,
+  CWE-639 field authz x2, CWE-770 depth/alias/batch, CWE-200 introspection).
+- Two orchestration defects found and fixed during this verification:
+  verify/report intent dependencies now cover all audit roles; verifier
+  replay selects a category the engagement permits (api-only engagements
+  previously refused replay under default 'web'). Regression tests added.
+
 ## v0.2 image verification (2026-11-20)
 
 - `docker build -t libella:v0.2 .` SUCCESS (adds trivy, gitleaks, semgrep,
