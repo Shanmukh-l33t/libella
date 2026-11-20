@@ -4,6 +4,7 @@ import { ChevronDown, Plus, Trash2, ArrowLeft } from "lucide-react";
 import { post } from "../api";
 import type { TargetKind } from "../types";
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea, cx, useToast } from "../components/ui";
+import CredentialTest from "../components/CredentialTest";
 
 interface Row { kind: TargetKind; value: string; include_subdomains: boolean }
 interface Identity { username: string; password: string; login_url: string }
@@ -206,6 +207,8 @@ export default function NewEngagement() {
         {fieldErrors.exclusions && <p className="mb-2 text-xs text-sev-high">{fieldErrors.exclusions}</p>}
         <Button type="button" size="sm" icon={<Plus size={13} />} onClick={() => setExclusions([...exclusions, { kind: "domain", value: "", include_subdomains: false }])}>Add exclusion</Button>
       </Card>
+
+      <CredentialTest defaultUrl={targets.find((t) => t.kind === "url")?.value || ""} />
 
       <Card title="Assessment mode" description="How the run is driven. Can be changed again when you start the engagement.">
         <div className="grid gap-2 sm:grid-cols-3">
