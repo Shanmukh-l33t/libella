@@ -49,11 +49,11 @@ def test_markdown_injection_via_endpoint_and_name(app, mk_eng, lab):
         "description": "d", "evidence_ids": [ev["id"]], "dedup_key": "md"})
     render_report(app.db, app.evidence, eid)
     md = (app.evidence.root / eid / "report" / "report.md").read_text()
-    assert "\n## Injected by target" not in md
+    assert "\n## Injected" not in md
     assert "\n## Pwned" not in md
-    assert not re.search(r"(?m)^##\s", md.replace("## Summary", "").replace("## Scope", "")
-                         .replace("## Findings", "").replace("## Method", "")
-                         .replace("## Coverage limitations", ""))
+    headings = [ln for ln in md.splitlines() if ln.startswith("## ")]
+    assert set(headings) <= {"## Summary", "## Scope", "## Findings", "## Method",
+                             "## Coverage limitations (read before trusting 'no findings')"}
 
 
 def test_sarif_is_structurally_valid(app, mk_eng, lab):

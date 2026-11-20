@@ -4,7 +4,8 @@ import pytest
 
 from libella.scope import Decision, Scope
 from libella.tools import ToolSpec, validate_params
-from libella.tools.adapters import FFUF, HTTPX, NMAP, SUBFINDER, _ffuf_argv, _nuclei_argv
+from libella.tools.adapters import (ALL_ADAPTERS, FFUF, HTTPX, NMAP, SUBFINDER,
+                                    _ffuf_argv, _nuclei_argv)
 from libella.tools.runner import MAX_OUTPUT
 
 
@@ -82,6 +83,18 @@ def test_nuclei_templates_outside_template_root_rejected():
 def test_metacharacters_rejected_in_every_string_param(bad):
     with pytest.raises(ValueError):
         validate_params(HTTPX, {"target": bad})
+
+
+@pytest.mark.parametrize("spec", ALL_ADAPTERS, ids=lambda s: s.name)
+def test_every_adapter_param_rejects_shell_metacharacters(spec):
+    for name, p in spec.params.items():
+        if p.get("type") != "string":
+            continue
+        params = {name: "x;touch /tmp/libella_pwn"}
+        for req in spec.required:
+            params.setdefault(req, "http://127.0.0.1:1" if req != "domain" else "localhost")
+        with pytest.raises(ValueError):
+            validate_params(spec, params)
 
 
 @pytest.mark.parametrize("bad", ["a;id", "a|id", "a&id", "$(id)", "`id`", "a\nb"])

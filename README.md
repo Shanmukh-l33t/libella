@@ -56,6 +56,20 @@ python benchmarks/run_pairlab.py --mode both
 
 See CAPABILITIES.md for the full tested/planned matrix and benchmark details.
 
+## Screenshots (real application, real assessment data)
+
+| Dashboard | Live operations |
+|---|---|
+| ![Dashboard](docs/screenshots/shot-dashboard.png) | ![Operations](docs/screenshots/shot-operations.png) |
+
+| Intelligence graph | Finding + evidence |
+|---|---|
+| ![Graph](docs/screenshots/shot-graph.png) | ![Finding](docs/screenshots/shot-finding.png) |
+
+| Report | Settings |
+|---|---|
+| ![Report](docs/screenshots/shot-report.png) | ![Settings](docs/screenshots/shot-settings.png) |
+
 ## Quickstart (Docker)
 
 ```bash

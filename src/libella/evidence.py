@@ -73,7 +73,10 @@ class EvidenceStore:
         row = self.db.one("SELECT * FROM evidence WHERE id=?", (evidence_id,))
         if row is None:
             raise KeyError(f"evidence {evidence_id} not found")
-        path = self.root / row["path"]
+        path = (self.root / row["path"]).resolve()
+        root = self.root.resolve()
+        if path != root and root not in path.parents:
+            raise ValueError(f"evidence {evidence_id} path escapes the store")
         data = path.read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         if digest != row["sha256"] or len(data) != row["bytes"]:

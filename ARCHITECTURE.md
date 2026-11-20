@@ -41,10 +41,12 @@ PentestGPT, hermes-agent, pentagi, hexstrike-ai, Pentest-Swarm-AI, shannon
 4. LLM output is data. Target content is framed untrusted; it can propose
    observations but cannot mutate canonical state except through the
    compile gate which re-checks scope and evidence bindings.
-5. Secrets: credentials stored encrypted (Fernet), redacted from logs,
-   evidence, reports. Localhost-only bind by default; token auth for API.
-6. Emergency stop: engagement-level cancel propagates to all leases and
-   subprocesses; state remains consistent and resumable.
+5. Secrets: credentials redacted from logs, evidence, reports. API token and
+   LLM key encrypted at rest (Fernet, key file 0600). Localhost-only bind by
+   default; token auth for API.
+6. Emergency stop: engagement-level cancel stops intents and leases; running
+   subprocesses are bounded by their tool timeout (hard-kill propagation is
+   roadmap). Audit logs record every scope decision.
 
 ## Data model (SQLite)
 

@@ -18,6 +18,7 @@ from .llm import LLM
 from .orchestrator import Orchestrator
 from .report import render_report
 from .scope import Scope
+from .secrets import SecretBox
 from .tools import Registry
 from .tools.adapters import ALL_ADAPTERS
 from .tools.http_probe import HttpProbe
@@ -40,19 +41,24 @@ class App:
         self.runner = ToolRunner(self.db, self.evidence, self.data_dir / "runs")
         self._llm = None
         self._threads: dict[str, threading.Thread] = {}
+        self.box = SecretBox(self.data_dir)
         token_row = self.db.one("SELECT value_json FROM settings WHERE key='api_token'")
         if token_row:
-            self.token = json.loads(token_row["value_json"])
+            stored = json.loads(token_row["value_json"])
+            self.token = self.box.decrypt_or_plain(stored)
+            if stored == self.token:  # legacy plaintext: re-encrypt at rest
+                self.db.execute("UPDATE settings SET value_json=? WHERE key='api_token'",
+                                (json.dumps(self.box.encrypt(self.token)),))
         else:
             self.token = os.environ.get("LIBELLA_TOKEN") or secrets.token_urlsafe(24)
             self.db.execute("INSERT INTO settings(key, value_json) VALUES('api_token', ?)",
-                            (json.dumps(self.token),))
+                            (json.dumps(self.box.encrypt(self.token)),))
 
     def llm(self) -> LLM | None:
         row = self.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
         if not row:
             return None
-        cfg = json.loads(row["value_json"])
+        cfg = json.loads(self.box.decrypt_or_plain(row["value_json"]))
         if not cfg.get("base_url") and not cfg.get("api_key"):
             return None
         return LLM(self.db, cfg)
@@ -350,7 +356,7 @@ def create_api(app: App) -> FastAPI:
     @api.get("/api/settings", dependencies=[Depends(auth)])
     def get_settings():
         row = app.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
-        cfg = json.loads(row["value_json"]) if row else {}
+        cfg = json.loads(app.box.decrypt_or_plain(row["value_json"])) if row else {}
         if cfg.get("api_key"):
             cfg["api_key"] = "[SET]"
         return {"llm": cfg}
@@ -359,14 +365,14 @@ def create_api(app: App) -> FastAPI:
     def put_settings(body: dict):
         if "llm" in body:
             existing = app.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
-            cfg = json.loads(existing["value_json"]) if existing else {}
+            cfg = json.loads(app.box.decrypt_or_plain(existing["value_json"])) if existing else {}
             new = body["llm"]
             if new.get("api_key") in ("[SET]", "", None):
                 new.pop("api_key", None)
             cfg.update(new)
             app.db.execute("INSERT INTO settings(key, value_json) VALUES('llm_config', ?) "
                            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
-                           (json.dumps(cfg),))
+                           (app.box.encrypt(json.dumps(cfg)),))
         return {"ok": True}
 
     @api.get("/api/engagements/{eid}/graph", dependencies=[Depends(auth)])

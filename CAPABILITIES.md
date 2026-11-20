@@ -95,7 +95,23 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 - PairLab twins: labs/pairlab/app.py (Flask, localhost). Ground truth:
   labs/pairlab/ground_truth.json (13 seeds, 6 negative controls).
 - Deterministic-only run: ~8s/engagement. With nuclei: ~155s/engagement.
-- Juice Shop (bkimminich/juice-shop:latest, localhost:3001): see
-  benchmark_runs/juice results; SPA coverage via static JS mining.
+- Juice Shop (bkimminich/juice-shop:latest, localhost:3001): 53 assets
+  discovered (HTML crawl + JS bundle route mining), 1 validated finding
+  (missing security headers) + 1 unvalidated nuclei observation. Deep SPA
+  exploitation needs browser rendering (PLANNED); results reported honestly.
 - LLM mode: OpenAI-compatible endpoint, planner model configured per run;
   cost recorded in llm_usage. No cross-project performance claims are made.
+
+## Verification evidence log (all real executions)
+
+| Proof | Result | Artifact |
+|---|---|---|
+| PairLab vulnerable twin | 13/13 seeds detected AND independently replay-validated, 0 FP | benchmark_runs/results.json |
+| PairLab hardened twin | 0 confirmed findings, 0 FP | benchmark_runs/results.json |
+| CI clean-environment gate | GitHub Actions: ground-truth self-check + 13/13 + 0 FP + chains intact, "benchmark gate PASS" | run 44643365589 |
+| Retest after remediation | validated /debug finding: retest=persists on vuln; lab swapped to hardened; retest=fixed; state retested_fixed | benchmarks/run_retest_cycle.py, benchmark_runs/retest/phase{1,2}.json |
+| Interrupt and recovery | cancel mid-run (4 intents stopped) -> resume -> done, 8/8 validated, chain intact (234 objects) | benchmarks/run_recovery.py, benchmark_runs/recovery_results.json |
+| LLM planning mode | 7 planner calls, 33 intents, compile gate rejected out-of-scope proposal, 8/8 testable seeds validated, budget-bounded | benchmarks/run_llm_mode.py, benchmark_runs/llm_mode_results.json |
+| Docker single-container install | image builds; container healthy; full engagement via container API (see DOCKER_VERIFICATION.md) | Dockerfile, docker-compose.yml |
+| Evidence tamper resistance | blob rewrite + ledger row forgery detected; chain break detected | tests/audit/test_evidence_integrity.py |
+| UI real-data verification | browser-driven: dashboard, live ops, graph, finding detail, rule-out flow, report, settings; 17 screenshots | docs/screenshots/ |

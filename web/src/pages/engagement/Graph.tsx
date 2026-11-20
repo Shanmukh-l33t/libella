@@ -17,7 +17,9 @@ function EntityNode({ data }: NodeProps) {
       <div className="flex items-center gap-1.5">
         <span className="h-1.5 w-1.5 rounded-full" style={{ background: accent }} aria-hidden="true" />
         <span className="text-2xs uppercase tracking-wide text-ink-500">{d.etype}</span>
-        <span className="ml-auto text-2xs capitalize text-ink-300">{d.etype === "finding" ? d.state : d.kind}</span>
+        <span className="ml-auto text-2xs capitalize" style={{ color: d.etype === "finding" ? accent : "#98A2B3" }}>
+          {d.etype === "finding" ? d.severity : d.kind}
+        </span>
       </div>
       <div className="mt-0.5 line-clamp-2 text-xs font-medium leading-snug text-ink-900" title={d.label}>{d.label}</div>
       <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-0 !bg-ink-300" />

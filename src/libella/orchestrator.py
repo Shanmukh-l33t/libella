@@ -339,6 +339,10 @@ class Orchestrator:
         for page in result["pages"]:
             self._upsert_asset(engagement_id, "endpoint", page["url"],
                                {"status": page["status"], "title": page["title"]}, parent=root, by="crawl")
+        for ep in result["endpoints"]:
+            if ep not in {p["url"] for p in result["pages"]}:
+                self._upsert_asset(engagement_id, "endpoint", ep, {"discovered": "js_mining"},
+                                   parent=root, by="crawl")
         self.pipeline.record_observation(
             engagement_id, intent_id, "crawl",
             f"{result['crawled']} pages, {len(result['endpoints'])} endpoints, {len(result['forms'])} forms",

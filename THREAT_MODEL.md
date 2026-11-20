@@ -45,7 +45,9 @@ scope object regardless of what the target content said.
 - No kernel-level egress jail yet: subprocess tools that re-resolve DNS have
   a residual TOCTOU window. Roadmap: per-engagement network namespace with
   resolved-IP allowlist.
-- No encryption at rest by default; rely on filesystem/volume encryption.
+- No encryption at rest for evidence blobs; rely on filesystem/volume
+  encryption. Settings-held credentials (API token, LLM key) ARE encrypted
+  (Fernet, key file 0600); back up the key with the data dir.
 - No multi-tenant isolation hardening; one instance per trust domain.
 - Verification reproduces the recorded proof request; it does not prove
   exploitability beyond the demonstrated impact (e.g. a reflected XSS proof
