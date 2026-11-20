@@ -25,6 +25,7 @@ export default function Layout() {
               { to: "/tools", label: "Tools" },
               { to: "/models", label: "Models" },
               { to: "/compare", label: "Compare" },
+              { to: "/coverage", label: "Coverage" },
               { to: "/settings", label: "Settings" },
             ].map((l) => (
               <NavLink key={l.to} to={l.to} end={l.end}

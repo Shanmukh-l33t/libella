@@ -113,6 +113,11 @@ CREATE TABLE IF NOT EXISTS asset_changes(
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, asset_key TEXT NOT NULL,
   change_kind TEXT NOT NULL, old_json TEXT, new_json TEXT, detected_at REAL
 );
+CREATE TABLE IF NOT EXISTS coverage_entries(
+  engagement_id TEXT NOT NULL, test_id TEXT NOT NULL, status TEXT NOT NULL,
+  note TEXT, evidence_id TEXT, updated_at REAL,
+  PRIMARY KEY(engagement_id, test_id)
+);
 CREATE INDEX IF NOT EXISTS idx_hyp_eng ON hypotheses(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_steps_eng ON investigation_steps(engagement_id, intent_id);
 CREATE INDEX IF NOT EXISTS idx_runs_eng ON agent_runs(engagement_id);

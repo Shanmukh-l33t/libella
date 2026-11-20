@@ -11,6 +11,7 @@ import Finding from "./pages/Finding";
 import Tools from "./pages/Tools";
 import Models from "./pages/Models";
 import Compare from "./pages/Compare";
+import Coverage from "./pages/Coverage";
 import Settings from "./pages/Settings";
 import { getToken } from "./api";
 
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="/tools" element={<Tools />} />
           <Route path="/models" element={<Models />} />
           <Route path="/compare" element={<Compare />} />
+          <Route path="/coverage" element={<Coverage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

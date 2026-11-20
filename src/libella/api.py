@@ -516,6 +516,26 @@ def create_api(app: App) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(404, f"engagement not found: {exc}")
 
+    # ---- OWASP WSTG 4.2 coverage ledger (manual/defensive review, no execution) ----
+    @api.get("/api/engagements/{eid}/coverage/wstg", dependencies=[Depends(auth)])
+    def wstg_coverage(eid: str):
+        from .coverage import workspace
+        try:
+            return workspace(app.db, eid)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+
+    @api.put("/api/engagements/{eid}/coverage/wstg/{test_id}", dependencies=[Depends(auth)])
+    def wstg_record(eid: str, test_id: str, body: dict):
+        from .coverage import record
+        try:
+            return record(app.db, eid, test_id, body.get("status"), body.get("note"),
+                          body.get("evidence_id"))
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
     @api.get("/api/tools", dependencies=[Depends(auth)])
     def tools():
         return app.registry.available()
