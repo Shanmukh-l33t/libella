@@ -219,9 +219,20 @@ def _ffuf_argv(p: dict, decision) -> list[str]:
 
 
 def parse_ffuf_json(stdout: str) -> list[dict]:
+    # With -s and -o /dev/stdout, ffuf prints matched words before the JSON report;
+    # parsing the whole stream silently returned [] for every real scan.
+    r = None
     try:
         r = json.loads(stdout)
     except json.JSONDecodeError:
+        for line in reversed(stdout.splitlines()):
+            if line.lstrip().startswith("{"):
+                try:
+                    r = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+    if not isinstance(r, dict):
         return []
     return [{"url": x.get("url"), "status": x.get("status"), "length": x.get("length"),
              "words": x.get("words")} for x in r.get("results", [])]
