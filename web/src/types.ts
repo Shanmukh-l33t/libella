@@ -19,7 +19,8 @@ export interface Finding {
   severity: string; cvss?: number | null; confidence: string; endpoint?: string | null;
   state: string; description?: string | null; impact?: string | null; remediation?: string | null;
   dedup_key?: string; evidence_ids: string[]; created_at: number; updated_at?: number;
-  owner?: string | null; remediation_notes?: string | null; fix_commit?: string | null;
+  owner?: string | null; due_at?: string | null; remediation_state?: string | null;
+  remediation_notes?: string | null; fix_commit?: string | null;
   remediated_at?: number | null;
   verifications?: Verification[]; retests?: Retest[]; exchanges?: Exchange[];
 }
@@ -135,9 +136,10 @@ export interface CompareResult {
   b: { id: string; name: string; findings: number };
   new: Finding[];
   fixed: Finding[];
+  not_observed: Finding[];
   persisting: Finding[];
   severity_changed: (Finding & { previous_severity?: string; direction?: "worse" | "better" })[];
-  counts: { new: number; fixed: number; persisting: number; severity_changed: number };
+  counts: { new: number; not_observed: number; fixed: number; persisting: number; severity_changed: number };
   retest_verdicts?: Record<string, string[]>;
 }
 

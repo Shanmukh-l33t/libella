@@ -72,3 +72,24 @@ def test_evidence_reads_are_content_addressed(store):
     b = ev.put("eng", b"same", "k2")
     assert a["path"] == b["path"]
     assert ev.verify_chain("eng")["checked"] == 2
+
+
+def test_wall_clock_rollback_does_not_reorder_the_ledger(store, monkeypatch):
+    from types import SimpleNamespace
+    _, ev = store
+    times = iter((300.0, 100.0, 200.0))
+    monkeypatch.setattr('libella.evidence.time', SimpleNamespace(time=lambda: next(times)))
+    for value in (b'a', b'b', b'c'):
+        ev.put('eng', value, 'test')
+    result = ev.verify_chain('eng')
+    assert result['ok'] and result['checked'] == 3
+
+
+def test_missing_blob_marks_the_first_broken_entry(store):
+    _, ev = store
+    lost = ev.put('eng', b'first', 'test')
+    ev.put('eng', b'second', 'test')
+    (ev.root / lost['path']).unlink()
+    result = ev.verify_chain('eng')
+    assert not result['ok'] and result['broken_at'] == lost['id']
+    assert result['checked'] == 1 and str(ev.root) not in result['error']

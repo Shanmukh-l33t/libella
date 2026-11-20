@@ -34,18 +34,91 @@ def test_health_is_public_and_others_are_not(client, app):
     assert client.get("/api/tools", headers={"Authorization": f"Bearer {app.token}"}).status_code == 200
 
 
+def test_health_leaks_no_inventory_and_probes_nothing(client, monkeypatch):
+    from libella import __version__
+
+    def boom(name):
+        raise AssertionError(f"anonymous health probed tool binary {name!r}")
+
+    monkeypatch.setattr("libella.tools.resolve_binary", boom)
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "version": __version__}
+
+
 def test_token_of_wrong_length_is_rejected_cleanly(client, app):
     r = client.get("/api/tools", headers={"Authorization": "Bearer " + "x" * 5000})
     assert r.status_code == 401
 
 
-def test_sse_accepts_query_token_and_requires_one(client, app, mk_eng, lab):
+def test_sse_requires_a_single_use_ticket(client, app, mk_eng, lab):
     eid = mk_eng(lab.base)
-    assert client.get(f"/api/engagements/{eid}/stream").status_code == 401
-    with client.stream("GET", f"/api/engagements/{eid}/stream?token={app.token}") as r:
+    url = f"/api/engagements/{eid}/stream"
+    assert client.get(url).status_code == 401
+    # the long-lived token must never travel in a URL
+    assert client.get(f"{url}?token={app.token}").status_code == 401
+    assert client.get(f"{url}?ticket=forged").status_code == 401
+    assert client.post("/api/ticket", json={"engagement_id": eid}).status_code == 401
+
+    h = {"Authorization": f"Bearer {app.token}"}
+    assert client.post("/api/ticket", json={}, headers=h).status_code == 400
+    ticket = client.post("/api/ticket", json={"engagement_id": eid}, headers=h).json()["ticket"]
+    with client.stream("GET", f"{url}?ticket={ticket}") as r:
         assert r.status_code == 200
         first = next(r.iter_lines())
         assert first.startswith(":") or first.startswith("id:")
+    assert client.get(f"{url}?ticket={ticket}").status_code == 401  # single use
+
+
+def test_ticket_is_bound_to_one_stream(client, app, mk_eng, lab):
+    a, b = mk_eng(lab.base), mk_eng(lab.base)
+    h = {"Authorization": f"Bearer {app.token}"}
+
+    def mint() -> str:
+        return client.post("/api/ticket", json={"engagement_id": a}, headers=h).json()["ticket"]
+
+    # a ticket for engagement a authorizes neither another engagement nor any other GET
+    assert client.get(f"/api/engagements/{b}/stream?ticket={mint()}").status_code == 401
+    assert client.get(f"/api/engagements/{b}?ticket={mint()}").status_code == 401
+    assert client.get(f"/api/tools?ticket={mint()}").status_code == 401
+    assert client.get(f"/api/engagements/{a}/report?ticket={mint()}").status_code == 401
+    # ...while still opening the exact stream it was minted for
+    with client.stream("GET", f"/api/engagements/{a}/stream?ticket={mint()}") as r:
+        assert r.status_code == 200
+
+
+def test_ticket_expires(client, app, mk_eng, lab, monkeypatch):
+    eid = mk_eng(lab.base)
+    h = {"Authorization": f"Bearer {app.token}"}
+    ticket = client.post("/api/ticket", json={"engagement_id": eid}, headers=h).json()["ticket"]
+    monkeypatch.setattr("libella.api.time.monotonic", lambda: 9_999_999_999.0)
+    assert client.get(f"/api/engagements/{eid}/stream?ticket={ticket}").status_code == 401
+
+
+def test_outstanding_tickets_are_capped(client, app, mk_eng, lab):
+    eid = mk_eng(lab.base)
+    h = {"Authorization": f"Bearer {app.token}"}
+    minted = [client.post("/api/ticket", json={"engagement_id": eid}, headers=h).json()["ticket"]
+              for _ in range(65)]  # 64 may be outstanding; the 65th evicts the oldest
+    assert client.get(f"/api/engagements/{eid}/stream?ticket={minted[0]}").status_code == 401
+    with client.stream("GET", f"/api/engagements/{eid}/stream?ticket={minted[-1]}") as r:
+        assert r.status_code == 200
+
+
+def test_bearer_scheme_must_match_exactly(client, app):
+    for raw in (app.token, f"bearer {app.token}", f"Bearer  {app.token}", f"Token {app.token}"):
+        assert client.get("/api/tools", headers={"Authorization": raw}).status_code == 401, raw
+    assert client.get("/api/tools", headers={"Authorization": f"Bearer {app.token}"}).status_code == 200
+
+
+def test_report_download_accepts_bearer_header(client, app, mk_eng, lab):
+    eid = mk_eng(lab.base)
+    h = {"Authorization": f"Bearer {app.token}"}
+    assert client.get(f"/api/engagements/{eid}/report?format=md").status_code == 401
+    assert client.get(f"/api/engagements/{eid}/report?format=md&token={app.token}").status_code == 401
+    r = client.get(f"/api/engagements/{eid}/report?format=md", headers=h)
+    assert r.status_code == 200 and r.text.startswith("#")
+    assert client.get(f"/api/engagements/{eid}/report?format=sarif", headers=h).status_code == 200
 
 
 def test_resume_refuses_an_already_running_engagement(client, app, mk_eng, lab, monkeypatch):

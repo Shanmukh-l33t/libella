@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Download, FileText, RefreshCw } from "lucide-react";
 import type { Engagement, Report } from "../../types";
-import { reportUrl } from "../../api";
+import { downloadReport } from "../../api";
 import { useApi } from "../../lib/hooks";
 import { fmtTime, money, severityTone, stateTone, title } from "../../lib/format";
 import { Badge, Button, Card, EmptyState, ErrorNote, Skeleton, Stat, Table } from "../../components/ui";
@@ -9,6 +10,11 @@ import { Badge, Button, Card, EmptyState, ErrorNote, Skeleton, Stat, Table } fro
 export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engagement; live: number }) {
   const navigate = useNavigate();
   const { data, error, loading, reload } = useApi<Report>(`/api/engagements/${eid}/report?format=json&live=${live}`);
+  const [dlError, setDlError] = useState<string | null>(null);
+  const download = (format: "md" | "sarif" | "pdf" | "dojo") => {
+    setDlError(null);
+    downloadReport(eid, format).catch((e) => setDlError(e instanceof Error ? e.message : String(e)));
+  };
 
   if (error) return <ErrorNote error={error} />;
   if (loading && !data) return <Skeleton className="h-64 w-full" />;
@@ -28,12 +34,15 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
         </div>
         <div className="flex gap-2">
           <Button size="sm" icon={<RefreshCw size={13} />} onClick={reload} loading={loading}>Regenerate</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => window.open(reportUrl(eid, "md"), "_blank", "noopener")}>Markdown</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => window.open(reportUrl(eid, "sarif"), "_blank", "noopener")}>SARIF</Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("md")}>Markdown</Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("sarif")}>SARIF</Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("dojo")}>DefectDojo</Button>
           <Button size="sm" icon={<Download size={13} />} title="Renders the same report.json through the PDF exporter"
-            onClick={() => window.open(reportUrl(eid, "pdf"), "_blank", "noopener")}>PDF</Button>
+            onClick={() => download("pdf")}>PDF</Button>
         </div>
       </div>
+
+      <ErrorNote error={dlError} />
 
       {data.engagement.status !== "done" && (
         <div className="rounded border border-[#FEDF89] bg-[#FFFAEB] px-4 py-3 text-sm text-ink-700">
@@ -93,8 +102,8 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
       </Card>
 
       <p className="text-2xs text-ink-500">
-        Downloads are authenticated with the same token via query parameter (EventSource/file links cannot send headers).
-        Engagement profile: {eng.profile}.
+        Downloads are fetched with the bearer header; the live stream alone uses a single-use,
+        one-minute ticket because EventSource cannot set headers. Engagement profile: {eng.profile}.
       </p>
     </div>
   );

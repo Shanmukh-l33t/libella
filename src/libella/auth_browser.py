@@ -164,7 +164,7 @@ class AuthBrowser(BrowserCrawler):
                 "success_assertion": success_assertion}
         row = {"id": new_id("ac"), "engagement_id": self.eng, "name": name or username,
                "username": username, "login_flow_json": json.dumps(flow),
-               "cookies_json": json.dumps(cookies), "status": "active" if ok else "failed",
+               "cookies_json": self.db.seal(json.dumps(cookies)), "status": "active" if ok else "failed",
                "last_verified_at": time.time(), "created_at": time.time()}
         self.db.execute(
             "INSERT INTO auth_contexts(id, engagement_id, name, username, login_flow_json, "

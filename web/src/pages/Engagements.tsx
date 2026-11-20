@@ -13,7 +13,7 @@ type SevMap = Record<string, Record<string, number>>;
 export default function Dashboard() {
   const navigate = useNavigate();
   const list = useApi<Engagement[]>("/api/engagements");
-  const health = useApi<{ version: string; tools: ToolInfo[] }>("/api/health");
+  const registry = useApi<ToolInfo[]>("/api/tools");
   const [sev, setSev] = useState<SevMap>({});
 
   useEffect(() => {
@@ -34,7 +34,7 @@ export default function Dashboard() {
   }, [list.data]);
 
   const engagements = list.data || [];
-  const tools = health.data?.tools || [];
+  const tools = registry.data || [];
   const available = tools.filter((t) => t.available).length;
 
   return (
@@ -47,7 +47,7 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button icon={<RefreshCw size={14} />} onClick={() => { list.reload(); health.reload(); }} disabled={list.loading}
+          <Button icon={<RefreshCw size={14} />} onClick={() => { list.reload(); registry.reload(); }} disabled={list.loading}
             aria-label="Refresh engagements">Refresh</Button>
           <Button variant="primary" icon={<Plus size={15} />} onClick={() => navigate("/engagements/new")}>New engagement</Button>
         </div>
@@ -118,10 +118,10 @@ export default function Dashboard() {
 
       <Card
         title={<span className="inline-flex items-center gap-1.5"><Wrench size={14} className="text-ink-500" /> Tool availability</span>}
-        description={health.error ? "Backend unreachable" : `${available} of ${tools.length} tools installed · missing tools reduce coverage and appear as degradations`}
+        description={registry.error ? "Backend unreachable" : `${available} of ${tools.length} tools installed · missing tools reduce coverage and appear as degradations`}
         actions={<Link to="/settings" className="link text-xs">Manage</Link>}
       >
-        {health.loading && !health.data ? (
+        {registry.loading && !registry.data ? (
           <div className="flex flex-wrap gap-2">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="h-6 w-24 animate-pulse rounded bg-ink-100" />)}</div>
         ) : (
           <div className="flex flex-wrap gap-1.5">
@@ -138,7 +138,7 @@ export default function Dashboard() {
         )}
       </Card>
 
-      <ErrorNote error={health.error} />
+      <ErrorNote error={registry.error} />
       <p className="text-xs text-ink-500">
         Profiles — <span className="text-ink-700">passive</span>: observe only · <span className="text-ink-700">safe active</span>: non-destructive checks ·
         <span className="text-ink-700"> advanced validation</span>: adds independent replay proof. Findings only exist with captured evidence.

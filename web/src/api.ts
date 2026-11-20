@@ -1,9 +1,12 @@
 import type { Settings, ToolInfo } from "./types";
 
-const TOKEN_KEY = "libella.token";
-export const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
-export const setToken = (t: string) => localStorage.setItem(TOKEN_KEY, t.trim());
-export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
+// In memory only: never persisted to browser storage or echoed into a URL.
+// Pre-hardening builds kept the token under this key; drop any leftover copy on load.
+try { localStorage.removeItem("libella.token"); } catch { /* storage blocked */ }
+let token = "";
+export const getToken = () => token;
+export const setToken = (t: string) => { token = t.trim(); };
+export const clearToken = () => { token = ""; };
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -37,8 +40,21 @@ export const put = <T>(path: string, body: unknown) => api<T>(path, { method: "P
 export const tools = () => get<ToolInfo[]>("/api/tools");
 export const settings = () => get<Settings>("/api/settings");
 
-export function reportUrl(eid: string, format: "md" | "sarif" | "pdf") {
-  return `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}&token=${encodeURIComponent(getToken())}`;
+/** EventSource cannot send headers: a single-use 60s ticket for this engagement's stream. */
+export const mintTicket = (eid: string) =>
+  post<{ ticket: string }>("/api/ticket", { engagement_id: eid }).then((r) => r.ticket);
+
+/** Downloads use fetch so the bearer header travels instead of a token in the URL. */
+export async function downloadReport(eid: string, format: "md" | "sarif" | "pdf" | "dojo") {
+  const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}`;
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  const href = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = format === "dojo" ? `libella-${eid}-defectdojo.json` : `${eid}.${format}`;
+  a.click();
+  URL.revokeObjectURL(href);
 }
 
 /** Query string from defined, non-empty values. */

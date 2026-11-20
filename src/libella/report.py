@@ -13,15 +13,25 @@ from urllib.parse import quote
 from .db import DB
 from .evidence import EvidenceStore
 
+_CRED_LABEL = (r"(?:proxy-)?authorization|(?:set-)?cookie|x-api-key|x-auth-token|password|"
+               r"passwd|pwd|secret|api[_-]?key|access[_-]?key|token")
+
 REDACT_PATTERNS = [
+    # credential headers in any scheme (Basic/Digest/Negotiate): the scheme word used to
+    # absorb the match, leaving the credential itself in the report
+    (re.compile(r"(?i)\b((?:proxy-)?authorization)\s*:\s*[^\n\"']+"), r"\1: [REDACTED]"),
     (re.compile(r"(?i)(password|passwd|pwd|secret|api[_-]?key|access[_-]?key|token|authorization)\s*[:=]\s*[\"']?([^\s\"',;&]{4,})"),
      r"\1=[REDACTED]"),
     (re.compile(r"(?i)bearer\s+[a-z0-9\-._~+/]+=*"), "Bearer [REDACTED]"),
-    # header forms: "Cookie: ...", "Set-Cookie: ..." and their JSON keys
+    # header forms: "Cookie: ...", "Set-Cookie: ..."
     (re.compile(r"(?i)\b((?:set-)?cookie|x-api-key|x-auth-token)\s*:\s*[^\n\"']+"),
      r"\1: [REDACTED]"),
-    (re.compile(r"(?i)\"((?:set-)?cookie|x-api-key|x-auth-token)\"\s*:\s*\"[^\"]*\""),
-     r'"\1": "[REDACTED]"'),
+    # quoted key/value pairs (JSON bodies, dict reprs): the quotes around the key defeated
+    # every labelled pattern, so whole credential-bearing request/response bodies shipped.
+    # Affixes cover db_password / client_secret / access_key_id; the value quote is kept so
+    # the surrounding document still parses.
+    (re.compile(rf"(?i)([\"'])(?:[a-z0-9_.-]*(?:{_CRED_LABEL})[a-z0-9_.-]*)\1\s*:\s*([\"'])[^\"'\n]*\2"),
+     r"\1\2[REDACTED]\2"),
     (re.compile(r"(?i)\b(session|sessionid|jsessionid|phpsessid|sid|auth[_-]?token)\s*=\s*[A-Za-z0-9%._\-]{8,}"),
      r"\1=[REDACTED]"),
     (re.compile(r"\b(?:\d[ -]*?){13,16}\b"), "[REDACTED-CARD]"),
@@ -95,9 +105,9 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
     refused = [t for t in tool_calls if (t["scope_decision"] or "").startswith("refused")]
 
     report = {
-        "engagement": {"id": eng["id"], "name": eng["name"], "status": eng["status"],
+        "engagement": {"id": eng["id"], "name": _safe(eng["name"]), "status": eng["status"],
                        "profile": eng["profile"], "started_at": eng["started_at"],
-                       "finished_at": eng["finished_at"], "status_detail": eng["status_detail"]},
+                       "finished_at": eng["finished_at"], "status_detail": _safe(eng["status_detail"])},
         "scope": scope,
         "summary": {
             "assets": len(assets), "intents": len(intents),
@@ -110,8 +120,9 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
             "llm_tokens": spend["i"] + spend["o"],
         },
         "findings": [],
-        "degradations": [{"code": json.loads(d["payload_json"]).get("code"),
-                          "detail": json.loads(d["payload_json"]).get("detail")} for d in degradations],
+        "degradations": [{"code": _safe(json.loads(d["payload_json"]).get("code")),
+                          "detail": _safe(json.loads(d["payload_json"]).get("detail"))}
+                         for d in degradations],
         "generated_at": time.time(),
     }
     for f in findings:

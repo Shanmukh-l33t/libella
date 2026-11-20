@@ -5,11 +5,13 @@ import secrets
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .auth_browser import STEP_ACTIONS, AuthBrowser
 from .browser_crawl import browser_available
@@ -18,16 +20,32 @@ from .evidence import EvidenceStore
 from .findings import FindingPipeline
 from .llm import LLM
 from .orchestrator import Orchestrator
-from . import mcp_client  # plugin/MCP extension framework
+from . import __version__, mcp_client  # plugin/MCP extension framework
 from .plugins import PluginHost
 from .report import render_report
 from .scope import Scope
-from .secrets import SecretBox
+from .secrets import SecretBox, is_encrypted
 from .tools import Registry
 from .tools.adapters import ALL_ADAPTERS
 from .tools.http_probe import HttpProbe
 from .tools.runner import ToolRunner
 from .verifier import Verifier
+
+
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            response = None
+        missing = response is None or response.status_code == 404
+        if missing and not scope['path'].startswith(('/api/', '/assets/')):
+            return FileResponse(Path(str(self.directory)) / 'index.html', status_code=200)
+        if response is None:
+            raise StarletteHTTPException(status_code=404)
+        return response
 
 
 class App:
@@ -61,8 +79,8 @@ class App:
         token_row = self.db.one("SELECT value_json FROM settings WHERE key='api_token'")
         if token_row:
             stored = json.loads(token_row["value_json"])
-            self.token = self.box.decrypt_or_plain(stored)
-            if stored == self.token:  # legacy plaintext: re-encrypt at rest
+            self.token = self.box.decrypt_or_plain(stored)  # wrong key raises, never ciphertext
+            if not is_encrypted(stored):  # unambiguous legacy plaintext: re-encrypt once
                 self.db.execute("UPDATE settings SET value_json=? WHERE key='api_token'",
                                 (json.dumps(self.box.encrypt(self.token)),))
         else:
@@ -99,22 +117,80 @@ class App:
             self.db.emit(engagement_id, "engagement_failed", {"error": str(e)})
 
 
+def _public_auth(auth: dict) -> dict:
+    """Display schema for engagement auth: identity usernames only.
+
+    auth_json also carries passwords, OpenAPI paths and operator test hints; an
+    allowlist keeps every future field server-side by default.
+    """
+    return {"identities": [{"username": i.get("username")}
+                           for i in auth.get("identities") or [] if isinstance(i, dict)]}
+
+
+def _public_url(url) -> str | None:
+    """Login URL without userinfo, query or fragment (tokens ride in both)."""
+    try:
+        p = urlparse(url or "")
+    except ValueError:
+        return None
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return None
+    return urlunparse((p.scheme, p.netloc.rpartition("@")[2], p.path, "", "", ""))
+
+
+def _exchange_summary(row: dict) -> dict:
+    """Finding-bound exchange list row: no raw request/response material."""
+    return {k: row.get(k) for k in ("id", "engagement_id", "evidence_id", "method", "url",
+                                    "status", "duration_ms", "tool", "peer_ip", "created_at")}
+
+
 def create_api(app: App) -> FastAPI:
-    api = FastAPI(title="Libella", version="0.1.0")
+    api = FastAPI(title="Libella", version=__version__)
     api.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
                        allow_methods=["*"], allow_headers=["*"])
+
+    # one-shot SSE tickets: ticket -> (exact stream path, monotonic deadline). A ticket
+    # opens one engagement's stream and nothing else, so a URL that leaks cannot
+    # authorize another GET route.
+    # shortcut: in-process store, so tickets only work with a single uvicorn worker;
+    # upgrade to an HMAC-signed ticket if the API ever runs multiple workers.
+    TICKET_TTL, MAX_TICKETS = 60.0, 64
+    tickets: dict[str, tuple[str, float]] = {}
+    tickets_lock = threading.Lock()
 
     def auth(request: Request):
         if request.url.path in ("/api/health", "/"):
             return
-        tok = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        tok = tok or request.query_params.get("token", "")
-        if not secrets.compare_digest(tok, app.token):
-            raise HTTPException(401, "invalid token")
+        scheme, _, tok = request.headers.get("Authorization", "").partition(" ")
+        if scheme == "Bearer" and tok and secrets.compare_digest(tok, app.token):
+            return
+        ticket = request.query_params.get("ticket", "")
+        if ticket:
+            with tickets_lock:  # pop first: a mismatched or late use burns the ticket
+                target, deadline = tickets.pop(ticket, ("", 0.0))
+            if request.method == "GET" and target == request.url.path and deadline > time.monotonic():
+                return  # EventSource cannot set headers; ticket is single-use, 60s, one stream
+        raise HTTPException(401, "invalid token")
 
+    @api.post("/api/ticket", dependencies=[Depends(auth)])
+    def issue_ticket(body: dict):
+        eid = body.get("engagement_id")
+        if not isinstance(eid, str) or not eid:
+            raise HTTPException(400, "engagement_id required")
+        now = time.monotonic()
+        t = secrets.token_urlsafe(24)
+        with tickets_lock:
+            for k in [k for k, (_, exp) in tickets.items() if exp <= now]:
+                tickets.pop(k, None)
+            while len(tickets) >= MAX_TICKETS:  # bound memory; oldest ticket goes first
+                tickets.pop(next(iter(tickets)))
+            tickets[t] = (f"/api/engagements/{eid}/stream", now + TICKET_TTL)
+        return {"ticket": t, "expires_in": int(TICKET_TTL)}
+
+    # Public liveness probe: no tool probing, no inventory (see docs/healthcheck.md).
     @api.get("/api/health")
     def health():
-        return {"status": "ok", "version": "0.1.0", "tools": app.registry.available()}
+        return {"status": "ok", "version": __version__}
 
     @api.post("/api/engagements", dependencies=[Depends(auth)])
     def create_engagement(body: dict):
@@ -131,7 +207,7 @@ def create_api(app: App) -> FastAPI:
             "INSERT INTO engagements(id, name, profile, status, scope_json, auth_json, budgets_json, "
             "objectives_json, window_start, window_end, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (eid, name, body.get("profile", "safe_active"), "draft", json.dumps(scope_spec),
-             json.dumps(body.get("auth", {})), json.dumps(body.get("budgets", {})),
+             app.db.seal(json.dumps(body.get("auth", {}))), json.dumps(body.get("budgets", {})),
              json.dumps(body.get("objectives", [])), body.get("window_start"),
              body.get("window_end"), time.time()))
         app.db.emit(eid, "engagement_created", {"name": name})
@@ -143,9 +219,7 @@ def create_api(app: App) -> FastAPI:
         for r in rows:
             r["scope"] = json.loads(r.pop("scope_json"))
             r["budgets"] = json.loads(r.pop("budgets_json"))
-            r["auth"] = {"identities": [
-                {k: v for k, v in i.items() if k != "password"} for i in json.loads(r.pop("auth_json")).get("identities", [])
-            ]}
+            r["auth"] = _public_auth(json.loads(r.pop("auth_json")))
             r["summary"] = app.db.one(
                 "SELECT COUNT(*) n FROM findings WHERE engagement_id=?", (r["id"],))["n"]
         return rows
@@ -157,9 +231,7 @@ def create_api(app: App) -> FastAPI:
             raise HTTPException(404)
         r["scope"] = json.loads(r.pop("scope_json"))
         r["budgets"] = json.loads(r.pop("budgets_json"))
-        auth = json.loads(r.pop("auth_json"))
-        r["auth"] = {**auth, "identities": [
-            {k: v for k, v in i.items() if k != "password"} for i in auth.get("identities", [])]}
+        r["auth"] = _public_auth(json.loads(r.pop("auth_json")))
         r["spend"] = app.llm().spend(eid) if app.llm() else {"cost_usd": 0}
         return r
 
@@ -306,7 +378,7 @@ def create_api(app: App) -> FastAPI:
         for eid in f["evidence_ids"]:
             ex = app.db.one("SELECT * FROM exchanges WHERE evidence_id=?", (eid,))
             if ex:
-                f["exchanges"].append(ex)
+                f["exchanges"].append(_exchange_summary(ex))
         return f
 
     @api.post("/api/findings/{fid}/verify", dependencies=[Depends(auth)])
@@ -367,6 +439,8 @@ def create_api(app: App) -> FastAPI:
         except json.JSONDecodeError:
             ex.pop("req_headers_json", None)
             ex.pop("resp_headers_json", None)
+        if ex.get("req_body"):
+            ex["req_body"] = redact(ex["req_body"])
         if ex["evidence_id"]:
             try:
                 blob = app.evidence.read_json(ex["evidence_id"])
@@ -395,6 +469,11 @@ def create_api(app: App) -> FastAPI:
             from .report_pdf import render_pdf
             pdf = render_pdf(json.loads((p / "report.json").read_text()), p / "report.pdf")
             return FileResponse(pdf, media_type="application/pdf", filename=f"{eid}.pdf")
+        if format == "dojo":
+            from .export_dojo import defectdojo_export
+            body = defectdojo_export(json.loads((p / "report.json").read_text()))
+            return JSONResponse(body, headers={
+                "Content-Disposition": f'attachment; filename="libella-{eid}-defectdojo.json"'})
         return json.loads((p / "report.json").read_text())
 
     # ---------------- remediation tracking + historical comparison (WS-Report) ----
@@ -403,11 +482,21 @@ def create_api(app: App) -> FastAPI:
         from .remediation import set_remediation
         try:
             return set_remediation(app.db, fid, notes=body.get("notes"), owner=body.get("owner"),
-                                   fix_commit=body.get("fix_commit"), state=body.get("state"))
+                                   fix_commit=body.get("fix_commit"), due_at=body.get("due_at"),
+                                   remediation_state=body.get("remediation_state"),
+                                   state=body.get("state"))
         except KeyError:
             raise HTTPException(404, "finding not found")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+
+    @api.get("/api/findings/{fid}/activity", dependencies=[Depends(auth)])
+    def finding_activity_route(fid: str, limit: int = 50):
+        from .remediation import finding_activity
+        try:
+            return finding_activity(app.db, fid, limit)
+        except KeyError:
+            raise HTTPException(404, "finding not found")
 
     @api.get("/api/engagements/{eid}/remediation-board", dependencies=[Depends(auth)])
     def remediation_board_route(eid: str):
@@ -538,9 +627,13 @@ def create_api(app: App) -> FastAPI:
 
     def _ctx_out(row: dict) -> dict:
         """auth_contexts row without cookie values (session secrets stay server-side)."""
+        flow = json.loads(row.get("login_flow_json") or "{}")
         return {**{k: row.get(k) for k in ("id", "engagement_id", "name", "username", "status",
                                            "last_verified_at", "created_at")},
-                "login_flow": json.loads(row.get("login_flow_json") or "{}"),
+                "login_flow": {"base_url": _public_url(flow.get("base_url")),
+                               "login_url": _public_url(flow.get("login_url")),
+                               "selectors": flow.get("selectors"),
+                               "success_assertion": flow.get("success_assertion")},
                 "cookie_count": len(json.loads(row.get("cookies_json") or "[]"))}
 
     @api.post("/api/engagements/{eid}/auth-contexts",
@@ -669,6 +762,6 @@ def create_api(app: App) -> FastAPI:
             webdist = p
             break
     if webdist:
-        api.mount("/", StaticFiles(directory=str(webdist), html=True), name="web")
+        api.mount("/", SPAStaticFiles(directory=str(webdist), html=True), name="web")
 
     return api

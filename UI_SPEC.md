@@ -33,7 +33,8 @@ data font, clear section headers. Dark mode optional (skip if time-boxed).
 
 ## API contract (backend at same origin; dev proxy to 127.0.0.1:8787)
 
-- GET /api/health (no auth) -> {status, version, tools:[{name,available,...}]}
+- GET /api/health (no auth) -> {status, version} (liveness only, no inventory)
+- GET /api/tools (auth) -> [{name, description, category, available, parameters, ...}]
 - POST /api/engagements {name, scope:{targets:[{kind:url|domain|cidr|ip,value,include_subdomains?}], exclusions:[...], allowed_ports?, categories:[recon,web,api,infra], rate_limit_rps, max_concurrency, advanced_validation?}, profile, auth:{identities:[{username,password,login_url,username_field,password_field}], test_hints?}, budgets:{max_duration_s,max_usd}, objectives?} -> {id}
 - GET /api/engagements -> list (scope, budgets, auth sanitized, summary finding count)
 - GET /api/engagements/{id} -> detail + spend
@@ -87,7 +88,9 @@ Intent statuses: open, running, done, blocked, exhausted, stopped.
      MD/SARIF (open /report?format=...&token=...); "Regenerate" calls GET.
 4. Finding detail (/findings/:id): full metadata, description/impact/
    remediation, state badge + transition actions (rule out with reason),
-   Verify button (POST verify, show verdict), Retest button. Evidence
+   Verify button (POST verify, show verdict), Retest button. A Remediation card
+   persists owner, due date and remediation status (independent of verification)
+   and shows the finding's activity history. Evidence
    viewer: list bound exchanges; each shows method/url/status/duration and
    expandable request/response (monospace, redacted content from API).
    Verification history table (attempt, verdict, detail). Evidence chain
@@ -116,7 +119,7 @@ handles 401 -> token screen. Dev: vite proxy /api -> http://127.0.0.1:8787.
 ## Verification required before handoff
 
 1. `npm run build` succeeds; web/dist exists.
-2. Start backend: `cd /home/computebox/project-pentest/libella && .venv/bin/python -m libella.main --port 8788 --data-dir /tmp/libella-ui-test` (token printed).
+2. Start the backend with a fresh local data directory. In a second private terminal run `libella --show-token --data-dir <same-directory>`. Do not capture the token in screenshots or logs.
 3. Create a real engagement via curl against lab http://127.0.0.1:8801 (scope url target), start it, wait for done.
 4. Verify via curl that every API route the UI uses returns real data.
 5. If a browser tool is available, load the UI, screenshot dashboard +

@@ -105,7 +105,8 @@ inspect findings and evidence, export the report.
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 python -m libella.main --port 8787 --data-dir ./data
-# token is printed at startup
+# In a second private terminal, display the token for this instance:
+libella --data-dir ./data --show-token
 
 # frontend (Node 22+)
 cd web && npm ci && npm run build   # built UI served by backend at /

@@ -7,7 +7,7 @@ export default function TokenScreen({ onAuthed }: { onAuthed: () => void }) {
   const [token, setTok] = useState(getToken());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [health, setHealth] = useState<{ version?: string; tools?: unknown[] } | null>(null);
+  const [health, setHealth] = useState<{ version?: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/health").then((r) => r.json()).then(setHealth).catch(() => setHealth(null));
@@ -15,7 +15,10 @@ export default function TokenScreen({ onAuthed }: { onAuthed: () => void }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token.trim()) { setError("Enter the API token printed by the Libella backend."); return; }
+    if (!token.trim()) {
+      setError("Enter the API token: the value of LIBELLA_TOKEN, or run `libella --show-token --data-dir <dir>` in a terminal.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setToken(token);
@@ -42,16 +45,20 @@ export default function TokenScreen({ onAuthed }: { onAuthed: () => void }) {
           </div>
           <label className="label" htmlFor="token">API token</label>
           <Input id="token" type="password" autoFocus autoComplete="off" value={token}
-            onChange={(e) => setTok(e.target.value)} placeholder="Paste the token from the server log"
+            onChange={(e) => setTok(e.target.value)} placeholder="Paste the API token"
             error={!!error} />
           {error && <p className="mt-1.5 text-xs text-sev-high">{error}</p>}
-          <p className="mt-2 text-xs text-ink-500">Stored in this browser only. Sent as a bearer token.</p>
+          <p className="mt-2 text-xs text-ink-500">
+            Held in memory for this tab only, so a reload asks again. Never written to browser storage or a URL.
+            Get it from <span className="font-mono">LIBELLA_TOKEN</span> or
+            <span className="font-mono"> libella --show-token --data-dir &lt;dir&gt;</span> in a terminal.
+          </p>
           <Button type="submit" variant="primary" loading={busy} className="mt-4 w-full">Connect</Button>
         </form>
         <div className="mt-4 flex items-center justify-between px-1 text-xs text-ink-500">
           <span className="inline-flex items-center gap-1.5">
             <ShieldCheck size={13} className={health ? "text-sev-low" : "text-ink-300"} />
-            {health ? `Backend ${health.version || ""} · ${health.tools?.length ?? 0} tools` : "Backend unreachable"}
+            {health ? `Backend ${health.version || ""}` : "Backend unreachable"}
           </span>
           <span>localhost only</span>
         </div>

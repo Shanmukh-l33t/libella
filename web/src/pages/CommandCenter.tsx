@@ -17,7 +17,7 @@ const ACTIVE = ["running", "paused"];
 export default function CommandCenter() {
   const navigate = useNavigate();
   const list = useApi<Engagement[]>("/api/engagements");
-  const health = useApi<{ version: string; tools: ToolInfo[] }>("/api/health");
+  const registry = useApi<ToolInfo[]>("/api/tools");
   const [live, setLive] = useState<Record<string, Live>>({});
   const [loading, setLoading] = useState(false);
   const [partial, setPartial] = useState<string | null>(null);
@@ -69,7 +69,7 @@ export default function CommandCenter() {
   const cost = runs.reduce((n, r) => n + (r.cost_usd || 0), 0);
   const active = engagements.filter((e) => ACTIVE.includes(e.status));
   const failedRuns = runs.filter((r) => r.status === "failed" || r.status === "budget_exhausted");
-  const missingTools = (health.data?.tools || []).filter((t) => !t.available);
+  const missingTools = (registry.data || []).filter((t) => !t.available);
   const degradations = all.flatMap((l) => l.events.filter((ev) => ev.kind === "degradation"));
 
   const recent = useMemo(() =>
@@ -95,7 +95,7 @@ export default function CommandCenter() {
         </div>
         <div className="flex gap-2">
           <Button icon={<RefreshCw size={14} />} aria-label="Refresh command center" disabled={list.loading}
-            onClick={() => { list.reload(); health.reload(); }}>Refresh</Button>
+            onClick={() => { list.reload(); registry.reload(); }}>Refresh</Button>
           <Button variant="primary" icon={<Plus size={15} />} onClick={() => navigate("/engagements/new")}>New engagement</Button>
         </div>
       </div>

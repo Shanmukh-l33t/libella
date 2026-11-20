@@ -57,10 +57,10 @@ def test_compare_detects_new_fixed_persisting_and_severity_change(pair):
         "VALUES(?,?,?,?,?,?)", ("rt_1", "f_eng_b_0", None, "persists", "still injectable",
                                 time.time()))
     diff = compare_engagements(pair.db, "eng_a", "eng_b")
-    assert diff["counts"] == {"new": 1, "fixed": 1, "persisting": 1, "severity_changed": 1}
+    assert diff["counts"] == {"new": 1, "fixed": 0, "not_observed": 1, "persisting": 1, "severity_changed": 1}
     assert [f["dedup_key"] for f in diff["new"]] == ["open-redirect"]
-    assert [f["dedup_key"] for f in diff["fixed"]] == ["missing-hsts"]
-    assert diff["fixed"][0]["reason"] == "absent_in_b"
+    assert [f["dedup_key"] for f in diff["not_observed"]] == ["missing-hsts"]
+    assert diff["not_observed"][0]["reason"] == "absent_in_b"
     assert [f["dedup_key"] for f in diff["persisting"]] == ["sqli-products"]
     assert diff["persisting"][0]["retests"][0]["verdict"] == "persists"
     assert diff["severity_changed"][0]["previous_severity"] == "high"

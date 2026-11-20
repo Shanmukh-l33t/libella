@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, CheckCircle2, ChevronRight, RotateCcw, ShieldQuestion, XCircle } from "lucide-react";
 import { get, post } from "../api";
-import type { ChainStatus, Exchange, Finding as F } from "../types";
+import type { ChainStatus, Event as AuditEvent, Exchange, Finding as F } from "../types";
 import { useApi } from "../lib/hooks";
 import { fmtDuration, fmtTime, severityTone, stateTone, title } from "../lib/format";
 import {
-  Badge, Button, Card, CodeBlock, EmptyState, ErrorNote, Field, Modal, Skeleton, Table, Textarea, cx, useToast,
+  Badge, Button, Card, CodeBlock, EmptyState, ErrorNote, Field, Input, Modal, Select, Skeleton, Table, Textarea, cx, useToast,
 } from "../components/ui";
 
 export default function Finding() {
@@ -172,6 +172,8 @@ export default function Finding() {
         </div>
 
         <div className="space-y-4">
+          <RemediationCard key={f.id} finding={f} onSaved={reload} />
+
           <Card title="Metadata">
             <dl className="space-y-3 text-sm">
               <div><dt className="text-xs text-ink-500">Endpoint</dt><dd className="mt-0.5 break-all font-mono text-xs text-ink-900">{f.endpoint || "—"}</dd></div>
@@ -278,4 +280,92 @@ function ExchangeRow({ x }: { x: Exchange }) {
 function formatHeaders(h?: Record<string, string>) {
   if (!h) return "";
   return Object.entries(h).map(([k, v]) => `${k}: ${v}`).join("\n");
+}
+
+function RemediationCard({ finding, onSaved }: { finding: F; onSaved: () => void }) {
+  const toast = useToast();
+  const activity = useApi<AuditEvent[]>(`/api/findings/${finding.id}/activity?limit=20`);
+  const [owner, setOwner] = useState(finding.owner || "");
+  const [due, setDue] = useState(finding.due_at || "");
+  const [state, setState] = useState(finding.remediation_state || "open");
+  const [notes, setNotes] = useState(finding.remediation_notes || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await post(`/api/findings/${finding.id}/remediation`, { owner, due_at: due, remediation_state: state, notes });
+      toast("Remediation saved.", "success");
+      activity.reload();
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="Remediation tracking" description="Owner workflow — saved independently of verification.">
+      <div className="space-y-3">
+        <Field label="Owner" htmlFor="f-owner">
+          <Input id="f-owner" value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="team or person" maxLength={120} />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Status" htmlFor="f-rm-state">
+            <Select id="f-rm-state" value={state} onChange={(e) => setState(e.target.value)}>
+              {["open", "in_progress", "resolved"].map((s) => <option key={s} value={s}>{title(s)}</option>)}
+            </Select>
+          </Field>
+          <Field label="Due date" htmlFor="f-due">
+            <Input id="f-due" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Notes" htmlFor="f-notes">
+          <Textarea id="f-notes" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="what changed and why" maxLength={4000} />
+        </Field>
+        <ErrorNote error={error} />
+        <Button variant="primary" size="sm" loading={busy} onClick={save}>Save remediation</Button>
+      </div>
+
+      <div className="mt-4 border-t border-line pt-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-ink-900">Activity</span>
+          <span className="text-2xs tabular-nums text-ink-500">{activity.data?.length || 0}</span>
+        </div>
+        <ErrorNote error={activity.error} />
+        {activity.loading && !activity.data ? <Skeleton className="mt-2 h-12 w-full" /> : !(activity.data || []).length ? (
+          <p className="mt-2 text-xs text-ink-500">No activity recorded.</p>
+        ) : (
+          <ol className="mt-2 max-h-64 space-y-2 overflow-y-auto">
+            {(activity.data || []).map((ev) => (
+              <li key={ev.seq} className="text-xs">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-medium text-ink-700">{title(ev.kind)}</span>
+                  <span className="shrink-0 text-2xs text-ink-300">{fmtTime(ev.created_at)}</span>
+                </div>
+                {describeEvent(ev) && <p className="text-2xs leading-relaxed text-ink-500">{describeEvent(ev)}</p>}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function describeEvent(ev: AuditEvent) {
+  const changes = (ev.payload?.changes || {}) as Record<string, { from?: unknown; to?: unknown }>;
+  const labels: Record<string, string> = {
+    owner: "Owner", due_at: "Due date", remediation_state: "Status",
+    remediation_notes: "Notes", fix_commit: "Fix commit", state: "State",
+  };
+  const parts = Object.entries(changes).map(([k, v]) =>
+    `${labels[k] || title(k)}: ${v.from ?? "—"} → ${v.to ?? "—"}`);
+  if (parts.length) return parts.join(" · ");
+  if (ev.kind === "finding_state") return `State: ${title(String(ev.payload?.state || ""))}`;
+  if (ev.kind === "finding_new") return `${ev.payload?.severity || ""} · ${title(String(ev.payload?.state || ""))}`;
+  return "";
 }

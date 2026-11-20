@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { get, getToken } from "../api";
+import { get, mintTicket } from "../api";
 
 export function useApi<T>(path: string | null) {
   const [data, setData] = useState<T | null>(null);
@@ -38,9 +38,12 @@ export function useStream(eid: string | null, since: number | null, onEvent: (ki
     let closed = false;
     let retry = 0;
     let cursor = since;
-    const connect = () => {
+    const connect = async () => {
       if (closed) return;
-      es = new EventSource(`/api/engagements/${eid}/stream?since=${cursor}&token=${encodeURIComponent(getToken())}`);
+      let ticket = "";
+      try { ticket = await mintTicket(eid); } catch { /* 401 surfaces as a failed stream; retry waits */ }
+      if (closed) return;
+      es = new EventSource(`/api/engagements/${eid}/stream?since=${cursor}&ticket=${encodeURIComponent(ticket)}`);
       es.onopen = () => { retry = 0; setConnected(true); };
       for (const kind of EVENT_KINDS) {
         es.addEventListener(kind, (ev) => {

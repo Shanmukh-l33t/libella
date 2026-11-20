@@ -3,7 +3,9 @@
 Pure persistence helpers over findings/remediation columns + retests: the report
 layer renders what is stored here, it never authors evidence.
 """
+import json
 import time
+from datetime import date
 
 from .db import DB
 from .findings import STATE_ORDER, FindingPipeline
@@ -12,16 +14,39 @@ from .report import SEV_ORDER
 # Remediation lifecycle, in board order. Derived from finding state + assignments.
 BOARD = [("open", "Open"), ("in_progress", "In progress"), ("remediated", "Remediated"),
          ("fixed", "Fixed"), ("regressed", "Regressed"), ("closed", "Closed")]
+# Operator-owned workflow state. Independent of verification: a retest (finding
+# state) decides fixed/regressed, and it always wins over what the owner claims.
+REMEDIATION_STATES = ("open", "in_progress", "resolved")
 # "a fix was shipped" is an operator fact, but only for a finding that was confirmed.
 REMEDIABLE_FROM = {"validated", "reported", "remediated", "retested_fixed",
                    "retested_persists"}
 
+_LIMITS = {"owner": 120, "remediation_notes": 4000, "fix_commit": 200}
 _FIELDS = ("id", "engagement_id", "title", "severity", "state", "endpoint", "dedup_key",
-           "owner", "remediation_notes", "fix_commit", "remediated_at", "updated_at")
+           "owner", "due_at", "remediation_state", "remediation_notes", "fix_commit",
+           "remediated_at", "updated_at")
 
 
 def _slim(row: dict) -> dict:
     return {k: row.get(k) for k in _FIELDS}
+
+
+def _text(col: str, value):
+    if not isinstance(value, str):
+        raise ValueError(f"{col} must be a string")
+    if len(value) > _LIMITS[col]:
+        raise ValueError(f"{col} exceeds {_LIMITS[col]} characters")
+    return value.strip()
+
+
+def _due(value):
+    """Empty string clears the due date; anything else must be an ISO calendar date."""
+    if value == "":
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except (TypeError, ValueError):
+        raise ValueError("due_at must be an ISO date (YYYY-MM-DD)")
 
 
 def board_status(f: dict) -> str:
@@ -30,35 +55,44 @@ def board_status(f: dict) -> str:
         return "fixed"
     if state == "retested_persists":
         return "regressed"
-    if state == "remediated":
-        return "remediated"
     if state == "ruled_out":
         return "closed"
-    if f.get("owner") or f.get("remediation_notes") or f.get("fix_commit"):
+    if f.get("remediation_state") == "resolved" or state == "remediated":
+        return "remediated"
+    if f.get("remediation_state") == "in_progress" or f.get("owner") or \
+            f.get("remediation_notes") or f.get("fix_commit"):
         return "in_progress"
     return "open"
 
 
 def set_remediation(db: DB, finding_id: str, notes: str | None = None, owner: str | None = None,
-                    fix_commit: str | None = None, state: str | None = None) -> dict:
-    """Update remediation fields; entering 'remediated' stamps remediated_at.
+                    fix_commit: str | None = None, due_at: str | None = None,
+                    remediation_state: str | None = None, state: str | None = None) -> dict:
+    """Update remediation fields; entering 'resolved' stamps remediated_at.
 
-    Raises KeyError for an unknown finding, ValueError for an unknown state or an
-    illegal transition. State goes through FindingPipeline.transition, so the
-    lifecycle (and the reproduced-verification requirement) is not bypassable
-    from this surface: remediation tracks findings, it does not confirm them.
+    `remediation_state` is the owner's workflow (open/in_progress/resolved) and is
+    independent of verification. `state` is the finding lifecycle: it still goes
+    through FindingPipeline.transition, so verification gates cannot be bypassed.
+    Raises KeyError for an unknown finding, ValueError for unknown states or dates.
     """
     f = db.one("SELECT * FROM findings WHERE id=?", (finding_id,))
     if f is None:
         raise KeyError(finding_id)
     if state is not None and state not in STATE_ORDER:
         raise ValueError(f"invalid state {state}")
+    if remediation_state is not None and remediation_state not in REMEDIATION_STATES:
+        raise ValueError(f"invalid remediation state {remediation_state}")
     now = time.time()
-    sets, params = ["updated_at=?"], [now]
+    updates = {}
     for col, val in (("remediation_notes", notes), ("owner", owner), ("fix_commit", fix_commit)):
         if val is not None:
-            sets.append(f"{col}=?")
-            params.append(val)
+            updates[col] = _text(col, val)
+    if due_at is not None:
+        updates["due_at"] = _due(due_at)
+    if remediation_state is not None:
+        updates["remediation_state"] = remediation_state
+        if remediation_state == "resolved":
+            updates.setdefault("remediated_at", f["remediated_at"] or now)
     if state is not None and state != f["state"]:
         if state != "remediated":
             # every other state is a *verdict*: the finding lifecycle decides
@@ -66,16 +100,45 @@ def set_remediation(db: DB, finding_id: str, notes: str | None = None, owner: st
         elif f["state"] not in REMEDIABLE_FROM:
             raise ValueError(f"cannot mark a {f['state']} finding remediated; validate it first")
         else:
-            sets.append("state=?")
-            params.append(state)
-            sets.append("remediated_at=COALESCE(remediated_at, ?)")
-            params.append(now)
-    params.append(finding_id)
-    db.execute(f"UPDATE findings SET {', '.join(sets)} WHERE id=?", tuple(params))
+            updates["state"] = state
+            updates.setdefault("remediated_at", f["remediated_at"] or now)
+    before = {k: f.get(k) for k in updates}
+    sets = ", ".join(f"{col}=?" for col in updates)
+    db.execute(f"UPDATE findings SET updated_at=?{', ' + sets if sets else ''} WHERE id=?",
+               (now, *updates.values(), finding_id))
+    after = db.one("SELECT * FROM findings WHERE id=?", (finding_id,))
+    assert after is not None  # row exists: we just read and updated it
+    changes = {k: {"from": before[k], "to": after.get(k)}
+               for k in updates if before[k] != after.get(k)}
     db.emit(f["engagement_id"], "finding_remediation",
-            {"finding_id": finding_id, "owner": owner, "fix_commit": fix_commit,
-             "state": state or f["state"]})
-    return _slim(db.one("SELECT * FROM findings WHERE id=?", (finding_id,)))
+            {"finding_id": finding_id, "owner": after.get("owner"),
+             "due_at": after.get("due_at"),
+             "remediation_state": after.get("remediation_state"),
+             "fix_commit": after.get("fix_commit"),
+             "state": state or f["state"], "changes": changes})
+    return _slim(after)
+
+
+def finding_activity(db: DB, finding_id: str, limit: int = 50) -> list[dict]:
+    """This finding's audit trail, newest first (new/dedup/state/remediation events)."""
+    f = db.one("SELECT engagement_id FROM findings WHERE id=?", (finding_id,))
+    if f is None:
+        raise KeyError(finding_id)
+    limit = max(1, min(int(limit), 200))
+    # shortcut: only the newest 400 engagement events are scanned; index the payload
+    # (or add a finding_id column) if event feeds grow past that window.
+    rows = db.query("SELECT seq, kind, payload_json, created_at FROM events "
+                    "WHERE engagement_id=? ORDER BY seq DESC LIMIT 400",
+                    (f["engagement_id"],))
+    out = []
+    for r in rows:
+        payload = json.loads(r.pop("payload_json"))
+        if payload.get("finding_id") != finding_id:
+            continue
+        out.append({**r, "payload": payload})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def remediation_board(db: DB, engagement_id: str) -> dict:
@@ -114,7 +177,7 @@ def compare_engagements(db: DB, eng_a: str, eng_b: str) -> dict:
     b_rows = db.query(f"SELECT {cols} FROM findings WHERE engagement_id=?", (eng_b,))
     a, b = _index(a_rows), _index(b_rows)
 
-    new, fixed, persisting, changed = [], [], [], []
+    new, fixed, persisting, changed, absent = [], [], [], [], []
     for key, fb in b.items():
         fa = a.get(key)
         if fa is None:
@@ -131,7 +194,7 @@ def compare_engagements(db: DB, eng_a: str, eng_b: str) -> dict:
             persisting.append({**fb, "dedup_key": key, "previous_state": fa["state"]})
     for key, fa in a.items():
         if key not in b:
-            fixed.append({**fa, "dedup_key": key, "reason": "absent_in_b"})
+            absent.append({**fa, "dedup_key": key, "reason": "absent_in_b"})
 
     retests = {}
     for r in db.query("SELECT finding_id, verdict, detail, created_at FROM retests "
@@ -139,7 +202,7 @@ def compare_engagements(db: DB, eng_a: str, eng_b: str) -> dict:
                       "ORDER BY created_at", (eng_b,)):
         retests.setdefault(r["finding_id"], []).append(
             {"verdict": r["verdict"], "detail": r["detail"], "created_at": r["created_at"]})
-    for bucket in (new, fixed, persisting, changed):
+    for bucket in (new, fixed, persisting, changed, absent):
         for f in bucket:
             f["retests"] = retests.get(f["id"], [])
 
@@ -148,9 +211,9 @@ def compare_engagements(db: DB, eng_a: str, eng_b: str) -> dict:
     return {
         "a": {"id": eng_a, "name": name.get(eng_a), "findings": len(a_rows)},
         "b": {"id": eng_b, "name": name.get(eng_b), "findings": len(b_rows)},
-        "new": new, "fixed": fixed, "persisting": persisting, "severity_changed": changed,
+        "not_observed": absent, "new": new, "fixed": fixed, "persisting": persisting, "severity_changed": changed,
         "counts": {"new": len(new), "fixed": len(fixed), "persisting": len(persisting),
-                   "severity_changed": len(changed)},
+                   "severity_changed": len(changed), "not_observed": len(absent)},
         "retest_verdicts": {f["id"]: [r["verdict"] for r in f["retests"]]
                             for f in new + persisting + changed if f["retests"]},
     }

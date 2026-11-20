@@ -24,7 +24,7 @@ auth_contexts(id, engagement_id, name, username, login_flow_json, cookies_json,
 workflows(id, engagement_id, name, auth_context_id, steps_json, status, created_at)
   steps_json: [{action: navigate|click|fill|submit|extract|assert, selector, value, ...}]
 remediation: ALTER findings ADD COLUMN remediation_notes TEXT, owner TEXT,
-  fix_commit TEXT, remediated_at REAL
+  fix_commit TEXT, remediated_at REAL, due_at TEXT, remediation_state TEXT DEFAULT 'open'
 traffic: ALTER exchanges ADD COLUMN replay_of TEXT, tags_json TEXT DEFAULT '[]'
 memory_facts(id, target_key, kind, value_json, source_engagement_id, confidence,
   first_seen, last_seen)  -- cross-run intelligence keyed by stable target identity
@@ -120,6 +120,21 @@ writers that re-check evidence binding + scope.
 - PDF export (reportlab/weasyprint) from canonical report.json; redacted.
 - Remediation tracking fields + board; historical comparison (diff two engagements'
   findings); retest report section. Executive + technical views.
+
+## Finding triage (remediation workflow)
+
+- Owner, due date and remediation state persist on the finding row and are edited
+  via POST /api/findings/{id}/remediation (token auth, same gate as every other
+  route). Remediation state is `open | in_progress | resolved`; posting `resolved`
+  stamps remediated_at. It is independent of verification: no reproduced check is
+  required, and a retest verdict (fixed/regressed) still wins on the board.
+- `due_at` is an ISO calendar date (YYYY-MM-DD); empty string clears it. Text
+  limits: owner 120, notes 4000, fix_commit 200. Invalid state/date/oversize -> 400.
+- Activity: every write emits `finding_remediation` with a field-level `changes`
+  diff; GET /api/findings/{id}/activity?limit= (<=200, newest first) returns this
+  finding's events, reusing the existing events table.
+- UI: finding detail has a Remediation card (owner, status, due date, notes) plus
+  the activity list; the remediation board panel uses the same fields.
 
 ## Acceptance discipline
 Every module: unit + integration tests, negative controls, real execution evidence,

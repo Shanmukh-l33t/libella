@@ -27,7 +27,7 @@ class EvidenceStore:
 
     def _last_hash(self, engagement_id: str) -> str:
         row = self.db.one(
-            "SELECT chain_hash FROM evidence WHERE engagement_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            "SELECT chain_hash FROM evidence WHERE engagement_id=? ORDER BY rowid DESC LIMIT 1",
             (engagement_id,),
         )
         return row["chain_hash"] if row else "0" * 64
@@ -41,16 +41,13 @@ class EvidenceStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             fd, tmp = tempfile.mkstemp(dir=str(path.parent))
-            closed = False
             try:
-                os.write(fd, data)
-                os.fsync(fd)
-                os.close(fd)
-                closed = True
+                with os.fdopen(fd, 'wb') as out:
+                    out.write(data)
+                    out.flush()
+                    os.fsync(out.fileno())
                 os.replace(tmp, path)
             except BaseException:
-                if not closed:
-                    os.close(fd)
                 if os.path.exists(tmp):
                     os.unlink(tmp)
                 raise
@@ -88,19 +85,21 @@ class EvidenceStore:
 
     def verify_chain(self, engagement_id: str) -> dict:
         rows = self.db.query(
-            "SELECT * FROM evidence WHERE engagement_id=? ORDER BY created_at, rowid",
+            "SELECT * FROM evidence WHERE engagement_id=? ORDER BY rowid",
             (engagement_id,),
         )
         prev = "0" * 64
-        for r in rows:
+        for checked, r in enumerate(rows, 1):
             expect = hashlib.sha256(
                 f"{prev}|{r['sha256']}|{r['kind']}|{r['created_at']}".encode()
             ).hexdigest()
             if r["prev_hash"] != prev or r["chain_hash"] != expect:
-                return {"ok": False, "broken_at": r["id"], "checked": len(rows)}
+                return {"ok": False, "broken_at": r["id"], "checked": checked}
             try:
                 self.read(r["id"])
             except ValueError as e:
-                return {"ok": False, "broken_at": r["id"], "error": str(e), "checked": len(rows)}
+                return {"ok": False, "broken_at": r["id"], "error": str(e), "checked": checked}
+            except (KeyError, OSError):
+                return {"ok": False, "broken_at": r["id"], "error": "blob unavailable", "checked": checked}
             prev = r["chain_hash"]
         return {"ok": True, "checked": len(rows), "head": prev}
