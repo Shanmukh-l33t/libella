@@ -647,35 +647,6 @@ def create_api(app: App) -> FastAPI:
         finally:
             provider_test_lock.release()
 
-    @api.post("/api/target-credentials/test", dependencies=[Depends(auth)])
-    def target_credentials_test(body: dict):
-        from .target_credentials import check_target_credentials
-        if not isinstance(body, dict):
-            raise HTTPException(400, "Invalid request.")
-        url = body.get("url")
-        credential = body.get("credential") or {"type": "none"}
-        expect = body.get("expect_substring")
-        if not isinstance(url, str) or not url or len(url) > 2048:
-            raise HTTPException(400, "A target url is required.")
-        if not isinstance(credential, dict) or len(json.dumps(credential)) > 4096:
-            raise HTTPException(400, "Invalid credential.")
-        if expect is not None and (not isinstance(expect, str) or len(expect) > 256):
-            raise HTTPException(400, "Invalid expect_substring.")
-        eid = body.get("engagement_id")
-        if eid:
-            eng = app.db.one("SELECT scope_json FROM engagements WHERE id=?", (eid,))
-            if not eng:
-                raise HTTPException(404, "engagement not found")
-            scope = Scope(json.loads(eng["scope_json"]))
-        else:
-            # Naming the target is the authorization; Scope still blocks metadata/link-local.
-            try:
-                scope = Scope({"targets": [{"kind": "url", "value": url}],
-                               "categories": ["api", "web"]})
-            except ValueError as exc:
-                raise HTTPException(400, f"invalid target: {exc}") from None
-        return check_target_credentials(scope, url, credential, expect)
-
     @api.get("/api/engagements/{eid}/graph", dependencies=[Depends(auth)])
     def graph(eid: str, include: str | None = None):
         from .graph import build_graph
