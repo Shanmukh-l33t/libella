@@ -54,6 +54,19 @@ python labs/pairlab/verify_ground_truth.py      # lab self-check
 python benchmarks/run_pairlab.py --mode both
 ```
 
+Additional verified benchmarks (v0.2, all with vulnerable/hardened twins):
+
+| Suite | Result |
+|---|---|
+| TLS audit (tlslab) | expired cert, hostname mismatch, TLSv1/1.1 findings independently re-verified; hardened 0 |
+| Code + supply chain (vulnrepo/cleanrepo) | 6/6 seeded code issues; 0 FP on clean repo; OSV dependency CVEs stay observations, never auto-confirmed |
+| OpenAPI API audit (apilab) | 5/5: BOLA, BFLA, mass assignment, excessive exposure, missing auth; hardened 0 FP |
+| Container image (trivy) | real local-image scan; version-based CVEs are observations, not confirmed findings |
+
+Measured performance (PairLab, deterministic + nuclei, no LLM): 153.7s wall,
+platform CPU 0.5s, scanner subprocess CPU 19.3s, platform peak RSS 60.4MB.
+Reproduce: `python benchmarks/measure_perf.py`.
+
 See CAPABILITIES.md for the full tested/planned matrix and benchmark details.
 
 ## Screenshots (real application, real assessment data)
@@ -136,9 +149,13 @@ security model and known limits.
 ## Project status
 
 Working and benchmarked: engagement lifecycle, scope enforcement, recon,
-crawling, deterministic web/API checks, nuclei/nmap/httpx/subfinder/ffuf
-adapters, independent verification, retest, hash-chained evidence, reporting,
-live UI, LLM planning mode. See CAPABILITIES.md for what is tested vs planned.
+crawling + JS route mining, deterministic web checks, OpenAPI-driven API
+audit (BOLA/BFLA/mass assignment/exposure/missing auth), TLS transport audit,
+source-code + supply-chain audit (semgrep/gitleaks/trivy/OSV), container image
+scanning, nuclei/nmap/httpx/subfinder/ffuf adapters, independent verification
+(HTTP replay + TLS re-scan), retest, hash-chained evidence, reporting,
+live UI, LLM planning mode. AWS/K8s posture and GraphQL testing are planned,
+not claimed. See CAPABILITIES.md for the tested/planned matrix.
 
 ## License
 

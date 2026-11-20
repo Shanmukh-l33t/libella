@@ -21,7 +21,7 @@ ALWAYS_BLOCKED = [
     ipaddress.ip_network("fe80::/10"),
 ]
 
-TARGET_KINDS = {"url", "domain", "cidr", "ip"}
+TARGET_KINDS = {"url", "domain", "cidr", "ip", "repo", "image"}
 EXCLUSION_KINDS = {"url_prefix", "domain", "cidr", "ip"}
 CATEGORIES = {"recon", "web", "api", "infra", "code"}
 
@@ -109,6 +109,13 @@ class Scope:
                     scheme, _, _, _ = parse_origin(t["value"])
                     if scheme not in ("http", "https"):
                         raise ValueError(f"target url scheme '{scheme}' not permitted")
+                elif t["kind"] == "repo":
+                    p = t["value"]
+                    if not p.startswith("/") or ".." in p.split("/"):
+                        raise ValueError("repo target must be an absolute path without '..'")
+                elif t["kind"] == "image":
+                    if any(c in t["value"] for c in " ;|&$`\n\r\t"):
+                        raise ValueError("image target contains forbidden characters")
             except ValueError as e:
                 raise ValueError(f"invalid target {t['value']!r}: {e}") from e
         if not isinstance(self.exclusions, list):
@@ -291,6 +298,32 @@ class Scope:
                 if pu.hostname and pu.hostname.lower().rstrip(".") == host.lower().rstrip("."):
                     return Decision(True, "in scope", resolved_ips=ips, matched_target=t["value"])
         return Decision(False, f"{host} not in engagement scope", resolved_ips=ips)
+
+    def check_repo(self, path: str) -> Decision:
+        """Authorize a local repository path for read-only code assessment."""
+        import os
+        if "code" not in self.categories:
+            return Decision(False, "category 'code' not permitted by engagement")
+        if not path.startswith("/") or ".." in path.split("/"):
+            return Decision(False, "repo path must be absolute without '..'")
+        real = os.path.realpath(path)
+        for t in self.targets:
+            if t["kind"] == "repo":
+                base = os.path.realpath(t["value"])
+                if real == base or real.startswith(base + "/"):
+                    if not os.path.isdir(real):
+                        return Decision(False, f"repo path does not exist: {path}")
+                    return Decision(True, "in scope", matched_target=t["value"])
+        return Decision(False, f"{path} not in engagement scope")
+
+    def check_image(self, image: str) -> Decision:
+        """Authorize a local container image name for scanning."""
+        if "code" not in self.categories:
+            return Decision(False, "category 'code' not permitted by engagement")
+        for t in self.targets:
+            if t["kind"] == "image" and t["value"] == image:
+                return Decision(True, "in scope", matched_target=t["value"])
+        return Decision(False, f"image {image} not in engagement scope")
 
     def prompt_block(self) -> str:
         lines = ["Authorized scope (enforced by the platform; you cannot expand it):"]

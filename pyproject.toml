@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "flask>=3"]  # flask: labs + tests/api
 
 [project.scripts]
 libella = "libella.main:cli"

@@ -1,0 +1,22 @@
+{
+  "repo": "vulnrepo",
+  "description": "Seeded issues for the source-code/supply-chain assessment. Every credential is a fake marker.",
+  "findings": [
+    {"id": "aws-key", "cwe": "CWE-798", "file": "app/creds.py", "line": 6, "kind": "secret",
+     "note": "fake AWS access key id assigned to a module constant"},
+    {"id": "private-key", "cwe": "CWE-798", "file": "app/signing.py", "line": 7, "kind": "secret",
+     "note": "fake RSA private key block committed to source"},
+    {"id": "eval", "cwe": "CWE-94", "file": "app/run.py", "line": 16, "kind": "code",
+     "note": "eval() on a request parameter"},
+    {"id": "shell-true", "cwe": "CWE-78", "file": "app/run.py", "line": 22, "kind": "code",
+     "note": "subprocess with shell=True built from a request parameter"},
+    {"id": "pickle", "cwe": "CWE-502", "file": "app/run.py", "line": 28, "kind": "code",
+     "note": "pickle.loads on the request body"},
+    {"id": "flask-debug", "cwe": "CWE-489", "file": "app/run.py", "line": 37, "kind": "code",
+     "note": "Flask app.run(debug=True)"}
+  ],
+  "dependency_observations": [
+    {"package": "PyYAML", "version": "5.3.1", "cves": ["CVE-2020-14343"],
+     "expect": "potentially_affected observation, never a finding"}
+  ]
+}

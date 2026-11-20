@@ -38,6 +38,10 @@ class App:
         self.registry = Registry()
         for spec in ALL_ADAPTERS:
             self.registry.register(spec)
+        from .tools.code_adapters import SPECS as CODE_SPECS
+        from .tools.container_adapters import TRIVY_IMAGE
+        for spec in CODE_SPECS + [TRIVY_IMAGE]:
+            self.registry.register(spec)
         self.runner = ToolRunner(self.db, self.evidence, self.data_dir / "runs")
         self._llm = None
         self._threads: dict[str, threading.Thread] = {}

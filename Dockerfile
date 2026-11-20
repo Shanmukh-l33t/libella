@@ -13,6 +13,8 @@ ARG NUCLEI_VERSION=3.4.10
 ARG HTTPX_VERSION=1.12.0
 ARG SUBFINDER_VERSION=2.10.0
 ARG FFUF_VERSION=2.1.0
+ARG TRIVY_VERSION=0.69.3
+ARG GITLEAKS_VERSION=8.24.3
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap curl unzip ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
@@ -28,25 +30,33 @@ RUN set -eux; \
     curl -fsSL -o /tmp/ffuf.tar.gz "https://github.com/ffuf/ffuf/releases/download/v${FFUF_VERSION}/ffuf_${FFUF_VERSION}_linux_${a}.tar.gz"; \
     tar -xzf /tmp/ffuf.tar.gz -C /usr/local/bin/ ffuf; \
     chmod +x /usr/local/bin/nuclei /usr/local/bin/httpx /usr/local/bin/subfinder /usr/local/bin/ffuf; \
+    curl -fsSL -o /tmp/trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"; \
+    tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin/ trivy; \
+    curl -fsSL -o /tmp/gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"; \
+    tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin/ gitleaks; \
+    chmod +x /usr/local/bin/trivy /usr/local/bin/gitleaks; \
     rm -f /tmp/*.zip /tmp/*.tar.gz; \
     nuclei -update-templates -silent || true
 
 FROM python:3.12-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nmap ca-certificates \
+    nmap dirb ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 10001 libella
 COPY --from=tools /usr/local/bin/nuclei /usr/local/bin/httpx \
-     /usr/local/bin/subfinder /usr/local/bin/ffuf /usr/local/bin/
+     /usr/local/bin/subfinder /usr/local/bin/ffuf \
+     /usr/local/bin/trivy /usr/local/bin/gitleaks /usr/local/bin/
 COPY --from=tools /root/nuclei-templates /opt/nuclei-templates
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . semgrep
 COPY --from=web /web/dist /app/web/dist
 ENV LIBELLA_DATA=/data \
     LIBELLA_HOST=0.0.0.0 \
     LIBELLA_PORT=8787 \
+    LIBELLA_TEMPLATE_DIR=/opt/nuclei-templates \
+    LIBELLA_WORDLIST_DIR=/usr/share/wordlists \
     HOME=/home/libella
 RUN mkdir -p /data && chown -R libella:libella /data /app
 USER libella

@@ -27,7 +27,8 @@ from .tools.runner import ToolRunner
 from .verifier import Verifier
 
 LEASE_S = 120
-ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report"}
+ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
+         "code_audit", "api_audit", "container_scan"}
 
 
 class Orchestrator:
@@ -99,13 +100,29 @@ class Orchestrator:
             recon_ids.append(self._add_intent(engagement_id, "recon", f"Fingerprint and probe {u}"))
         for d in domains:
             self._add_intent(engagement_id, "recon", f"Passive subdomain discovery for {d}")
-        crawl_ids = [self._add_intent(engagement_id, "crawl", f"Crawl {u}", depends=recon_ids)
-                     for u in urls]
-        check_ids = [self._add_intent(engagement_id, "web_checks", f"Web security checks on {u}",
-                                      depends=crawl_ids) for u in urls]
+        crawl_ids, check_ids = [], []
         if "web" in scope.categories:
+            crawl_ids = [self._add_intent(engagement_id, "crawl", f"Crawl {u}", depends=recon_ids)
+                         for u in urls]
+            check_ids = [self._add_intent(engagement_id, "web_checks", f"Web security checks on {u}",
+                                          depends=crawl_ids) for u in urls]
             for u in urls:
                 self._add_intent(engagement_id, "nuclei_scan", f"Template scan {u}", depends=recon_ids)
+        for u in urls:
+            if u.startswith("https://"):
+                self._add_intent(engagement_id, "infra_scan",
+                                 f"TLS and service audit {u}", depends=recon_ids)
+        auth = json.loads(eng["auth_json"])
+        if auth.get("openapi") and urls:
+            self._add_intent(engagement_id, "api_audit",
+                             f"OpenAPI-driven API audit {urls[0]}", depends=recon_ids)
+        for t in targets:
+            if t["kind"] == "repo":
+                self._add_intent(engagement_id, "code_audit",
+                                 f"Source and supply-chain audit {t['value']}")
+            if t["kind"] == "image":
+                self._add_intent(engagement_id, "container_scan",
+                                 f"Container image scan {t['value']}")
         self._add_intent(engagement_id, "verify", "Independently verify all candidate findings",
                          depends=check_ids)
         self._add_intent(engagement_id, "report", "Render assessment report",
@@ -270,6 +287,12 @@ class Orchestrator:
             self._do_infra(engagement_id, scope, obj, intent["id"])
         elif role == "verify":
             self._do_verify(engagement_id, scope)
+        elif role == "code_audit":
+            self._do_code_audit(engagement_id, scope, obj, intent["id"])
+        elif role == "api_audit":
+            self._do_api_audit(engagement_id, scope, eng, obj, intent["id"])
+        elif role == "container_scan":
+            self._do_container_scan(engagement_id, scope, obj, intent["id"])
         elif role == "report":
             from .report import render_report
             render_report(self.db, self.evidence, engagement_id)
@@ -503,6 +526,12 @@ class Orchestrator:
     def _do_infra(self, engagement_id, scope, obj, intent_id):
         url = self._target_from_obj(obj)
         host = url.split("//")[-1].split("/")[0].split(":")[0] if url else obj.split()[-1]
+        if url and url.startswith("https://"):
+            from urllib.parse import urlparse
+            from .tls_audit import audit_tls
+            pu = urlparse(url)
+            audit_tls(host, pu.port or 443, self.db, self.evidence, self.pipeline,
+                      scope, engagement_id, intent_id)
         spec = self.registry.get("nmap")
         r = self.runner.run(spec, {"target": host, "top_ports": 100, "service_detect": True},
                             scope, engagement_id, intent_id, host, "infra")
@@ -521,3 +550,35 @@ class Orchestrator:
             (engagement_id,))
         for f in findings:
             self.verifier.verify(engagement_id, scope, f["id"])
+
+    def _do_code_audit(self, engagement_id, scope, obj, intent_id):
+        path = obj.split()[-1]
+        decision = scope.check_repo(path)
+        if not decision.allowed:
+            self.db.emit(engagement_id, "scope_refusal",
+                         {"url": path, "reason": decision.reason, "tool": "code_audit"})
+            return
+        from .codeaudit import assess_repo
+        assess_repo(path, self.db, self.evidence, self.pipeline, engagement_id, intent_id)
+
+    def _do_api_audit(self, engagement_id, scope, eng, obj, intent_id):
+        url = self._target_from_obj(obj)
+        if not url:
+            return
+        auth = json.loads(eng["auth_json"])
+        openapi = auth.get("openapi")
+        if not openapi:
+            return
+        from .api_audit import assess_api
+        assess_api(url, openapi, auth.get("identities", []), self.db, self.evidence,
+                   self.pipeline, self.probe, scope, engagement_id)
+
+    def _do_container_scan(self, engagement_id, scope, obj, intent_id):
+        image = obj.split()[-1]
+        decision = scope.check_image(image)
+        if not decision.allowed:
+            self.db.emit(engagement_id, "scope_refusal",
+                         {"url": image, "reason": decision.reason, "tool": "container_scan"})
+            return
+        from .tools.container_adapters import assess_image
+        assess_image(image, self.db, self.evidence, self.pipeline, engagement_id, intent_id)

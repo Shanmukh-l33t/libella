@@ -1,4 +1,4 @@
-export type TargetKind = "url" | "domain" | "cidr" | "ip";
+export type TargetKind = "url" | "domain" | "cidr" | "ip" | "repo" | "image";
 export interface Target { kind: TargetKind; value: string; include_subdomains?: boolean }
 export interface Scope { targets: Target[]; exclusions: Target[]; allowed_ports?: number[]; categories: string[]; rate_limit_rps?: number; max_concurrency?: number; advanced_validation?: boolean }
 export interface Identity { username?: string; password?: string; login_url?: string; username_field?: string; password_field?: string }

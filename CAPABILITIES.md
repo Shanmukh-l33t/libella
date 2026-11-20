@@ -60,10 +60,26 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 
 | Capability | Status | Notes |
 |---|---|---|
-| TLS / header / exposure checks | PARTIAL | headers tested; deep TLS audit planned |
-| AWS / container / K8s posture | PLANNED | |
-| Semgrep / Trivy / OSV / secrets scanners | PLANNED | |
-| CVE/CWE intelligence with version-vs-confirmation distinction | PARTIAL | version banners are observations only (negative control tested); CVE DB integration planned |
+| TLS audit: expired cert, hostname mismatch, weak protocols (TLSv1/1.1) | TESTED | tlslab twins; findings independently re-verified by TLS re-scan (not HTTP replay); hardened twin 0 findings |
+| Header / exposure checks | TESTED | PairLab + Juice Shop |
+| Container image vulnerability scan (trivy) | TESTED | local images only; CVE matches are potentially_affected observations, never auto-confirmed |
+| Source code audit (semgrep + gitleaks + trivy fs) | TESTED | vulnrepo 6/6 seeded classes (hardcoded creds, eval, shell injection, pickle, debug), cleanrepo 0 FP |
+| Dependency advisories via OSV | TESTED | version matches recorded as potentially_affected observations with CVE/package/version/source; never auto-promoted (PyYAML 5.3.1 CVE-2020-14343 verified) |
+| AWS / K8s posture | PLANNED | requires operator credentials; not claimed |
+| CVE/CWE intelligence beyond OSV (NVD/CPE correlation) | PARTIAL | OSV layer tested; version-vs-confirmed discipline enforced |
+
+## API security (OpenAPI-driven)
+
+| Capability | Status | Notes |
+|---|---|---|
+| OpenAPI 3 import + endpoint/parameter/schema inventory | TESTED | labs/apilab/openapi.json |
+| BOLA (cross-user object access) | TESTED | apilab AP seed validated; hardened 0 |
+| BFLA (role boundary) | TESTED | alice hits admin endpoint; hardened 403 |
+| Mass assignment (privileged field injection + persistence proof) | TESTED | POST extra field verified via GET |
+| Excessive data exposure | TESTED | password hashes in list response |
+| Missing auth on sensitive endpoint | TESTED | unauthenticated 200 |
+| Schema-conformance observations | TESTED | response fields outside schema recorded |
+| GraphQL introspection testing | PLANNED | |
 
 ## Evidence and verification
 
@@ -115,3 +131,8 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | Docker single-container install | image builds; container healthy; full engagement via container API (see DOCKER_VERIFICATION.md) | Dockerfile, docker-compose.yml |
 | Evidence tamper resistance | blob rewrite + ledger row forgery detected; chain break detected | tests/audit/test_evidence_integrity.py |
 | UI real-data verification | browser-driven: dashboard, live ops, graph, finding detail, rule-out flow, report, settings; 17 screenshots | docs/screenshots/ |
+| TLS audit (v0.2) | expired cert + weak protocols validated on vuln twin; hostname mismatch validated on mismatch twin; hardened 0; TLS re-scan verification | benchmarks/run_tlslab.py, benchmark_runs/tlslab_results.json |
+| Code/supply-chain audit (v0.2) | vulnrepo 6/6 seeded classes, cleanrepo 0 FP; PyYAML CVE-2020-14343 stays potentially_affected observation | benchmarks/run_codeaudit.py |
+| OpenAPI-driven API audit (v0.2) | apilab 5/5 seeds validated (BOLA/BFLA/mass-assignment/exposure/missing-auth), hardened 0 FP | benchmarks/run_apilab.py, benchmark_runs/apilab_results.json |
+| Container image scan (v0.2) | real trivy scan of local image; CVEs recorded as observations, 0 auto-confirmed findings; injection rejected | tests/test_container_scan.py |
+| Performance (v0.2) | PairLab full run: 153.7s wall, platform CPU 0.5s, scanner children CPU 19.3s, platform peak RSS 60.4MB, 0 LLM tokens | benchmarks/measure_perf.py, benchmark_runs/perf.json |

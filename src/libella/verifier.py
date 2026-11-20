@@ -60,6 +60,8 @@ class Verifier:
         if not isinstance(pr, dict) or not isinstance(pr.get("url"), str) or not pr["url"]:
             return self._record(finding_id, attempt, "no_proof_spec", None,
                                 "inconclusive", "malformed proof request")
+        if pr.get("method") == "TLS":
+            return self._verify_tls(engagement_id, f, spec, pr, attempt)
         r = self.probe.request(
             engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
             headers=pr.get("headers"), body=pr.get("body"), tool="verifier_replay",
@@ -82,6 +84,28 @@ class Verifier:
             pass  # verdict is recorded; the state machine may not allow the move
         return {"verdict": verdict, "detail": detail, "replay_exchange_id": r["exchange_id"],
                 "finding_id": finding_id, "state": "validated" if reproduced else f["state"]}
+
+    def _verify_tls(self, engagement_id: str, f: dict, spec: dict, pr: dict, attempt: int) -> dict:
+        """Independent re-verification for TLS findings: re-scan, compare facts."""
+        from .tls_audit import recheck_tls_fact
+        from urllib.parse import urlparse
+        u = urlparse(pr["url"])
+        host, port = u.hostname, u.port or 443
+        if not host:
+            return self._record(f["id"], attempt, "tls_recheck", None,
+                                "inconclusive", "malformed tls proof url")
+        reproduced, detail = recheck_tls_fact(host, port, spec.get("quote", ""))
+        verdict = "reproduced" if reproduced else "not_reproduced"
+        self._record(f["id"], attempt, "tls_recheck", None, verdict, detail)
+        try:
+            if reproduced:
+                self.pipeline.transition(f["id"], "validated", reason="independent TLS recheck reproduced")
+            elif f["state"] == "validated":
+                self.pipeline.transition(f["id"], "observed", reason="TLS recheck failed to reproduce")
+        except ValueError:
+            pass
+        return {"verdict": verdict, "detail": detail, "finding_id": f["id"],
+                "state": "validated" if reproduced else f["state"]}
 
     def _compare(self, quote: str, quote_in: str, r: dict) -> tuple[bool, str]:
         if not isinstance(quote, str) or not quote.strip():
@@ -149,6 +173,24 @@ class Verifier:
         if not spec or not spec.get("proof_request"):
             return {"verdict": "inconclusive", "detail": "no replayable proof request"}
         pr = spec["proof_request"]
+        if pr.get("method") == "TLS":
+            from .tls_audit import recheck_tls_fact
+            from urllib.parse import urlparse
+            u = urlparse(pr["url"])
+            reproduced, detail = recheck_tls_fact(u.hostname, u.port or 443, spec.get("quote", ""))
+            verdict = "persists" if reproduced else "fixed"
+            rid = new_id("rt")
+            self.db.execute(
+                "INSERT INTO retests(id, finding_id, exchange_id, verdict, detail, created_at) "
+                "VALUES(?,?,?,?,?,?)", (rid, finding_id, None, verdict, detail, time.time()))
+            try:
+                self.pipeline.transition(
+                    finding_id, "retested_persists" if reproduced else "retested_fixed",
+                    reason=f"TLS retest: {detail}")
+            except ValueError:
+                pass
+            self.db.emit(engagement_id, "retest", {"finding_id": finding_id, "verdict": verdict})
+            return {"verdict": verdict, "detail": detail, "finding_id": finding_id}
         r = self.probe.request(engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
                                headers=pr.get("headers"), body=pr.get("body"),
                                tool="retest", follow_redirects=False)

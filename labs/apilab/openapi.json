@@ -1,0 +1,146 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ApiLab",
+    "version": "1.0.0",
+    "description": "Lab-only JSON API twin for Libella API checks. vuln=127.0.0.1:8811, hardened=127.0.0.1:8812. Fake data, no real users."
+  },
+  "servers": [{"url": "http://127.0.0.1:8811"}],
+  "paths": {
+    "/api/items": {
+      "get": {
+        "summary": "List catalog items",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "items",
+            "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/ItemSummary"}}}}
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an item owned by the caller",
+        "security": [{"cookieAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemCreate"}}}
+        },
+        "responses": {
+          "201": {"description": "created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Item"}}}},
+          "400": {"description": "invalid"},
+          "401": {"description": "unauthenticated"}
+        }
+      }
+    },
+    "/api/items/{id}": {
+      "get": {
+        "summary": "Read one item",
+        "security": [{"cookieAuth": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": {
+          "200": {"description": "item", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Item"}}}},
+          "401": {"description": "unauthenticated"},
+          "403": {"description": "not the owner"},
+          "404": {"description": "not found"}
+        }
+      }
+    },
+    "/api/admin/stats": {
+      "get": {
+        "summary": "Administrative statistics",
+        "security": [{"cookieAuth": []}],
+        "responses": {
+          "200": {"description": "stats", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminStats"}}}},
+          "401": {"description": "unauthenticated"},
+          "403": {"description": "not an administrator"}
+        }
+      }
+    },
+    "/api/users/{id}/profile": {
+      "get": {
+        "summary": "User profile",
+        "security": [{"cookieAuth": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": {
+          "200": {"description": "profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Profile"}}}},
+          "401": {"description": "unauthenticated"},
+          "403": {"description": "not the owner"},
+          "404": {"description": "not found"}
+        }
+      }
+    },
+    "/api/login": {
+      "post": {
+        "summary": "Authenticate and set a session cookie",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "login result", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginResponse"}}}}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"cookieAuth": {"type": "apiKey", "in": "cookie", "name": "session"}},
+    "schemas": {
+      "ItemSummary": {
+        "type": "object",
+        "required": ["id", "name", "owner_id"],
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "owner_id": {"type": "integer"}
+        }
+      },
+      "Item": {
+        "type": "object",
+        "required": ["id", "name", "owner_id"],
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "owner_id": {"type": "integer"},
+          "description": {"type": "string"}
+        }
+      },
+      "ItemCreate": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}, "description": {"type": "string"}}
+      },
+      "AdminStats": {
+        "type": "object",
+        "properties": {
+          "db": {"type": "string"},
+          "scope": {"type": "string"},
+          "total_users": {"type": "integer"}
+        }
+      },
+      "Profile": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "username": {"type": "string"},
+          "email": {"type": "string"},
+          "role": {"type": "string"}
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {"username": {"type": "string"}, "password": {"type": "string"}}
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "authenticated": {"type": "boolean"},
+          "id": {"type": "integer"},
+          "role": {"type": "string"},
+          "user": {"type": "string"}
+        }
+      }
+    }
+  }
+}

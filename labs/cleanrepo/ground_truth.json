@@ -1,0 +1,6 @@
+{
+  "repo": "cleanrepo",
+  "description": "Hardened control: zero code findings, zero dependency observations.",
+  "findings": [],
+  "dependency_observations": []
+}

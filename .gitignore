@@ -15,6 +15,7 @@ web/.vite/
 
 # Runtime data (NEVER commit assessment data)
 benchmark_runs/
+labs/tlslab/certs/
 *.db
 *.db-wal
 *.db-shm

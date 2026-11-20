@@ -1,0 +1,24 @@
+{
+  "lab": "apilab",
+  "description": "Deterministic vulnerable/hardened JSON API twin. vuln=127.0.0.1:8811, hardened=127.0.0.1:8812. All credentials and data are lab-only fakes.",
+  "openapi": "openapi.json",
+  "identities": [
+    {"username": "alice", "password": "SI_SECRET_PASSWORD_APILAB_A1", "role": "user", "uid": 1},
+    {"username": "bob", "password": "SI_SECRET_PASSWORD_APILAB_B2", "role": "user", "uid": 2},
+    {"username": "admin", "password": "SI_SECRET_PASSWORD_APILAB_C3", "role": "admin", "uid": 3}
+  ],
+  "seeded_findings": [
+    {"id": "AP-01", "cwe": "CWE-639", "owasp": "API1:2023 Broken Object Level Authorization", "endpoint": "/api/items/2", "title": "BOLA: cross-user item read", "proof": "alice's session GETs /api/items/2 (owner_id 2 = bob) and receives item content", "present_in": "vuln"},
+    {"id": "AP-02", "cwe": "CWE-285", "owasp": "API5:2023 Broken Function Level Authorization", "endpoint": "/api/admin/stats", "title": "BFLA: non-admin reaches admin endpoint", "proof": "alice's session GETs /api/admin/stats and receives 200 with admin statistics", "present_in": "vuln"},
+    {"id": "AP-03", "cwe": "CWE-915", "owasp": "API3:2023 Broken Object Property Level Authorization", "endpoint": "/api/items", "title": "Mass assignment of privileged fields on create", "proof": "POST /api/items with is_admin/role is persisted and readable back via GET /api/items/<id>", "present_in": "vuln"},
+    {"id": "AP-04", "cwe": "CWE-200", "owasp": "A01:2021 Broken Access Control", "endpoint": "/api/items", "title": "Excessive data exposure: password hashes in listing", "proof": "GET /api/items returns owner_password_hash for every item", "present_in": "vuln"},
+    {"id": "AP-05", "cwe": "CWE-306", "owasp": "API2:2023 Broken Authentication", "endpoint": "/api/users/2/profile", "title": "Missing authentication on profile endpoint", "proof": "unauthenticated GET /api/users/2/profile returns bob's profile", "present_in": "vuln"}
+  ],
+  "negative_controls": [
+    {"id": "NC-01", "endpoint": "/api/items/1", "signal": "alice reads her own item", "expected": "200 in both modes; authorized access is not a finding"},
+    {"id": "NC-02", "endpoint": "/api/admin/stats", "signal": "admin session reads admin stats", "expected": "200 in both modes"},
+    {"id": "NC-03", "endpoint": "/api/items/999", "signal": "unknown object id", "expected": "404 in both modes"},
+    {"id": "NC-04", "endpoint": "all hardened routes", "signal": "hardened twin", "expected": "zero findings; any finding on hardened mode is a false positive"},
+    {"id": "NC-05", "endpoint": "/api/login", "signal": "wrong password", "expected": "authenticated=false in both modes"}
+  ]
+}

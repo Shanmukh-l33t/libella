@@ -8,7 +8,7 @@ import { Button, Card, ErrorNote, Field, Input, Select, Textarea, cx, useToast }
 interface Row { kind: TargetKind; value: string; include_subdomains: boolean }
 interface Identity { username: string; password: string; login_url: string }
 
-const KINDS: TargetKind[] = ["url", "domain", "cidr", "ip"];
+const KINDS: TargetKind[] = ["url", "domain", "cidr", "ip", "repo", "image"];
 const CATEGORIES = [
   { id: "recon", label: "Recon", hint: "Host discovery, crawling, content mapping." },
   { id: "web", label: "Web", hint: "Header, cookie, transport and exposure checks." },
@@ -36,6 +36,7 @@ export default function NewEngagement() {
   const [identities, setIdentities] = useState<Identity[]>([]);
   const [hintsOpen, setHintsOpen] = useState(false);
   const [hints, setHints] = useState("");
+  const [openapi, setOpenapi] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -84,6 +85,7 @@ export default function NewEngagement() {
           identities: identities
             .filter((i) => i.username || i.password || i.login_url)
             .map((i) => ({ username: i.username, password: i.password, login_url: i.login_url })),
+          ...(openapi.trim() ? { openapi: openapi.trim() } : {}),
           ...(testHints !== undefined ? { test_hints: testHints } : {}),
         },
         budgets: { ...(duration ? { max_duration_s: Number(duration) } : {}), ...(budget ? { max_usd: Number(budget) } : {}) },
@@ -120,7 +122,7 @@ export default function NewEngagement() {
                 onChange={(e) => setRow(targets, i, { kind: e.target.value as TargetKind }, setTargets)}>
                 {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
               </Select>
-              <Input aria-label={`Target ${i + 1} value`} value={t.value} placeholder={t.kind === "url" ? "https://app.example.com" : t.kind === "domain" ? "example.com" : t.kind === "cidr" ? "10.0.0.0/24" : "10.0.0.5"}
+              <Input aria-label={`Target ${i + 1} value`} value={t.value} placeholder={t.kind === "url" ? "https://app.example.com" : t.kind === "domain" ? "example.com" : t.kind === "cidr" ? "10.0.0.0/24" : t.kind === "repo" ? "/abs/path/to/repo (read-only audit)" : t.kind === "image" ? "local-image:tag (container scan)" : "10.0.0.5"}
                 className="min-w-[240px] flex-1" error={!!fieldErrors.targets}
                 onChange={(e) => setRow(targets, i, { value: e.target.value }, setTargets)} />
               {t.kind === "domain" && (
@@ -217,6 +219,12 @@ export default function NewEngagement() {
           </div>
         ))}
         <Button type="button" size="sm" icon={<Plus size={13} />} onClick={() => setIdentities([...identities, { username: "", password: "", login_url: "" }])}>Add identity</Button>
+        <div className="mt-4 border-t border-line pt-3">
+          <Field label="OpenAPI spec path (optional)" hint="Server-side path to an OpenAPI 3 JSON/YAML file. Enables schema-driven API audit: BOLA, BFLA, mass assignment, exposure, missing auth.">
+            <Input aria-label="OpenAPI spec path" placeholder="/abs/path/to/openapi.json" value={openapi}
+              onChange={(e) => setOpenapi(e.target.value)} />
+          </Field>
+        </div>
       </Card>
 
       <Card title="Advanced test hints" description="Optional JSON forwarded to the planner as structured hints. Not executable.">
