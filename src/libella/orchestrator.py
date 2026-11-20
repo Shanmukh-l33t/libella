@@ -28,7 +28,7 @@ from .verifier import Verifier
 
 LEASE_S = 120
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
-         "code_audit", "api_audit", "container_scan"}
+         "code_audit", "api_audit", "container_scan", "graphql_audit"}
 
 
 class Orchestrator:
@@ -116,6 +116,9 @@ class Orchestrator:
         if auth.get("openapi") and urls:
             self._add_intent(engagement_id, "api_audit",
                              f"OpenAPI-driven API audit {urls[0]}", depends=recon_ids)
+        if auth.get("graphql"):
+            self._add_intent(engagement_id, "graphql_audit",
+                             f"GraphQL audit {auth['graphql']}", depends=recon_ids)
         for t in targets:
             if t["kind"] == "repo":
                 self._add_intent(engagement_id, "code_audit",
@@ -293,6 +296,8 @@ class Orchestrator:
             self._do_api_audit(engagement_id, scope, eng, obj, intent["id"])
         elif role == "container_scan":
             self._do_container_scan(engagement_id, scope, obj, intent["id"])
+        elif role == "graphql_audit":
+            self._do_graphql_audit(engagement_id, scope, eng, intent["id"])
         elif role == "report":
             from .report import render_report
             render_report(self.db, self.evidence, engagement_id)
@@ -361,6 +366,20 @@ class Orchestrator:
             return
         crawler = Crawler(self.probe, engagement_id, scope)
         result = crawler.crawl(url)
+        # browser-rendered crawling for SPA coverage (degrades loudly if absent)
+        try:
+            from .browser_crawl import BrowserCrawler, browser_available
+            if browser_available():
+                bc = BrowserCrawler(self.db, self.evidence, scope, engagement_id)
+                bres = bc.crawl(url)
+                result["endpoints"] = sorted(set(result["endpoints"]) | set(bres.get("endpoints", [])))
+                result["api_requests"] = bres.get("api_requests", [])
+                result["browser_pages"] = bres.get("pages", [])
+                result["screenshots"] = bres.get("screenshots", [])
+            else:
+                result["browser_degradation"] = "playwright/chromium not installed; static JS mining only"
+        except Exception as e:
+            result["browser_degradation"] = f"browser crawl failed: {e}"
         ev = self.evidence.put_json(engagement_id, result, "crawl_map")
         root = self._upsert_asset(engagement_id, "root", url)
         for page in result["pages"]:
@@ -372,8 +391,13 @@ class Orchestrator:
                                    parent=root, by="crawl")
         self.pipeline.record_observation(
             engagement_id, intent_id, "crawl",
-            f"{result['crawled']} pages, {len(result['endpoints'])} endpoints, {len(result['forms'])} forms",
+            f"{result['crawled']} pages, {len(result['endpoints'])} endpoints, {len(result['forms'])} forms"
+            + (f", {len(result.get('api_requests', []))} runtime API requests (browser)"
+               if result.get("api_requests") else ""),
             ev["id"])
+        if result.get("browser_degradation"):
+            self.pipeline.record_observation(engagement_id, intent_id, "degradation",
+                                             result["browser_degradation"], ev["id"])
         self.db.execute("UPDATE intents SET result_json=? WHERE id=?",
                         (json.dumps({"endpoints": result["endpoints"], "forms": result["forms"],
                                      "pages": result["pages"]}), intent_id))
@@ -582,3 +606,12 @@ class Orchestrator:
             return
         from .tools.container_adapters import assess_image
         assess_image(image, self.db, self.evidence, self.pipeline, engagement_id, intent_id)
+
+    def _do_graphql_audit(self, engagement_id, scope, eng, intent_id):
+        auth = json.loads(eng["auth_json"])
+        endpoint = auth.get("graphql")
+        if not endpoint:
+            return
+        from .graphql_audit import assess_graphql
+        assess_graphql(endpoint, self.db, self.evidence, self.pipeline, self.probe,
+                       scope, engagement_id, auth.get("identities"))

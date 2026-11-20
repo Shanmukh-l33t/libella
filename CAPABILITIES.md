@@ -29,7 +29,7 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | ffuf content discovery | TESTED | adapter, JSON parsed |
 | Same-origin crawling (links, forms, params) | TESTED | bounded pages/depth |
 | JS bundle API route mining (SPA coverage) | TESTED | bounded scripts; see Juice Shop run |
-| Browser-rendered crawling (Playwright) | PLANNED | SPA routes mined statically from bundles, not rendered |
+| Browser-rendered crawling (Playwright) | TESTED | headless chromium; rendered links + runtime XHR/fetch API discovery + screenshot evidence; scope-checked navigation; Juice Shop: 9 rendered pages, 36 runtime API requests, 7 live /rest/ endpoints; degrades loudly when absent |
 | Certificate transparency / DNS intel | PLANNED | |
 | Attack-surface change detection | PLANNED | |
 
@@ -50,8 +50,8 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | Cookie flag weaknesses | TESTED | PL-12 |
 | Missing security headers | TESTED | PL-13 + Juice Shop |
 | nuclei template scanning | TESTED | adapter; scanner findings stay unvalidated unless replayed |
-| OpenAPI import + schema-driven testing | PLANNED | |
-| GraphQL introspection testing | PLANNED | |
+| OpenAPI import + schema-driven testing | TESTED | apilab 5/5 validated (see API security section) |
+| GraphQL introspection + injection + field-authz + depth/alias/batch | TESTED | graphlab 7/7 validated, hardened 0 FP (see API security section) |
 | Business-logic / multi-step workflows | PARTIAL | identity login + IDOR; deeper flows planned |
 | File upload validation | PLANNED | |
 | SSTI / deserialization / XXE | PLANNED | |
@@ -79,7 +79,7 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | Excessive data exposure | TESTED | password hashes in list response |
 | Missing auth on sensitive endpoint | TESTED | unauthenticated 200 |
 | Schema-conformance observations | TESTED | response fields outside schema recorded |
-| GraphQL introspection testing | PLANNED | |
+| GraphQL introspection + injection + field-authz + depth/alias/batch | TESTED | graphlab 7/7 validated, hardened 0 FP (see API security section) |
 
 ## Evidence and verification
 
@@ -136,3 +136,5 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | OpenAPI-driven API audit (v0.2) | apilab 5/5 seeds validated (BOLA/BFLA/mass-assignment/exposure/missing-auth), hardened 0 FP | benchmarks/run_apilab.py, benchmark_runs/apilab_results.json |
 | Container image scan (v0.2) | real trivy scan of local image; CVEs recorded as observations, 0 auto-confirmed findings; injection rejected | tests/test_container_scan.py |
 | Performance (v0.2) | PairLab full run: 153.7s wall, platform CPU 0.5s, scanner children CPU 19.3s, platform peak RSS 60.4MB, 0 LLM tokens | benchmarks/measure_perf.py, benchmark_runs/perf.json |
+| Browser crawl (v0.3) | Juice Shop: 9 rendered pages, 36 runtime API requests captured, 45 endpoints (7 /rest/), screenshot evidence, chain intact; 4 module tests green | benchmarks/run_browser_crawl.py, tests/browser/ |
+| GraphQL audit (v0.3) | graphlab 7/7 seeds validated (introspection, field authz, SQLi, depth, alias, batch), hardened 0 FP; 24 module tests green | benchmarks/run_graphlab.py, benchmark_runs/graphlab_results.json |

@@ -37,6 +37,7 @@ export default function NewEngagement() {
   const [hintsOpen, setHintsOpen] = useState(false);
   const [hints, setHints] = useState("");
   const [openapi, setOpenapi] = useState("");
+  const [graphql, setGraphql] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -86,6 +87,7 @@ export default function NewEngagement() {
             .filter((i) => i.username || i.password || i.login_url)
             .map((i) => ({ username: i.username, password: i.password, login_url: i.login_url })),
           ...(openapi.trim() ? { openapi: openapi.trim() } : {}),
+          ...(graphql.trim() ? { graphql: graphql.trim() } : {}),
           ...(testHints !== undefined ? { test_hints: testHints } : {}),
         },
         budgets: { ...(duration ? { max_duration_s: Number(duration) } : {}), ...(budget ? { max_usd: Number(budget) } : {}) },
@@ -223,6 +225,10 @@ export default function NewEngagement() {
           <Field label="OpenAPI spec path (optional)" hint="Server-side path to an OpenAPI 3 JSON/YAML file. Enables schema-driven API audit: BOLA, BFLA, mass assignment, exposure, missing auth.">
             <Input aria-label="OpenAPI spec path" placeholder="/abs/path/to/openapi.json" value={openapi}
               onChange={(e) => setOpenapi(e.target.value)} />
+          </Field>
+          <Field label="GraphQL endpoint (optional)" hint="In-scope URL of a GraphQL endpoint. Enables introspection, injection, field-authz, depth/alias/batch abuse checks.">
+            <Input aria-label="GraphQL endpoint URL" placeholder="https://app.example.com/graphql" value={graphql}
+              onChange={(e) => setGraphql(e.target.value)} />
           </Field>
         </div>
       </Card>

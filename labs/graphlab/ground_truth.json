@@ -1,0 +1,55 @@
+{
+  "lab": "graphlab",
+  "description": "Deterministic vulnerable/hardened GraphQL twin. vuln=127.0.0.1:8821, hardened=127.0.0.1:8822, endpoint POST /graphql. All credentials and data are lab-only fakes.",
+  "endpoint": "/graphql",
+  "schema": {
+    "Query": ["user(id: Int)", "users(filter: String)", "adminStats"],
+    "Mutation": ["updateRole(userId: Int, role: String)"],
+    "User": ["id", "username", "email", "role", "manager"],
+    "note": "User.manager is a self-referential link (alice->bob->admin->admin) so nested depth is executable. Depth counts brace nesting: {user(id:1){id manager{...}}} with 6 manager levels is depth 8."
+  },
+  "identities": [
+    {"username": "alice", "password": "SI_SECRET_PASSWORD_GRAPHLAB_A1", "role": "user", "uid": 1},
+    {"username": "bob", "password": "SI_SECRET_PASSWORD_GRAPHLAB_B2", "role": "user", "uid": 2},
+    {"username": "admin", "password": "SI_SECRET_PASSWORD_GRAPHLAB_C3", "role": "admin", "uid": 3}
+  ],
+  "seeded_findings": [
+    {"id": "GL-01", "cwe": "CWE-200", "severity": "low", "title_contains": "introspection", "endpoint": "/graphql",
+     "title": "Introspection enabled, schema names the admin surface",
+     "proof": "POST {__schema{types{name}}} as alice returns types including AdminStats and Mutation", "present_in": "vuln"},
+    {"id": "GL-02", "cwe": "CWE-89", "severity": "high", "title_contains": "injection", "endpoint": "/graphql",
+     "title": "Error-based injection in the users filter argument",
+     "proof": "POST {users(filter:\"libella'\"){id}} returns a sqlite3.OperationalError signature instead of an empty result", "present_in": "vuln"},
+    {"id": "GL-03", "cwe": "CWE-639", "severity": "high", "title_contains": "another user", "endpoint": "/graphql",
+     "title": "Field-level authorization missing on Query.user",
+     "proof": "alice's session POSTs {user(id:2){id username email role}} and receives bob's record", "present_in": "vuln"},
+    {"id": "GL-04", "cwe": "CWE-639", "severity": "high", "title_contains": "adminStats", "endpoint": "/graphql",
+     "title": "Field-level authorization missing on Query.adminStats",
+     "proof": "alice's session POSTs {adminStats{totalUsers totalRoles}} and receives admin statistics", "present_in": "vuln"},
+    {"id": "GL-05", "cwe": "CWE-770", "severity": "medium", "title_contains": "depth", "endpoint": "/graphql",
+     "title": "No query depth limit",
+     "proof": "a depth-8 nested manager query executes and returns nested data", "present_in": "vuln"},
+    {"id": "GL-06", "cwe": "CWE-770", "severity": "medium", "title_contains": "alias", "endpoint": "/graphql",
+     "title": "No alias limit, amplification accepted",
+     "proof": "one document with 50 aliases of user(id:1) is executed in full", "present_in": "vuln"},
+    {"id": "GL-07", "cwe": "CWE-770", "severity": "medium", "title_contains": "batch", "endpoint": "/graphql",
+     "title": "Query batching accepted",
+     "proof": "a JSON array of 3 operations is executed and returned as 3 results", "present_in": "vuln"}
+  ],
+  "negative_controls": [
+    {"id": "NC-01", "endpoint": "/graphql", "signal": "alice reads her own user record", "expected": "200 with data in both modes"},
+    {"id": "NC-02", "endpoint": "/graphql", "signal": "admin reads adminStats", "expected": "200 with data in both modes"},
+    {"id": "NC-03", "endpoint": "/graphql", "signal": "unknown user id 999", "expected": "data.user=null in both modes, not a finding"},
+    {"id": "NC-04", "endpoint": "/graphql", "signal": "unauthenticated POST", "expected": "401 in both modes"},
+    {"id": "NC-05", "endpoint": "/login", "signal": "wrong password", "expected": "authenticated=false in both modes"},
+    {"id": "NC-06", "endpoint": "/graphql", "signal": "hardened twin", "expected": "zero findings; any finding on hardened mode is a false positive"}
+  ],
+  "hardened_controls": {
+    "introspection": "disabled (errors: introspection is disabled)",
+    "field_authz": "Query.user owner-or-admin, Query.users self-or-admin, Query.adminStats admin-only, Mutation.updateRole admin-only",
+    "injection": "users filter bound with a SQL parameter",
+    "max_depth": 5,
+    "max_aliases": 10,
+    "batch": "disabled (400)"
+  }
+}

@@ -61,6 +61,8 @@ Additional verified benchmarks (v0.2, all with vulnerable/hardened twins):
 | TLS audit (tlslab) | expired cert, hostname mismatch, TLSv1/1.1 findings independently re-verified; hardened 0 |
 | Code + supply chain (vulnrepo/cleanrepo) | 6/6 seeded code issues; 0 FP on clean repo; OSV dependency CVEs stay observations, never auto-confirmed |
 | OpenAPI API audit (apilab) | 5/5: BOLA, BFLA, mass assignment, excessive exposure, missing auth; hardened 0 FP |
+| GraphQL audit (graphlab) | 7/7: introspection, field authz, injection, depth/alias/batch abuse; hardened 0 FP |
+| Browser crawl (Playwright) | Juice Shop: 9 rendered pages, 36 runtime API requests, 7 live /rest/ endpoints; screenshot evidence |
 | Container image (trivy) | real local-image scan; version-based CVEs are observations, not confirmed findings |
 
 Measured performance (PairLab, deterministic + nuclei, no LLM): 153.7s wall,
@@ -149,13 +151,15 @@ security model and known limits.
 ## Project status
 
 Working and benchmarked: engagement lifecycle, scope enforcement, recon,
-crawling + JS route mining, deterministic web checks, OpenAPI-driven API
-audit (BOLA/BFLA/mass assignment/exposure/missing auth), TLS transport audit,
-source-code + supply-chain audit (semgrep/gitleaks/trivy/OSV), container image
-scanning, nuclei/nmap/httpx/subfinder/ffuf adapters, independent verification
+static + browser-rendered crawling (Playwright) with runtime API discovery,
+deterministic web checks, OpenAPI-driven API audit (BOLA/BFLA/mass
+assignment/exposure/missing auth), GraphQL audit (introspection/injection/
+field-authz/depth/alias/batch), TLS transport audit, source-code +
+supply-chain audit (semgrep/gitleaks/trivy/OSV), container image scanning,
+nuclei/nmap/httpx/subfinder/ffuf adapters, independent verification
 (HTTP replay + TLS re-scan), retest, hash-chained evidence, reporting,
-live UI, LLM planning mode. AWS/K8s posture and GraphQL testing are planned,
-not claimed. See CAPABILITIES.md for the tested/planned matrix.
+live UI, LLM planning mode. AWS/K8s posture is planned, not claimed.
+See CAPABILITIES.md for the tested/planned matrix.
 
 ## License
 

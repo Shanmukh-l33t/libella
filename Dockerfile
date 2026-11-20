@@ -40,7 +40,7 @@ RUN set -eux; \
 
 FROM python:3.12-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nmap dirb ca-certificates \
+    nmap dirb ca-certificates libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 10001 libella
 COPY --from=tools /usr/local/bin/nuclei /usr/local/bin/httpx \
@@ -50,7 +50,8 @@ COPY --from=tools /root/nuclei-templates /opt/nuclei-templates
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
-RUN pip install --no-cache-dir . semgrep
+RUN pip install --no-cache-dir . semgrep graphene playwright \
+    && playwright install --with-deps chromium
 COPY --from=web /web/dist /app/web/dist
 ENV LIBELLA_DATA=/data \
     LIBELLA_HOST=0.0.0.0 \
