@@ -21,6 +21,7 @@ from .scope import Scope
 from .tools import Registry
 from .tools.http_probe import HttpProbe
 from .tools.runner import ToolRunner
+from .verifier import _norm  # one whitespace normalization, shared with replay comparison
 
 # Role charters: responsibility + permitted actions + iteration budget.
 CHARTERS = {
@@ -143,6 +144,26 @@ class AgentRunner:
 
     # ---- gated writers ----
 
+    def _own_evidence(self, evidence_id) -> bool:
+        """Evidence ids are only binding when they are this engagement's artifacts."""
+        return isinstance(evidence_id, str) and bool(self.db.one(
+            "SELECT id FROM evidence WHERE id=? AND engagement_id=?", (evidence_id, self.eng)))
+
+    def _holds_quote(self, evidence_id: str, quote: str) -> bool:
+        """The claimed quote must occur in the blob it is bound to (whitespace-normalized)."""
+        try:
+            blob = self.evidence.read(evidence_id).decode(errors="replace")
+        except (KeyError, OSError, ValueError):
+            return False  # missing/tampered evidence supports no claim
+        return _norm(quote) in _norm(blob)
+
+    def _in_scope(self, url: str) -> bool:
+        """Any permitted category will do: the verifier replays under one of them."""
+        for cat in ("web", "api", "infra", "recon"):
+            if cat in self.scope.categories and self.scope.check_url(url, cat).allowed:
+                return True
+        return False
+
     def _step(self, run_id, intent_id, seq, kind, summary, **refs):
         sid = new_id("step")
         self.db.execute(
@@ -194,7 +215,7 @@ class AgentRunner:
             cands += c.cookie_flags(url)
             cands += c.file_upload(url + "/upload", url)
             from urllib.parse import urlparse, parse_qs
-            from .checks import COMMON_PARAM_ENDPOINTS
+            from .checks import COMMON_PARAM_ENDPOINTS, COMMON_API_PATHS
             for ep in [url + e for e in COMMON_PARAM_ENDPOINTS]:
                 if not self.scope.check_url(ep).allowed:
                     continue
@@ -208,6 +229,44 @@ class AgentRunner:
                     cands += c.ssti(pbase, p)
                     cands += c.path_traversal(pbase, p)
                     cands += c.open_redirect(pbase, p)
+            for ap in COMMON_API_PATHS:
+                if self.scope.check_url(url + ap).allowed:
+                    cands += c.cors(url + ap)
+            # auth-aware checks using configured identities + test hints
+            eng = self.db.one("SELECT auth_json FROM engagements WHERE id=?", (self.eng,))
+            auth = json.loads(eng["auth_json"]) if eng else {}
+            hints = auth.get("test_hints", {})
+            import httpx
+            for ident in auth.get("identities", []):
+                lu = ident.get("login_url")
+                if not lu or not self.scope.check_url(lu).allowed:
+                    continue
+                uf = ident.get("username_field", "username")
+                pf = ident.get("password_field", "password")
+                cands += c.auth_bypass(lu, uf, pf)
+                cands += c.cookie_flags(lu, method="POST",
+                                        body=f"{uf}={ident['username']}&{pf}={ident['password']}",
+                                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+                cl = httpx.Client(timeout=15, verify=False, trust_env=False)
+                try:
+                    cl.post(lu, data={uf: ident["username"], pf: ident["password"]})
+                    cookie = "; ".join(f"{k}={v}" for k, v in cl.cookies.items())
+                    if cookie and "idor" in hints and hints["idor"].get("identity") == ident["username"]:
+                        for oid in hints["idor"].get("foreign_ids", []):
+                            ou = hints["idor"]["url_template"].format(id=oid)
+                            if self.scope.check_url(ou).allowed:
+                                cands += c.idor(ou, cookie, hints["idor"]["foreign_marker"], ident["username"])
+                except httpx.HTTPError:
+                    pass
+                finally:
+                    cl.close()
+            if "ssrf" in hints:
+                h = hints["ssrf"]
+                if self.scope.check_url(h["internal_url"]).allowed:
+                    cands += c.ssrf(h["url"], h["param"], h["internal_url"], h["marker"])
+            if "sqli_union" in hints:
+                h = hints["sqli_union"]
+                cands += c.sqli_union(h["url"], h["param"], h["payload"], h["marker"])
             submitted = []
             for cand in cands:
                 res = self.pipeline.submit_candidate(self.eng, cand, intent_id)
@@ -284,22 +343,40 @@ class AgentRunner:
             self._step(run_id, intent_id, seq, "hypothesis", f"{hid} -> {status}", hypothesis_id=hid)
             return {"ok": True, "id": hid, "status": status}
         if action == "record_observation":
+            eid = args.get("evidence_id")
+            if eid and not self._own_evidence(eid):
+                return {"error": f"evidence_id {eid!r} is not a captured artifact of this "
+                                 "engagement; cite an id from a real tool/http result"}
             oid = self.pipeline.record_observation(
                 self.eng, intent_id, args.get("kind", "note"), args.get("summary", ""),
-                args.get("evidence_id"), args.get("quote"))
+                eid, args.get("quote"))
             self._step(run_id, intent_id, seq, "observation", args.get("summary", "")[:300],
-                       observation_id=oid, evidence_id=args.get("evidence_id"))
-            if args.get("evidence_id"):
-                produced["evidence"].append(args["evidence_id"])
+                       observation_id=oid, evidence_id=eid)
+            if eid:
+                produced["evidence"].append(eid)
             return {"ok": True, "observation_id": oid}
         if action == "propose_finding":
             ev_ids = args.get("evidence_ids", [])
-            real = [e for e in ev_ids if self.db.one(
-                "SELECT id FROM evidence WHERE id=? AND engagement_id=?", (e, self.eng))]
-            if not real or not args.get("quote"):
-                return {"error": "propose_finding requires real bound evidence_ids and a verbatim quote"}
-            if not args.get("proof_request", {}).get("url"):
+            if not isinstance(ev_ids, list) or not ev_ids:
+                return {"error": "propose_finding requires real bound evidence_ids"}
+            real = [e for e in ev_ids if self._own_evidence(e)]
+            if not real:
+                return {"error": "propose_finding requires real bound evidence_ids and a "
+                                 "verbatim quote"}
+            quote = args.get("quote") or ""
+            quote_in = args.get("quote_in", "body")
+            if quote_in not in ("body", "header_fact", "cookie_fact"):
+                return {"error": f"unsupported quote_in {quote_in!r}"}
+            if not quote:
+                return {"error": "propose_finding requires a verbatim quote"}
+            if quote_in == "body" and not any(self._holds_quote(e, quote) for e in real):
+                return {"error": "the quoted text does not occur in the evidence cited; a "
+                                 "claim must quote what was actually captured"}
+            proof = args.get("proof_request") or {}
+            if not proof.get("url"):
                 return {"error": "propose_finding requires a replayable proof_request"}
+            if not self._in_scope(proof["url"]):
+                return {"error": "proof_request url is out of scope; it could never be replayed"}
             cand = {k: args.get(k) for k in ("title", "cwe", "owasp", "severity", "confidence",
                                              "endpoint", "description", "impact", "remediation",
                                              "quote", "proof_request")}
@@ -371,6 +448,15 @@ class AgentRunner:
         system = (charter["charter"] + "\n\n" + self.scope.prompt_block() + "\n\n"
                   + ACTION_SCHEMA % ", ".join(actions) + tool_schemas)
         objective = intent.get("objective", "")
+        budgets = {}
+        eng_row = self.db.one("SELECT budgets_json FROM engagements WHERE id=?", (self.eng,))
+        if eng_row:
+            try:
+                budgets = json.loads(eng_row["budgets_json"] or "{}")
+            except ValueError:
+                budgets = {}
+        max_usd = float(budgets.get("max_usd", 10.0))
+        deadline = time.time() + float(budgets.get("max_duration_s", 3600))
         produced = {"findings": [], "evidence": []}
         iterations = 0
         tokens_in = tokens_out = 0
@@ -410,6 +496,12 @@ class AgentRunner:
             tokens_in += out["usage"]["input_tokens"]
             tokens_out += out["usage"]["output_tokens"]
             cost += out["usage"]["cost_usd"]
+            if cost > max_usd or time.time() > deadline:
+                exit_reason = "budget_exhausted"
+                summary = (f"Stopped: engagement budget reached "
+                           f"({cost:.4f} USD of {max_usd:.4f})" if cost > max_usd
+                           else "Stopped: engagement wall-clock budget reached")
+                break
             parsed = out.get("parsed")
             if not parsed or not isinstance(parsed, dict) or "action" not in parsed:
                 text_only_nudges += 1
@@ -455,7 +547,7 @@ class AgentRunner:
         else:
             exit_reason = "max_iterations"
         status = "completed" if exit_reason in ("completed", "converged") else (
-            "budget_exhausted" if exit_reason == "max_iterations" else "failed")
+            "budget_exhausted" if exit_reason in ("max_iterations", "budget_exhausted") else "failed")
         self.db.execute(
             "UPDATE agent_runs SET status=?, iterations=?, tokens_in=?, tokens_out=?, cost_usd=?, "
             "finished_at=?, summary=?, exit_reason=? WHERE id=?",
