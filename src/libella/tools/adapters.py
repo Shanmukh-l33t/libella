@@ -31,6 +31,11 @@ def _template_roots() -> list[str]:
 
 # ---- nmap ----
 
+# nmap --max-rate is packets/s, not requests/s: a declared rps ceiling is carried
+# over as packets and capped so a high rate_limit_rps cannot make the scan loud.
+NMAP_MAX_RATE = 200
+
+
 def _nmap_argv(p: dict, decision) -> list[str]:
     targets = decision.resolved_ips or [p["target"]]
     argv = ["nmap", "-Pn", "--open", "-oX", "-"]
@@ -41,7 +46,8 @@ def _nmap_argv(p: dict, decision) -> list[str]:
         argv += ["-p", ports]
     else:
         argv += ["--top-ports", str(p.get("top_ports", 100))]
-    argv += ["-T3", "--max-retries", "1", "--host-timeout", "90s"]
+    argv += ["-T3", "--max-retries", "1", "--host-timeout", "90s",
+             "--max-rate", str(p.get("rate_limit", NMAP_MAX_RATE))]
     argv += targets
     return argv
 
@@ -78,11 +84,16 @@ NMAP = ToolSpec(
         "ports": {"type": "string", "maxLength": 100, "description": "e.g. 80,443 or 1-1024"},
         "top_ports": {"type": "integer", "minimum": 1, "maximum": 65535},
         "service_detect": {"type": "boolean"},
+        "rate_limit": {"type": "integer", "minimum": 1, "maximum": NMAP_MAX_RATE},
     },
     required=["target"], handler=_nmap_argv, port_param="ports",
 )
 
 # ---- nuclei ----
+
+# nuclei's own -rate-limit ceiling; the declared engagement rate is passed through.
+NUCLEI_MAX_RATE = 150
+
 
 def _nuclei_argv(p: dict, decision) -> list[str]:
     target = p["target"]
@@ -136,7 +147,7 @@ NUCLEI = ToolSpec(
                      "pattern": r"(info|low|medium|high|critical)(,(info|low|medium|high|critical))*"},
         "tags": {"type": "string", "maxLength": 200},
         "templates": {"type": "string", "maxLength": 500},
-        "rate_limit": {"type": "integer", "minimum": 1, "maximum": 150},
+        "rate_limit": {"type": "integer", "minimum": 1, "maximum": NUCLEI_MAX_RATE},
         "timeout": {"type": "integer", "minimum": 1, "maximum": 30},
     },
     required=["target"], handler=_nuclei_argv,

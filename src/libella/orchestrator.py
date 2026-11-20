@@ -9,9 +9,13 @@ Workers claim intents with a fencing token + lease; expired leases return
 to the frontier. Budgets, pause, cancel and degradation are enforced here,
 not in prompts.
 """
+import datetime
 import json
+import math
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 
 from .checks import WebChecks
 from .crawl import Crawler
@@ -22,7 +26,7 @@ from .llm import LLM, LLMError
 from .policy import DEFAULT_PROFILE, permits
 from .scope import Scope
 from .tools import Registry
-from .tools.adapters import PARSERS
+from .tools.adapters import NMAP_MAX_RATE, NUCLEI_MAX_RATE, PARSERS
 from .tools.http_probe import HttpProbe
 from .tools.runner import ToolRunner
 from .verifier import Verifier
@@ -31,6 +35,73 @@ LEASE_S = 120
 MODES = ("deterministic", "llm", "agent")
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
          "code_audit", "api_audit", "container_scan", "graphql_audit"}
+
+
+def _parse_window(value, field: str) -> float | None:
+    """ISO8601 (naive means UTC) or epoch seconds -> epoch float. Empty means unset."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"{field} must be an ISO8601 timestamp or epoch seconds")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            value = float(text)  # numeric string = epoch seconds
+        except ValueError:
+            pass
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            raise ValueError(f"{field} is not a finite timestamp")
+        return float(value)
+    try:
+        dt = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(f"{field} is not an ISO8601 timestamp or epoch seconds: "
+                         f"{value!r}") from e
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.timestamp()
+
+
+def window_state(eng: dict, now: float | None = None) -> tuple[bool, str]:
+    """(may_run, detail) for an engagement's authorized assessment window.
+
+    A declared window outside `now` refuses; a malformed one raises ValueError so
+    callers fail closed. No window declared means unrestricted.
+    """
+    now = time.time() if now is None else now
+    start = _parse_window(eng.get("window_start"), "window_start")
+    end = _parse_window(eng.get("window_end"), "window_end")
+    if start is not None and now < start:
+        return False, (f"outside the authorized assessment window: window_start "
+                       f"{eng.get('window_start')} has not been reached")
+    if end is not None and now > end:
+        return False, (f"outside the authorized assessment window: window_end "
+                       f"{eng.get('window_end')} has passed")
+    return True, "inside the authorized assessment window"
+
+
+class ConcurrencyGate:
+    """Bounded admission shared by intent execution (scope.max_concurrency is a ceiling)."""
+
+    def __init__(self, limit: int):
+        self.limit = max(1, int(limit))
+        self._sem = threading.BoundedSemaphore(self.limit)
+
+    @contextmanager
+    def slot(self):
+        self._sem.acquire()
+        try:
+            yield
+        finally:
+            self._sem.release()
+
+
+def _declared_rate(scope: Scope, ceiling: int) -> int:
+    """Pass the declared rate, clamped to the tool's own conservative ceiling."""
+    return max(1, min(ceiling, int(scope.rate_limit_rps)))
 
 
 class Orchestrator:
@@ -45,6 +116,12 @@ class Orchestrator:
         self.registry = registry
         self.runner = runner
         self.llm = llm
+        # one limiter per engagement, shared with the probe, so HTTP requests and
+        # external tool launches together honor scope.rate_limit_rps
+        self.runner.limiter = probe._limiter
+        # a serial loop still runs one intent at a time; the gate is the ceiling
+        # max_concurrency imposes on any concurrent executor (tools, workers).
+        self.gate = ConcurrencyGate(1)
 
     # ---- engagement control ----
 
@@ -54,6 +131,9 @@ class Orchestrator:
             raise KeyError(engagement_id)
         self._check_mode(mode)
         scope = Scope(json.loads(eng["scope_json"]))
+        if not self._window_allows(engagement_id, eng):
+            return
+        self.gate = self._gate_for(scope)
         self.db.execute("UPDATE engagements SET status='running', started_at=? WHERE id=?",
                         (time.time(), engagement_id))
         self.db.emit(engagement_id, "engagement_started", {"mode": mode})
@@ -88,9 +168,29 @@ class Orchestrator:
         eng = self.db.one("SELECT * FROM engagements WHERE id=?", (engagement_id,))
         self._check_mode(mode)
         scope = Scope(json.loads(eng["scope_json"]))
+        if not self._window_allows(engagement_id, eng):
+            return
+        self.gate = self._gate_for(scope)
         self.db.execute("UPDATE engagements SET status='running' WHERE id=?", (engagement_id,))
         self.db.emit(engagement_id, "engagement_resumed", {"mode": mode})
         self._run_loop(engagement_id, scope, eng, mode)
+
+    def _window_allows(self, engagement_id: str, eng: dict) -> bool:
+        """Refuse to start/resume outside the authorized window; malformed fails closed."""
+        try:
+            ok, detail = window_state(eng)
+        except ValueError as e:
+            ok, detail = False, f"invalid assessment window: {e}"
+        if ok:
+            return True
+        self.db.execute(
+            "UPDATE engagements SET status='failed', status_detail=?, finished_at=? WHERE id=?",
+            (detail, time.time(), engagement_id))
+        self.db.emit(engagement_id, "engagement_refused", {"reason": detail})
+        return False
+
+    def _gate_for(self, scope: Scope) -> ConcurrencyGate:
+        return ConcurrencyGate(scope.max_concurrency)
 
     # ---- policy ----
 
@@ -279,8 +379,16 @@ class Orchestrator:
         max_plan_rounds = int(budgets.get("max_plan_rounds", 3))
         plan_rounds = 0
         while True:
-            status = self.db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,))["status"]
-            if status in ("cancelled", "paused", "done", "failed"):
+            status = self.db.one("SELECT status FROM engagements WHERE id=?",
+                                 (engagement_id,))["status"]
+            if status in ("cancelled", "paused", "done", "failed", "window_closed"):
+                return
+            try:
+                may_run, window_detail = window_state(eng)
+            except ValueError as e:
+                may_run, window_detail = False, f"invalid assessment window: {e}"
+            if not may_run:
+                self._finish(engagement_id, "window_closed", window_detail)
                 return
             if time.time() > deadline:
                 self._finish(engagement_id, "budget_exhausted", "max_duration_s reached")
@@ -301,7 +409,8 @@ class Orchestrator:
                     self._finish(engagement_id, "done", "all intents resolved")
                     return
             try:
-                status, result = self._execute(engagement_id, scope, eng, intent, mode)
+                with self.gate.slot():
+                    status, result = self._execute(engagement_id, scope, eng, intent, mode)
                 if self._complete(intent, status, result) and status == "done":
                     self.db.emit(engagement_id, "intent_done", {"intent_id": intent["id"]})
             except Exception as e:
@@ -357,7 +466,7 @@ class Orchestrator:
         self.db.execute("UPDATE engagements SET status=?, finished_at=?, status_detail=? WHERE id=?",
                         (status, time.time(), detail, engagement_id))
         self.db.emit(engagement_id, "engagement_finished", {"status": status, "detail": detail})
-        if status in ("done", "budget_exhausted"):
+        if status in ("done", "budget_exhausted", "window_closed"):
             # independent verification + report always run at termination, so findings
             # are validated and reported even if the investigation budget capped early.
             try:
@@ -691,7 +800,7 @@ class Orchestrator:
             return
         spec = self.registry.get("nuclei")
         r = self.runner.run(spec, {"target": url, "severity": "medium,high,critical",
-                                   "rate_limit": int(scope.rate_limit_rps * 5)},
+                                   "rate_limit": _declared_rate(scope, NUCLEI_MAX_RATE)},
                             scope, engagement_id, intent_id, url, "web")
         if not r.get("ok"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",
@@ -723,7 +832,8 @@ class Orchestrator:
             audit_tls(host, pu.port or 443, self.db, self.evidence, self.pipeline,
                       scope, engagement_id, intent_id)
         spec = self.registry.get("nmap")
-        r = self.runner.run(spec, {"target": host, "top_ports": 100, "service_detect": True},
+        r = self.runner.run(spec, {"target": host, "top_ports": 100, "service_detect": True,
+                                   "rate_limit": _declared_rate(scope, NMAP_MAX_RATE)},
                             scope, engagement_id, intent_id, host, "infra")
         if not r.get("ok"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",

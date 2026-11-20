@@ -2,6 +2,8 @@
 
 passive              read-only observation: page fetches and fingerprints, static
                      source/image audits, GET-only header/cookie/CORS/probe checks.
+production_safe      the passive surface only, with no active unit permitted. The
+                     ceiling for engagements that must stay read-only in production.
 safe_active          adds the active checks the engine has always run (injection
                      probes, uploads, authenticated checks, scanners). Default.
 advanced_validation  same check surface as safe_active; the scope flag of the same
@@ -12,7 +14,7 @@ profile allowed to run it. An unlisted unit is refused: adding a check without a
 policy entry can never widen a passive engagement.
 """
 
-PROFILES = ("passive", "safe_active", "advanced_validation")
+PROFILES = ("passive", "production_safe", "safe_active", "advanced_validation")
 DEFAULT_PROFILE = "safe_active"
 
 MIN_PROFILE = {

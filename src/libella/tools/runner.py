@@ -3,8 +3,13 @@
 The LLM never composes a command line. Adapters build argv from typed
 params; this runner re-checks scope, executes without a shell, caps output,
 and writes an audit row for every call (including refusals).
+
+A subprocess is killed (process group) when its timeout expires or the
+engagement is cancelled, so a cancel is not bounded by the tool's timeout.
 """
 import json
+import os
+import signal
 import subprocess
 import threading
 import time
@@ -16,14 +21,19 @@ from ..scope import Decision, Scope
 from . import ToolSpec, resolve_binary, validate_params
 
 MAX_OUTPUT = 512 * 1024  # per stream cap
+POLL_S = 0.1  # how often a running tool re-checks its timeout / cancel flag
 
 
 class ToolRunner:
-    def __init__(self, db: DB, evidence: EvidenceStore, workdir: str | Path):
+    def __init__(self, db: DB, evidence: EvidenceStore, workdir: str | Path, limiter=None):
         self.db = db
         self.evidence = evidence
         self.workdir = Path(workdir)
         self.workdir.mkdir(parents=True, exist_ok=True)
+        # (engagement_id, rps) -> object with .wait(); the orchestrator wires the
+        # probe's per-engagement limiter here so tool launches and HTTP requests
+        # together honor the declared rate.
+        self.limiter = limiter
 
     def run(
         self,
@@ -99,19 +109,25 @@ class ToolRunner:
 
         rundir = self.workdir / engagement_id / call_id
         rundir.mkdir(parents=True, exist_ok=True)
+        if self.limiter is not None:
+            self.limiter(engagement_id, scope.rate_limit_rps).wait()
         stdout, stderr, exit_code, timed_out, truncated = _run_capped(
             argv, rundir, {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(rundir),
-                           "LANG": "C.UTF-8", "NO_COLOR": "1"}, spec.timeout_s)
+                           "LANG": "C.UTF-8", "NO_COLOR": "1"}, spec.timeout_s,
+            should_stop=lambda: self._cancelled(engagement_id))
+        cancelled = not timed_out and self._cancelled(engagement_id)
 
         duration_ms = (time.time() - started) * 1000
         artifact = self.evidence.put(
             engagement_id,
             json.dumps({"argv": argv, "stdout": stdout.decode(errors="replace"),
                         "stderr": stderr.decode(errors="replace"), "exit_code": exit_code,
-                        "timed_out": timed_out, "truncated": truncated}, default=str).encode(),
+                        "timed_out": timed_out, "cancelled": cancelled,
+                        "truncated": truncated}, default=str).encode(),
             "tool_output",
         )
-        status = "timeout" if timed_out else ("ok" if exit_code == 0 else "failed")
+        status = ("cancelled" if cancelled else
+                  "timeout" if timed_out else ("ok" if exit_code == 0 else "failed"))
         self._audit(call_id, engagement_id, intent_id, spec.name, argv, dest,
                     f"executed: {status}", exit_code, started, artifact["id"],
                     None if status == "ok" else status)
@@ -122,11 +138,19 @@ class ToolRunner:
             "stdout": stdout.decode(errors="replace"),
             "stderr": stderr.decode(errors="replace"),
             "truncated": truncated,
-            "partial": timed_out,
+            "partial": timed_out or cancelled,
+            "cancelled": cancelled,
         }
         if timed_out:
             result["degradation"] = "timeout_partial_never_complete"
+        elif cancelled:
+            result["degradation"] = "cancelled_partial_never_complete"
         return result
+
+    def _cancelled(self, engagement_id: str) -> bool:
+        """A cancelled engagement must not keep a subprocess alive."""
+        row = self.db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,))
+        return bool(row) and row["status"] == "cancelled"
 
     def _audit(self, call_id, engagement_id, intent_id, tool, argv, target,
                decision, exit_code, started, artifact_id, error):
@@ -143,14 +167,16 @@ class ToolRunner:
         })
 
 
-def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float):
+def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float, should_stop=None):
     """Run argv and stream both pipes into bounded buffers.
 
     Output is capped while capturing, not after: a chatty tool must not be
-    able to make the platform buffer gigabytes.
+    able to make the platform buffer gigabytes. The child is its own session,
+    so a timeout or a cancel kills its whole process group (no orphaned
+    scanner children continuing to touch the target).
     """
-    proc = subprocess.Popen(argv, cwd=str(cwd), env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(argv, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True)
     out, err = bytearray(), bytearray()
     truncated = [False]
 
@@ -165,22 +191,28 @@ def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float):
                 if len(chunk) and len(buf) >= MAX_OUTPUT:
                     truncated[0] = True
         except (OSError, ValueError):
-            return  # pipe closed by timeout kill
+            return  # pipe closed by timeout/cancel kill
 
     readers = [threading.Thread(target=drain, args=(proc.stdout, out), daemon=True),
                threading.Thread(target=drain, args=(proc.stderr, err), daemon=True)]
     for t in readers:
         t.start()
     timed_out = False
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        proc.kill()
+    deadline = time.monotonic() + timeout
+    while True:
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=POLL_S)
+            break
         except subprocess.TimeoutExpired:
-            pass
+            stop = _stop_requested(should_stop)
+            if stop or time.monotonic() >= deadline:
+                timed_out = not stop  # a cancel is a cancel, not a timeout
+                _kill_group(proc)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                break
     for t in readers:
         t.join(5)
     for pipe in (proc.stdout, proc.stderr):
@@ -189,6 +221,22 @@ def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float):
         except OSError:
             pass
     return bytes(out), bytes(err), (None if timed_out else proc.returncode), timed_out, truncated[0]
+
+
+def _stop_requested(should_stop) -> bool:
+    """A monitor that fails to answer must not keep a tool alive past its timeout."""
+    try:
+        return bool(should_stop and should_stop())
+    except Exception:
+        return False
+
+
+def _kill_group(proc):
+    """Kill the tool and everything it spawned (it runs in its own session)."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
 
 
 def _is_host(target: str) -> bool:
