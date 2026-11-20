@@ -5,6 +5,7 @@ import secrets
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -99,6 +100,33 @@ class App:
             self.db.emit(engagement_id, "engagement_failed", {"error": str(e)})
 
 
+def _public_auth(auth: dict) -> dict:
+    """Display schema for engagement auth: identity usernames only.
+
+    auth_json also carries passwords, OpenAPI paths and operator test hints; an
+    allowlist keeps every future field server-side by default.
+    """
+    return {"identities": [{"username": i.get("username")}
+                           for i in auth.get("identities") or [] if isinstance(i, dict)]}
+
+
+def _public_url(url) -> str | None:
+    """Login URL without userinfo, query or fragment (tokens ride in both)."""
+    try:
+        p = urlparse(url or "")
+    except ValueError:
+        return None
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return None
+    return urlunparse((p.scheme, p.netloc.rpartition("@")[2], p.path, "", "", ""))
+
+
+def _exchange_summary(row: dict) -> dict:
+    """Finding-bound exchange list row: no raw request/response material."""
+    return {k: row.get(k) for k in ("id", "engagement_id", "evidence_id", "method", "url",
+                                    "status", "duration_ms", "tool", "peer_ip", "created_at")}
+
+
 def create_api(app: App) -> FastAPI:
     api = FastAPI(title="Libella", version=__version__)
     api.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -174,9 +202,7 @@ def create_api(app: App) -> FastAPI:
         for r in rows:
             r["scope"] = json.loads(r.pop("scope_json"))
             r["budgets"] = json.loads(r.pop("budgets_json"))
-            r["auth"] = {"identities": [
-                {k: v for k, v in i.items() if k != "password"} for i in json.loads(r.pop("auth_json")).get("identities", [])
-            ]}
+            r["auth"] = _public_auth(json.loads(r.pop("auth_json")))
             r["summary"] = app.db.one(
                 "SELECT COUNT(*) n FROM findings WHERE engagement_id=?", (r["id"],))["n"]
         return rows
@@ -188,9 +214,7 @@ def create_api(app: App) -> FastAPI:
             raise HTTPException(404)
         r["scope"] = json.loads(r.pop("scope_json"))
         r["budgets"] = json.loads(r.pop("budgets_json"))
-        auth = json.loads(r.pop("auth_json"))
-        r["auth"] = {**auth, "identities": [
-            {k: v for k, v in i.items() if k != "password"} for i in auth.get("identities", [])]}
+        r["auth"] = _public_auth(json.loads(r.pop("auth_json")))
         r["spend"] = app.llm().spend(eid) if app.llm() else {"cost_usd": 0}
         return r
 
@@ -337,7 +361,7 @@ def create_api(app: App) -> FastAPI:
         for eid in f["evidence_ids"]:
             ex = app.db.one("SELECT * FROM exchanges WHERE evidence_id=?", (eid,))
             if ex:
-                f["exchanges"].append(ex)
+                f["exchanges"].append(_exchange_summary(ex))
         return f
 
     @api.post("/api/findings/{fid}/verify", dependencies=[Depends(auth)])
@@ -398,6 +422,8 @@ def create_api(app: App) -> FastAPI:
         except json.JSONDecodeError:
             ex.pop("req_headers_json", None)
             ex.pop("resp_headers_json", None)
+        if ex.get("req_body"):
+            ex["req_body"] = redact(ex["req_body"])
         if ex["evidence_id"]:
             try:
                 blob = app.evidence.read_json(ex["evidence_id"])
@@ -584,9 +610,13 @@ def create_api(app: App) -> FastAPI:
 
     def _ctx_out(row: dict) -> dict:
         """auth_contexts row without cookie values (session secrets stay server-side)."""
+        flow = json.loads(row.get("login_flow_json") or "{}")
         return {**{k: row.get(k) for k in ("id", "engagement_id", "name", "username", "status",
                                            "last_verified_at", "created_at")},
-                "login_flow": json.loads(row.get("login_flow_json") or "{}"),
+                "login_flow": {"base_url": _public_url(flow.get("base_url")),
+                               "login_url": _public_url(flow.get("login_url")),
+                               "selectors": flow.get("selectors"),
+                               "success_assertion": flow.get("success_assertion")},
                 "cookie_count": len(json.loads(row.get("cookies_json") or "[]"))}
 
     @api.post("/api/engagements/{eid}/auth-contexts",
