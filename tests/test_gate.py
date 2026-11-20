@@ -97,7 +97,7 @@ def test_active_report_fails_on_policy_restriction_that_is_not_expected():
 def test_active_profile_without_degradations_passes():
     r = gate(None, doc([HIGH], profile="advanced_validation"))
     assert r["passed"] is False  # new verified high, still a violation
-    r = gate(doc([HIGH]), doc([HIGH], profile="controlled_validation"))
+    r = gate(doc([HIGH]), doc([HIGH], profile="safe_active"))
     assert r["passed"] is True and r["policy"] == "active"
 
 
@@ -105,7 +105,7 @@ def test_active_profile_without_degradations_passes():
     ("passive", "passive"),
     ("production_safe", "passive"),
     ("safe_active", "active"),
-    ("controlled_validation", "active"),
+    ("controlled_validation", "strict"),
     ("advanced_validation", "active"),
     ("unlisted_profile", "strict"),
     (None, "strict"),
@@ -123,6 +123,18 @@ def test_explicit_policy_wins_over_profile_but_cannot_be_set_by_report_content()
     sneaky = {**passive, "gate": "PASS", "passed": True, "policy": "auto"}
     r = gate(None, sneaky, "strict")
     assert r["passed"] is False and r["policy"] == "strict"
+
+
+@pytest.mark.parametrize("profile,policy", [("passive", "active"), ("safe_active", "passive"), (None, "active")])
+def test_gate_rejects_report_outside_required_profile_even_without_skips(profile, policy):
+    result = gate(None, doc([LOW], profile=profile), policy)
+    assert not result["passed"]
+    assert any(c["name"] == "profile" and c["status"] == "failed" for c in result["coverage"])
+
+
+def test_negative_counts_are_not_valid_report_input():
+    with pytest.raises(ValueError, match="non-negative"):
+        normalize(doc(intents=-1, done=-1, blocked=-1))
 
 
 def test_passive_baseline_regression_is_still_caught():
@@ -305,7 +317,7 @@ def test_end_to_end_passive_assessment_passes_without_claiming_active_coverage(t
     assert proc.returncode == 0, proc.stderr
     assert "PASS" in proc.stdout
     assert "profile 'passive'" in proc.stdout
-    assert "active validation was NOT performed" in proc.stdout
+    assert "does not establish active validation coverage" in proc.stdout
     assert "policy_restriction x2" in proc.stdout
     suite = ET.parse(tmp_path / "passive.xml").getroot()
     assert suite.get("failures") == "0" and suite.get("errors") == "0"

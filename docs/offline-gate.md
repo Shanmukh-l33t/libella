@@ -37,21 +37,18 @@ The gate evaluates an assessment against a **policy**, and resolves it itself:
 
 | `--policy` | resolved requirement set |
 |------------|--------------------------|
-| `auto` (default) | from `engagement.profile`. `passive`, `production_safe` → `passive`; `safe_active`, `controlled_validation`, `advanced_validation` → `active`; anything else or absent → `strict` |
-| `passive` | read-only requirements. `policy_restriction` skips are expected limitations, not failures |
-| `active` | active requirements. `policy_restriction` is a coverage failure (this profile permits that work) |
+| `auto` (default) | from `engagement.profile`. `passive`, `production_safe` → `passive`; `safe_active`, `advanced_validation` → `active`; anything else or absent → `strict` |
+| `passive` | requires a declared read-only profile. `policy_restriction` skips are expected limitations, not failures |
+| `active` | requires a declared active profile. `policy_restriction` is a coverage failure |
 | `strict` | previous behaviour: every recorded limitation fails |
 
-The policy is a CLI/engine decision, never a report field: no value inside
-`report.json` sets the verdict, and `--policy` only ever narrows. A passive
-report passed with `--policy strict` or `--policy active` fails, so a report can
-never be promoted to active coverage by writing `profile`.
+The gate computes the verdict; it ignores any verdict field inside `report.json`.
+Explicit `passive` and `active` policies reject mismatched profiles, even when no
+skips are recorded. `strict` rejects every recorded limitation.
 
-`--policy auto` trusts the declared profile (a redacted report cannot prove what
-ran) — the same class of trust as `engagement.status`. What it cannot do is
-upgrade: a `passive` verdict always prints the profile and states that active
-validation was not performed. Use `--policy active` in CI if the pipeline needs
-proof that active work happened.
+`--policy auto` trusts the declared profile. Pin an explicit policy in CI and
+consume reports from a trusted producer. No policy establishes what actually ran
+or proves complete methodology coverage from a redacted report alone.
 
 ## Requirement categories
 
@@ -104,7 +101,7 @@ finding (fail-closed, but noisy).
 
 - `passive`: the declared read-only requirements were met and every policy skip
   is listed. It is **not** an active penetration test; the output states the
-  profile and that active validation was not performed.
+  profile and that the gate does not establish active validation coverage.
 - `active`: the run finished its planned intents with no degradations at all and
   no new verified high/critical finding.
 - `strict`: as `active`, plus no recorded limitation of any kind.
@@ -115,12 +112,12 @@ finding (fail-closed, but noisy).
 libella-gate: PASS
   policy: passive (declared profile 'passive')
   requirements: 7 satisfied (2 as recorded limitations), 0 not satisfied
-  [ok] policy/profile: declared profile 'passive' -> passive policy: read-only (passive) requirements
+  [ok] policy/profile: declared profile 'passive': read-only (passive) requirements
   [ok] execution/engagement-status
   [ok] coverage/intents
   [limitation] limitations/policy-limitations: 2 check(s) skipped by the read-only profile (expected): policy_restriction x2
   [ok] policy/degradations
-  [limitation] limitations/active-validation: declared profile 'passive': active validation was NOT performed; a PASS is a read-only assessment, not an active penetration test
+  [limitation] limitations/active-validation: declared profile 'passive': this gate does not establish active validation coverage or represent an active penetration test
   [ok] incomplete/findings-totals
 ```
 

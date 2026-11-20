@@ -26,7 +26,7 @@ RISK = {"critical", "high"}
 FAILED_ENGAGEMENT_STATES = {"failed", "cancelled", "budget_exhausted"}
 # Profiles whose declared ceiling is read-only; policy skips are expected there.
 READ_ONLY_PROFILES = {"passive", "production_safe"}
-ACTIVE_PROFILES = {"safe_active", "controlled_validation", "advanced_validation"}
+ACTIVE_PROFILES = {"safe_active", "advanced_validation"}
 POLICIES = ("auto", "passive", "active", "strict")
 POLICY_RESTRICTION = "policy_restriction"
 # A requirement is satisfied unless it is a failure/missing/unknown state;
@@ -77,6 +77,8 @@ def normalize(doc, source="report"):
         raise GateInputError(f"{source}.engagement.profile: expected string or null")
     counts = {k: _need(summary, k, int, f"{source}.summary")
               for k in ("intents", "intents_done", "intents_blocked", "findings_total", "confirmed")}
+    if any(isinstance(value, int) and value < 0 for value in counts.values()):
+        raise GateInputError(f"{source}.summary: counts must be non-negative")
 
     findings = []
     for i, raw in enumerate(raw_findings):
@@ -125,10 +127,9 @@ def resolve_policy(profile, policy="auto"):
         raise GateInputError(f"--policy: unknown value {policy!r}")
     if policy != "auto":
         return policy
-    name = (profile or "").strip().lower()
-    if name in READ_ONLY_PROFILES:
+    if profile in READ_ONLY_PROFILES:
         return "passive"
-    if name in ACTIVE_PROFILES:
+    if profile in ACTIVE_PROFILES:
         return "active"
     return "strict"
 
@@ -183,8 +184,11 @@ def _coverage(report, baseline, policy):
         covers = "active requirements"
     else:
         covers = "strict requirements (every limitation fails)"
-    cov.append(_coverage_item("profile", "policy", "ok",
-                              f"{declared} -> {policy} policy: {covers}"))
+    allowed = (policy == "strict" or (policy == "passive" and profile in READ_ONLY_PROFILES)
+               or (policy == "active" and profile in ACTIVE_PROFILES))
+    cov.append(_coverage_item("profile", "policy", "ok" if allowed else "failed",
+                              f"{declared}: {covers}" if allowed else
+                              f"{declared} does not match the required {policy} policy"))
 
     if report["status"] == "done":
         cov.append(_coverage_item("engagement-status", "execution", "ok"))
@@ -211,8 +215,8 @@ def _coverage(report, baseline, policy):
     if policy == "passive":
         cov.append(_coverage_item(
             "active-validation", "limitations", "limitation",
-            f"{declared}: active validation was NOT performed; a PASS is a "
-            f"read-only assessment, not an active penetration test"))
+            f"{declared}: this gate does not establish active validation coverage "
+            f"or represent an active penetration test"))
 
     actual_confirmed = sum(1 for f in report["findings"] if f["verified"])
     if s["findings_total"] != len(report["findings"]):
