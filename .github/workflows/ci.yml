@@ -42,11 +42,11 @@ jobs:
           rs = json.load(open("/tmp/bench/results.json"))
           v = next(r for r in rs if r["mode"] == "vuln")
           h = next(r for r in rs if r["mode"] == "hardened")
-          assert v["detected"] == 13, f"vuln detection regression: {v['detected']}/13"
+          assert v["detected"] == 16, f"vuln detection regression: {v['detected']}/16"
           assert v["false_positives"] == 0
           assert h["confirmed"] == 0, f"hardened false positives: {h['confirmed']}"
           assert v["chain"]["ok"] and h["chain"]["ok"]
-          print("benchmark gate PASS: 13/13 validated, 0 FP, chains intact")
+          print("benchmark gate PASS: 16/16 validated, 0 FP, chains intact")
           EOF
 
   frontend:

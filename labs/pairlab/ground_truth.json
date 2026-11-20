@@ -19,7 +19,10 @@
     {"id": "PL-10", "cwe": "CWE-200", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/debug", "title": "Debug endpoint exposes secret key and environment", "proof": "GET /debug returns secret_key", "present_in": "vuln"},
     {"id": "PL-11", "cwe": "CWE-548", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/uploads/", "title": "Directory listing", "proof": "GET /uploads/ lists files", "present_in": "vuln"},
     {"id": "PL-12", "cwe": "CWE-614", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/login", "title": "Insecure session cookie flags", "proof": "session cookie lacks HttpOnly/Secure/SameSite", "present_in": "vuln"},
-    {"id": "PL-13", "cwe": "CWE-693", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/", "title": "Missing security headers", "proof": "no CSP/X-Frame-Options/X-Content-Type-Options/HSTS", "present_in": "vuln"}
+    {"id": "PL-13", "cwe": "CWE-693", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/", "title": "Missing security headers", "proof": "no CSP/X-Frame-Options/X-Content-Type-Options/HSTS", "present_in": "vuln"},
+    {"id": "PL-14", "cwe": "CWE-434", "owasp": "A04:2021 Insecure Design", "endpoint": "/upload", "title": "Unrestricted file upload", "proof": "POST .php file accepted, UPLOAD_ACCEPTED marker, reachable via /files", "present_in": "vuln"},
+    {"id": "PL-15", "cwe": "CWE-1336", "owasp": "A03:2021 Injection", "endpoint": "/greet?name=", "title": "Server-side template injection", "proof": "name={{7*7}} renders 49", "present_in": "vuln"},
+    {"id": "PL-16", "cwe": "CWE-79", "owasp": "A03:2021 Injection", "endpoint": "/greet?name=", "title": "Reflected XSS in greet name", "proof": "name=<script> reflected unescaped via template rendering", "present_in": "vuln"}
   ],
   "negative_controls": [
     {"id": "NC-01", "endpoint": "/", "signal": "X-Powered-By: Express/4.16.0 and Server: nginx/1.18.0 banners in vuln mode", "expected": "version signal only; must NOT become a confirmed CVE finding without configuration/exposure proof"},

@@ -42,8 +42,8 @@ seeded vulnerability classes and machine-readable ground truth.
 
 | Mode | Seeded vulns detected + independently validated | False positives | Duration |
 |---|---|---|---|
-| Vulnerable twin | 13 / 13 | 0 | ~156s (with nuclei) / ~8s (deterministic only) |
-| Hardened twin | 0 (correct) | 0 | ~154s / ~7s |
+| Vulnerable twin | 16 / 16 | 0 | ~158s (with nuclei) / ~9s (deterministic only) |
+| Hardened twin | 0 (correct) | 0 | ~158s / ~8s |
 
 Evidence hash chains intact across all runs. Reproduce:
 

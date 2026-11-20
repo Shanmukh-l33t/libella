@@ -267,5 +267,35 @@ def debug():
     return jsonify(error="not found"), 404
 
 
+@app.post("/upload")
+def upload():
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify(error="file required"), 400
+    name = f.filename
+    if VULN:
+        # CWE-434: no extension/content validation, original name kept
+        dest = os.path.join(FILES_DIR, name)
+        f.save(dest)
+        return jsonify(uploaded=True, path="/files?name=" + name, marker="UPLOAD_ACCEPTED")
+    safe_ext = {".txt", ".png", ".jpg", ".pdf"}
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in safe_ext:
+        return jsonify(error="extension not allowed"), 400
+    safe = "upload_" + os.urandom(8).hex() + ext
+    f.save(os.path.join(FILES_DIR, safe))
+    return jsonify(uploaded=True, path="/files?name=" + safe)
+
+
+@app.get("/greet")
+def greet():
+    from flask import render_template_string
+    name = request.args.get("name", "world")
+    if VULN:
+        # CWE-1336: user input rendered as template source
+        return render_template_string("Hello " + name)
+    return render_template_string("Hello {{ name }}", name=name)
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=PORT, debug=False)

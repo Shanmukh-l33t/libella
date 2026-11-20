@@ -52,9 +52,9 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | nuclei template scanning | TESTED | adapter; scanner findings stay unvalidated unless replayed |
 | OpenAPI import + schema-driven testing | TESTED | apilab 5/5 validated (see API security section) |
 | GraphQL introspection + injection + field-authz + depth/alias/batch | TESTED | graphlab 7/7 validated, hardened 0 FP (see API security section) |
+| File upload validation | TESTED | PL-14: dangerous-extension probe accepted + reachability proof; hardened rejects |
+| SSTI | TESTED | PL-15: dual arithmetic payloads (49/133) prove server-side evaluation |
 | Business-logic / multi-step workflows | PARTIAL | identity login + IDOR; deeper flows planned |
-| File upload validation | PLANNED | |
-| SSTI / deserialization / XXE | PLANNED | |
 
 ## Infrastructure / cloud / code
 
@@ -122,9 +122,9 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 
 | Proof | Result | Artifact |
 |---|---|---|
-| PairLab vulnerable twin | 13/13 seeds detected AND independently replay-validated, 0 FP | benchmark_runs/results.json |
+| PairLab vulnerable twin | 16/16 seeds detected AND independently replay-validated, 0 FP | benchmark_runs/results.json |
 | PairLab hardened twin | 0 confirmed findings, 0 FP | benchmark_runs/results.json |
-| CI clean-environment gate | GitHub Actions: ground-truth self-check + 13/13 + 0 FP + chains intact, "benchmark gate PASS" | run 44643365589 |
+| CI clean-environment gate | GitHub Actions: ground-truth self-check + 16/16 + 0 FP + chains intact, "benchmark gate PASS" | .github/workflows/ci.yml |
 | Retest after remediation | validated /debug finding: retest=persists on vuln; lab swapped to hardened; retest=fixed; state retested_fixed | benchmarks/run_retest_cycle.py, benchmark_runs/retest/phase{1,2}.json |
 | Interrupt and recovery | cancel mid-run (4 intents stopped) -> resume -> done, 8/8 validated, chain intact (234 objects) | benchmarks/run_recovery.py, benchmark_runs/recovery_results.json |
 | LLM planning mode | 7 planner calls, 33 intents, compile gate rejected out-of-scope proposal, 8/8 testable seeds validated, budget-bounded | benchmarks/run_llm_mode.py, benchmark_runs/llm_mode_results.json |

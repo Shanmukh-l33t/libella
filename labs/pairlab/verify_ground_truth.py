@@ -44,6 +44,18 @@ def checks(base):
     out["PL-12"] = "session=" in sc and "HttpOnly" not in sc
     r = s.get(base + "/", timeout=TIMEOUT)
     out["PL-13"] = not any(h in r.headers for h in ("Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options"))
+    probe = "<?php /* libella-upload-probe-marker-9f2c */ ?>"
+    r = s.post(base + "/upload", files={"file": ("libella_probe.php", probe, "application/octet-stream")}, timeout=TIMEOUT)
+    ok14 = r.status_code == 200 and "UPLOAD_ACCEPTED" in r.text
+    if ok14:
+        rr = s.get(base + "/files", params={"name": "libella_probe.php"}, timeout=TIMEOUT)
+        ok14 = "libella-upload-probe-marker-9f2c" in rr.text
+    out["PL-14"] = ok14
+    r = s.get(base + "/greet", params={"name": "{{7*7}}"}, timeout=TIMEOUT)
+    r2 = s.get(base + "/greet", params={"name": "{{7*19}}"}, timeout=TIMEOUT)
+    out["PL-15"] = "49" in r.text and "7*7" not in r.text and "133" in r2.text
+    r = s.get(base + "/greet", params={"name": "<script>alert(1)</script>"}, timeout=TIMEOUT)
+    out["PL-16"] = "<script>alert(1)</script>" in r.text
     # negative controls
     r = s.get(base + "/files", params={"name": "readme.txt"}, timeout=TIMEOUT)
     out["NC-04"] = r.status_code == 200 and "public file" in r.text
@@ -72,4 +84,4 @@ if fails:
     for f in fails:
         print(" -", f)
     raise SystemExit(1)
-print("ALL GROUND-TRUTH CHECKS PASS: 13 seeds fire only in vuln mode; negative controls hold in both.")
+print("ALL GROUND-TRUTH CHECKS PASS: 16 seeds fire only in vuln mode; negative controls hold in both.")

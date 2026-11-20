@@ -312,6 +312,73 @@ class WebChecks:
                 ))
         return out
 
+    def ssti(self, url: str, param: str) -> list[dict]:
+        """Prove template evaluation with two distinct arithmetic payloads."""
+        sep = "&" if "?" in url else "?"
+        r1 = self._req(f"{url}{sep}{param}={{{{7*7}}}}", tool="ssti_check")
+        if not r1.get("ok") or "49" not in r1["body"] or "7*7" in r1["body"]:
+            return []
+        proof_url = f"{url}{sep}{param}={{{{7*19}}}}"
+        r2 = self._req(proof_url, tool="ssti_confirm")
+        if not r2.get("ok") or "133" not in r2["body"]:
+            return []
+        idx = r2["body"].find("133")
+        quote = r2["body"][max(0, idx - 20):idx + 23]
+        return [_candidate(
+            f"Server-side template injection in parameter '{param}'", "CWE-1336",
+            "A03:2021 Injection", "critical", "high", url,
+            "Payloads {{7*7}} and {{7*19}} are evaluated server-side (49, 133).",
+            "Template engine execution; often escalates to remote code execution.",
+            "Never render user input as template source; use sandboxed templating with autoescape.",
+            r2["evidence_id"], quote, {"method": "GET", "url": proof_url},
+            f"ssti:{url}:{param}",
+        )]
+
+    def file_upload(self, upload_url: str, base_url: str) -> list[dict]:
+        """Upload a harmless marker with a dangerous extension; prove storage + reachability."""
+        boundary = "----libellaprobe"
+        fname = "libella_probe.php"
+        marker = "libella-upload-probe-marker-9f2c"
+        content = f"<?php /* {marker} */ ?>"
+        body = (f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"file\"; filename=\"{fname}\"\r\n"
+                f"Content-Type: application/octet-stream\r\n\r\n"
+                f"{content}\r\n--{boundary}--\r\n").encode()
+        r = self._req(upload_url, method="POST", body=body,
+                      headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                      tool="upload_check")
+        if not r.get("ok") or r["status"] not in (200, 201):
+            return []
+        low = r["body"].lower()
+        if not any(k in low for k in ("upload", "success", "path", "url", "file")):
+            return []
+        # try to reach the stored file via a path/url in the response
+        import json as _json
+        reach = None
+        try:
+            data = _json.loads(r["body"])
+            for k in ("path", "url", "file", "location"):
+                v = data.get(k)
+                if isinstance(v, str) and v:
+                    reach = v if v.startswith("http") else base_url.rstrip("/") + "/" + v.lstrip("/")
+                    break
+        except (ValueError, AttributeError):
+            pass
+        if reach and self.scope.check_url(reach).allowed:
+            rr = self._req(reach, tool="upload_reach")
+            if rr.get("ok") and marker in rr["body"]:
+                return [_candidate(
+                    "Unrestricted file upload (dangerous extension stored and reachable)",
+                    "CWE-434", "A04:2021 Insecure Design", "high", "high", upload_url,
+                    f"A .php probe was accepted and is reachable at {reach} with its content intact.",
+                    "Web-shell upload potential; remote code execution if the path is script-executable.",
+                    "Allowlist extensions and content types; rename uploads; store outside web root; disable script execution in upload dirs.",
+                    rr["evidence_id"], marker,
+                    {"method": "GET", "url": reach},
+                    f"upload:{upload_url}",
+                )]
+        return []
+
     def version_signals(self, url: str) -> list[dict]:
         """Observations only. Version banners are NOT findings (negative control)."""
         r = self._req(url, tool="fingerprint")
@@ -375,5 +442,6 @@ COMMON_PARAM_ENDPOINTS = [
     "/search?q=test", "/files?name=readme.txt", "/redirect?to=/",
     "/fetch?url=http://127.0.0.1/", "/api/products?category=tools",
     "/download?file=readme.txt", "/page?id=1", "/profile?user=1",
+    "/greet?name=world",
 ]
 COMMON_API_PATHS = ["/api/profile", "/api/users", "/api/orders", "/api/config"]

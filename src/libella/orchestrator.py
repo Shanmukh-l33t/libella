@@ -454,6 +454,7 @@ class Orchestrator:
             for p in params:
                 candidates += checks.reflected_xss(base, p)
                 candidates += checks.sqli(base, p)
+                candidates += checks.ssti(base, p)
                 candidates += checks.path_traversal(base, p)
                 candidates += checks.open_redirect(base, p)
         # login cookie check via forms
@@ -488,11 +489,14 @@ class Orchestrator:
             for p in parse_qs(urlparse(full).query):
                 candidates += checks.reflected_xss(pbase, p)
                 candidates += checks.sqli(pbase, p)
+                candidates += checks.ssti(pbase, p)
                 candidates += checks.path_traversal(pbase, p)
                 candidates += checks.open_redirect(pbase, p)
         for ap in COMMON_API_PATHS:
             if scope.check_url(base + ap).allowed:
                 candidates += checks.cors(base + ap)
+        if scope.check_url(base + "/upload").allowed:
+            candidates += checks.file_upload(base + "/upload", base)
         # authenticated checks: login each identity, test auth bypass + IDOR
         import httpx
         for ident in auth.get("identities", []):
