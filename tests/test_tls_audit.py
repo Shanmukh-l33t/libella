@@ -117,3 +117,47 @@ def test_out_of_scope_refused(platform):
         assert db.one("SELECT COUNT(*) n FROM events WHERE kind='scope_refusal'")["n"] == 1
     finally:
         srv.shutdown()
+
+
+def _tls_finding(ev, pipe, port) -> str:
+    ev_row = ev.put_json("eng", {"request": {}}, "http_exchange")
+    return pipe.submit_candidate("eng", {
+        "title": "expired cert", "cwe": "CWE-298", "severity": "high", "endpoint": "tls",
+        "evidence_ids": [ev_row["id"]], "quote": "expired: true", "quote_in": "tls_fact",
+        "proof_request": {"method": "TLS", "url": f"tls://127.0.0.1:{port}"},
+        "dedup_key": "tls"})["id"]
+
+
+def test_tls_recheck_never_dials_out_of_scope(platform, monkeypatch):
+    """Egress check: recheck_tls_fact used to dial any host the proof named."""
+    db, ev, pipe, ver = platform
+    dialled = []
+
+    def boom(host, port):
+        dialled.append((host, port))
+        raise AssertionError("dialled an out-of-scope host")
+
+    monkeypatch.setattr("libella.tls_audit.scan_tls", boom)
+    scope = Scope({"targets": [{"kind": "url", "value": "https://127.0.0.1:1"}],
+                   "categories": ["infra"]})
+    fid = _tls_finding(ev, pipe, 8446)
+    res = ver.verify("eng", scope, fid)
+    assert dialled == []
+    assert res["verdict"] == "inconclusive", res
+    assert "refused" in res["detail"], res
+    assert db.one("SELECT COUNT(*) n FROM events WHERE kind='scope_refusal'")["n"] == 1
+
+
+def test_tls_retest_never_dials_out_of_scope(platform, monkeypatch):
+    db, ev, pipe, ver = platform
+    dialled = []
+    monkeypatch.setattr("libella.tls_audit.scan_tls",
+                        lambda host, port: dialled.append((host, port)))
+    scope = Scope({"targets": [{"kind": "url", "value": "https://127.0.0.1:1"}],
+                   "categories": ["infra"]})
+    fid = _tls_finding(ev, pipe, 8446)
+    db.execute("UPDATE findings SET state='validated' WHERE id=?", (fid,))
+    res = ver.retest("eng", scope, fid)
+    assert dialled == []
+    assert res["verdict"] == "inconclusive", res
+    assert db.one("SELECT verdict FROM retests WHERE finding_id=?", (fid,))["verdict"] == "inconclusive"

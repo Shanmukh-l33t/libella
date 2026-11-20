@@ -169,11 +169,18 @@ def audit_tls(host: str, port: int, db: DB, evidence: EvidenceStore,
     return submitted
 
 
-def recheck_tls_fact(host: str, port: int, quote: str) -> tuple[bool, str]:
-    """Independent re-verification for tls_fact quotes (verifier dispatch)."""
+def recheck_tls_fact(host: str, port: int, quote: str, scope: Scope) -> tuple[bool | None, str]:
+    """Independent re-verification for tls_fact quotes (verifier dispatch).
+
+    Returns (None, reason) when the fact cannot be judged — out of scope,
+    unreachable, or an unknown quote. None is never "reproduced" or "fixed".
+    """
+    decision = scope.check_host_port(host, port, "infra")  # before dialling: egress stays in scope
+    if not decision.allowed:
+        return None, f"refused: {decision.reason}"
     facts = scan_tls(host, port)
     if facts.get("error"):
-        return False, f"recheck failed: {facts['error']}"
+        return None, f"recheck failed: {facts['error']}"
     if quote.startswith("expired:"):
         ok = facts.get("expired") is True
         return ok, f"expired now {facts.get('expired')}"
@@ -185,4 +192,4 @@ def recheck_tls_fact(host: str, port: int, quote: str) -> tuple[bool, str]:
         now = set(facts.get("weak_protocols", []))
         ok = bool(want & now)
         return ok, f"weak protocols now {sorted(now)}"
-    return False, "unknown tls_fact quote"
+    return None, "unknown tls_fact quote"

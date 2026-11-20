@@ -69,7 +69,7 @@ class Verifier:
             return self._record(finding_id, attempt, "no_proof_spec", None,
                                 "inconclusive", "malformed proof request")
         if pr.get("method") == "TLS":
-            return self._verify_tls(engagement_id, f, spec, pr, attempt)
+            return self._verify_tls(engagement_id, scope, f, spec, pr, attempt)
         r = self.probe.request(
             engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
             headers=pr.get("headers"), body=pr.get("body"), tool="verifier_replay",
@@ -93,7 +93,8 @@ class Verifier:
         return {"verdict": verdict, "detail": detail, "replay_exchange_id": r["exchange_id"],
                 "finding_id": finding_id, "state": "validated" if reproduced else f["state"]}
 
-    def _verify_tls(self, engagement_id: str, f: dict, spec: dict, pr: dict, attempt: int) -> dict:
+    def _verify_tls(self, engagement_id: str, scope, f: dict, spec: dict, pr: dict,
+                    attempt: int) -> dict:
         """Independent re-verification for TLS findings: re-scan, compare facts."""
         from .tls_audit import recheck_tls_fact
         from urllib.parse import urlparse
@@ -102,18 +103,26 @@ class Verifier:
         if not host:
             return self._record(f["id"], attempt, "tls_recheck", None,
                                 "inconclusive", "malformed tls proof url")
-        reproduced, detail = recheck_tls_fact(host, port, spec.get("quote", ""))
-        verdict = "reproduced" if reproduced else "not_reproduced"
+        ok, detail = recheck_tls_fact(host, port, spec.get("quote", ""), scope)
+        if ok is None:  # refused before any dial, or the scan could not judge
+            self._refusal_event(engagement_id, f"tls://{host}:{port}", detail)
+            return self._record(f["id"], attempt, "tls_recheck", None, "inconclusive", detail)
+        verdict = "reproduced" if ok else "not_reproduced"
         self._record(f["id"], attempt, "tls_recheck", None, verdict, detail)
         try:
-            if reproduced:
+            if ok:
                 self.pipeline.transition(f["id"], "validated", reason="independent TLS recheck reproduced")
             elif f["state"] == "validated":
                 self.pipeline.transition(f["id"], "observed", reason="TLS recheck failed to reproduce")
         except ValueError:
             pass
         return {"verdict": verdict, "detail": detail, "finding_id": f["id"],
-                "state": "validated" if reproduced else f["state"]}
+                "state": "validated" if ok else f["state"]}
+
+    def _refusal_event(self, engagement_id: str, url: str, detail: str):
+        if detail.startswith("refused:"):
+            self.db.emit(engagement_id, "scope_refusal",
+                         {"url": url, "reason": detail, "tool": "verifier_tls_recheck"})
 
     def _compare(self, quote: str, quote_in: str, r: dict) -> tuple[bool, str]:
         if not isinstance(quote, str) or not quote.strip():
@@ -171,12 +180,18 @@ class Verifier:
             })
         return {"verdict": verdict, "detail": detail, "verification_id": vid}
 
+    # a retest verdict says something only about a finding that reproduced
+    RETESTABLE = ("validated", "reported", "remediated", "retested_fixed", "retested_persists")
+
     def retest(self, engagement_id: str, scope, finding_id: str) -> dict:
         """Retest after remediation: replay proof; fixed/persists/inconclusive."""
         f = self.db.one("SELECT * FROM findings WHERE id=? AND engagement_id=?",
                         (finding_id, engagement_id))
         if f is None:
             return {"verdict": "error", "detail": "finding not found"}
+        if f["state"] not in self.RETESTABLE:
+            return {"verdict": "inconclusive", "finding_id": finding_id,
+                    "detail": f"finding is '{f['state']}'; retest requires a validated finding"}
         spec = self._proof_spec(f)
         if not spec or not spec.get("proof_request"):
             return {"verdict": "inconclusive", "detail": "no replayable proof request"}
@@ -185,18 +200,27 @@ class Verifier:
             from .tls_audit import recheck_tls_fact
             from urllib.parse import urlparse
             u = urlparse(pr["url"])
-            reproduced, detail = recheck_tls_fact(u.hostname, u.port or 443, spec.get("quote", ""))
-            verdict = "persists" if reproduced else "fixed"
+            host, port = u.hostname, u.port or 443
+            if not host:
+                return {"verdict": "inconclusive", "detail": "malformed tls proof url",
+                        "finding_id": finding_id}
+            ok, detail = recheck_tls_fact(host, port, spec.get("quote", ""), scope)
+            if ok is None:
+                self._refusal_event(engagement_id, f"tls://{host}:{port}", detail)
+                verdict = "inconclusive"
+            else:
+                verdict = "persists" if ok else "fixed"
             rid = new_id("rt")
             self.db.execute(
                 "INSERT INTO retests(id, finding_id, exchange_id, verdict, detail, created_at) "
                 "VALUES(?,?,?,?,?,?)", (rid, finding_id, None, verdict, detail, time.time()))
-            try:
-                self.pipeline.transition(
-                    finding_id, "retested_persists" if reproduced else "retested_fixed",
-                    reason=f"TLS retest: {detail}")
-            except ValueError:
-                pass
+            if verdict != "inconclusive":
+                try:
+                    self.pipeline.transition(
+                        finding_id, "retested_persists" if ok else "retested_fixed",
+                        reason=f"TLS retest: {detail}")
+                except ValueError:
+                    pass
             self.db.emit(engagement_id, "retest", {"finding_id": finding_id, "verdict": verdict})
             return {"verdict": verdict, "detail": detail, "finding_id": finding_id}
         r = self.probe.request(engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
@@ -206,8 +230,7 @@ class Verifier:
         if not r.get("ok"):
             verdict, detail = "inconclusive", f"request failed: {r.get('error')}"
         else:
-            reproduced, detail = self._compare(spec.get("quote", ""), spec.get("quote_in", "body"), r)
-            verdict = "persists" if reproduced else "fixed"
+            verdict, detail = self._retest_verdict(spec, r)
         rid = new_id("rt")
         self.db.execute(
             "INSERT INTO retests(id, finding_id, exchange_id, verdict, detail, created_at) "
@@ -220,3 +243,21 @@ class Verifier:
             self.pipeline.transition(finding_id, "retested_persists", reason="retest: proof still reproduces")
         self.db.emit(engagement_id, "retest", {"finding_id": finding_id, "verdict": verdict})
         return {"verdict": verdict, "detail": detail, "finding_id": finding_id}
+
+    def _retest_verdict(self, spec: dict, r: dict) -> tuple[str, str]:
+        """'fixed' only from a comparable, unblocked response. Everything else is inconclusive."""
+        reproduced, detail = self._compare(spec.get("quote", ""), spec.get("quote_in", "body"), r)
+        if reproduced:
+            return "persists", detail
+        status = r["status"]
+        if status in (401, 403) or status >= 500:
+            return "inconclusive", f"status {status} is an auth/error response: {detail}"
+        location = {k.lower(): v for k, v in r["headers"].items()}.get("location", "")
+        if 300 <= status < 400 and re.search(r"(?i)(login|signin|sign-in|auth|sso)", location):
+            return "inconclusive", f"redirected to authentication ({location}): {detail}"
+        want = spec.get("proof_status")
+        if want is None:
+            return "inconclusive", "original proof status unknown; cannot tell remediation from a changed response"
+        if status // 100 != int(want) // 100:
+            return "inconclusive", f"status class changed {want} -> {status}: {detail}"
+        return "fixed", detail

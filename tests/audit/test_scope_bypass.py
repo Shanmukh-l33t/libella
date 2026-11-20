@@ -56,7 +56,7 @@ def test_exclusion_prefix_case_and_encoding_bypass():
 
 def test_exclusion_does_not_break_in_scope_hosts():
     s = Scope(spec(exclusions=[{"kind": "url_prefix", "value": "http://127.0.0.1:8801/admin"}]))
-    assert s.check_url("http://127.0.0.1:8801/administrator").allowed is False  # over-block is safe
+    assert s.check_url("http://127.0.0.1:8801/administrator").allowed  # segment boundary, not prefix
     assert s.check_url("http://127.0.0.1:8801/search").allowed
 
 

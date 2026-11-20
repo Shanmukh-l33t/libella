@@ -214,7 +214,7 @@ class Scope:
         return not base or upath == base or upath.startswith(base + "/")
 
     def _excluded_by_prefix(self, url: str, prefix: str) -> bool:
-        """Path-prefix exclusion, compared on normalized components."""
+        """Path-prefix exclusion, compared on normalized path segments."""
         try:
             _, uh, up, upath = parse_origin(url)
             _, ph, pp, ppath = parse_origin(prefix)
@@ -222,7 +222,8 @@ class Scope:
             return False
         if (uh, up) != (ph, pp):
             return False
-        return upath.startswith(ppath.rstrip("/") or "/")
+        base = ppath.rstrip("/")
+        return not base or upath == base or upath.startswith(base + "/")
 
     def check_url(self, url: str, category: str = "web") -> Decision:
         if category not in self.categories:
@@ -275,11 +276,15 @@ class Scope:
             return Decision(False, f"{host} not in engagement scope", resolved_ips=ips)
         return Decision(True, "in scope", resolved_ips=ips, matched_target=matched)
 
-    def check_host_port(self, host: str, port: int, category: str = "infra") -> Decision:
-        """For non-HTTP tools (nmap etc). Returns resolved IPs to pass to the tool."""
+    def check_host_port(self, host: str, port: int | None, category: str = "infra") -> Decision:
+        """For non-HTTP tools (nmap etc). Returns resolved IPs to pass to the tool.
+
+        port None means the caller asserts no port (a passive or port-less tool);
+        it authorizes the host only and never satisfies allowed_ports for a dial.
+        """
         if category not in self.categories:
             return Decision(False, f"category '{category}' not permitted")
-        if self.allowed_ports and port not in self.allowed_ports:
+        if port is not None and self.allowed_ports and port not in self.allowed_ports:
             return Decision(False, f"port {port} not in allowed_ports")
         try:
             literal = ipaddress.ip_address(host)
@@ -303,8 +308,12 @@ class Scope:
             if t["kind"] in ("ip", "cidr") and any(self._ip_matches_target(ip, t) for ip in ips):
                 return Decision(True, "in scope", resolved_ips=ips, matched_target=t["value"])
             if t["kind"] == "url":
-                pu = urlparse(t["value"])
-                if pu.hostname and pu.hostname.lower().rstrip(".") == host.lower().rstrip("."):
+                # a url target authorizes that origin, not every port on its host
+                try:
+                    _, uh, up, _ = parse_origin(t["value"])
+                except ValueError:
+                    continue
+                if uh == host.lower().rstrip(".") and (port is None or up == port):
                     return Decision(True, "in scope", resolved_ips=ips, matched_target=t["value"])
         return Decision(False, f"{host} not in engagement scope", resolved_ips=ips)
 

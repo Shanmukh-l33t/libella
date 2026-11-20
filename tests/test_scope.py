@@ -80,3 +80,34 @@ def test_prompt_block_derives_from_scope():
     block = s.prompt_block()
     assert "127.0.0.1:8801" in block
     assert "UNTRUSTED DATA" in block
+
+
+def test_exclusion_respects_path_segment_boundary():
+    s = Scope(spec(exclusions=[{"kind": "url_prefix", "value": "http://127.0.0.1:8801/admin"}]))
+    assert not s.check_url("http://127.0.0.1:8801/admin/users").allowed
+    assert not s.check_url("http://127.0.0.1:8801/admin").allowed
+    assert s.check_url("http://127.0.0.1:8801/administrator").allowed
+
+
+def test_url_target_authorizes_only_its_own_port():
+    s = Scope({"targets": [{"kind": "url", "value": "https://127.0.0.1:8443"}],
+               "categories": ["infra"]})
+    assert s.check_host_port("127.0.0.1", 8443).allowed
+    assert not s.check_host_port("127.0.0.1", 22).allowed
+    # scheme default port is the URL's own port
+    s2 = Scope({"targets": [{"kind": "url", "value": "https://127.0.0.1"}],
+                "categories": ["infra"]})
+    assert s2.check_host_port("127.0.0.1", 443).allowed
+    assert not s2.check_host_port("127.0.0.1", 80).allowed
+
+
+def test_explicit_ip_target_still_authorizes_other_ports():
+    s = Scope({"targets": [{"kind": "ip", "value": "127.0.0.1"}], "categories": ["infra"]})
+    assert s.check_host_port("127.0.0.1", 22).allowed
+
+
+def test_portless_tool_check_is_host_level_not_a_port_claim():
+    s = Scope(spec(allowed_ports=[8801]))
+    assert s.check_host_port("127.0.0.1", None).allowed
+    assert not s.check_host_port("127.0.0.1", 0).allowed  # 0 is a bogus port, not "any"
+    assert not s.check_host_port("127.0.0.1", 22).allowed

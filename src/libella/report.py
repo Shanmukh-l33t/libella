@@ -108,7 +108,16 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
     by_state = {}
     for f in findings:
         by_state[f["state"]] = by_state.get(f["state"], 0) + 1
-    confirmed = [f for f in findings if f["state"] in ("validated", "reported", "retested_persists")]
+    # one source of truth for "independently validated": the same state set the
+    # offline gate derives `verified` from, so a report cannot declare a count
+    # its own per-finding flags contradict. retest states are earned, not bypassed
+    # (findings.ALLOWED_TRANSITIONS), so this is a claim about a reproduced proof.
+    CONFIRMED_STATES = {"validated", "reported", "retested_persists"}  # == gate.CONFIRMED_STATES
+
+    def _verified(f: dict) -> bool:
+        return f["state"] in CONFIRMED_STATES
+
+    confirmed = [f for f in findings if _verified(f)]
     refused = [t for t in tool_calls if (t["scope_decision"] or "").startswith("refused")]
 
     report = {
@@ -146,6 +155,7 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
             "evidence_ids": [_safe(e) for e in json.loads(f["evidence_ids_json"])],
             "verifications": [{"attempt": v["attempt"], "verdict": v["verdict"],
                                "detail": _safe(v["detail"])} for v in vs],
+            "verified": _verified(f),
         })
 
     # ---- Markdown ----

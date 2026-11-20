@@ -79,7 +79,7 @@ NMAP = ToolSpec(
         "top_ports": {"type": "integer", "minimum": 1, "maximum": 65535},
         "service_detect": {"type": "boolean"},
     },
-    required=["target"], handler=_nmap_argv,
+    required=["target"], handler=_nmap_argv, port_param="ports",
 )
 
 # ---- nuclei ----

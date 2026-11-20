@@ -17,6 +17,7 @@ class ToolSpec:
     handler: Callable | None = None
     timeout_s: int = 120
     target_param: str = "target"  # the param the adapter actually dials/scans
+    port_param: str | None = None  # param declaring the ports it dials, when enumerable
 
     def schema(self) -> dict:
         return {

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ..db import DB, new_id
 from ..evidence import EvidenceStore
-from ..scope import Scope
+from ..scope import Decision, Scope
 from . import ToolSpec, resolve_binary, validate_params
 
 MAX_OUTPUT = 512 * 1024  # per stream cap
@@ -54,7 +54,20 @@ class ToolRunner:
 
         # scope the parameter the adapter actually dials, not a caller's claim
         dest = clean.get(spec.target_param) or target
-        decision = scope.check_host_port(dest, 0, cat) if _is_host(dest) else scope.check_url(dest, cat)
+        if _is_host(dest):
+            ports = _declared_ports(spec, clean)
+            if ports is None and spec.port_param and scope.allowed_ports:
+                # an undeclared/ranged port set cannot be confined to allowed_ports
+                decision = Decision(False, f"port set not declared; cannot confine to "
+                                           f"allowed_ports {sorted(scope.allowed_ports)}")
+            else:
+                decision = scope.check_host_port(dest, None, cat)
+                for p in ports or ():
+                    if not decision.allowed:
+                        break
+                    decision = scope.check_host_port(dest, p, cat)
+        else:
+            decision = scope.check_url(dest, cat)
         if not decision.allowed:
             self._audit(call_id, engagement_id, intent_id, spec.name, [], dest,
                         f"refused: {decision.reason}", None, started, None, decision.reason)
@@ -180,3 +193,21 @@ def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float):
 
 def _is_host(target: str) -> bool:
     return "://" not in target
+
+
+def _declared_ports(spec: ToolSpec, params: dict) -> list[int] | None:
+    """Ports the adapter will dial, when its param makes them enumerable.
+
+    None means no enumerable port set (absent, or a range/service name): callers
+    may only authorize the host itself, never claim an allowed_ports match.
+    """
+    raw = params.get(spec.port_param) if spec.port_param else None
+    if not raw:
+        return None
+    ports = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part.isdigit():
+            return None
+        ports.append(int(part))
+    return ports

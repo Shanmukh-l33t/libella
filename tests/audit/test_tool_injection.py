@@ -46,6 +46,43 @@ def test_host_tool_scopes_the_param_it_scans(runner, lab):
     assert r["ok"] is False and "out_of_scope" in r["error"], r
 
 
+# --- host tools under a port allowlist must be scoped, not blanket-refused ---
+def _scanner(port_param=None):
+    return ToolSpec(name="scanner", description="", category="infra", binary=None, timeout_s=5,
+                    params={"target": {"type": "string"}, "ports": {"type": "string"}},
+                    required=["target"], handler=lambda p, d: ["/bin/true"],
+                    port_param=port_param)
+
+
+def test_declared_port_is_checked_against_allowed_ports(runner, lab):
+    scope = Scope({"targets": [{"kind": "url", "value": lab.base}], "categories": ["infra"],
+                   "allowed_ports": [lab.port]})
+    ok = runner.run(_scanner("ports"), {"target": "127.0.0.1", "ports": str(lab.port)},
+                    scope, "eng_audit", None, target="127.0.0.1", category="infra")
+    assert ok["ok"] is True, ok
+    denied = runner.run(_scanner("ports"), {"target": "127.0.0.1", "ports": "22"},
+                        scope, "eng_audit", None, target="127.0.0.1", category="infra")
+    assert denied["ok"] is False and "out_of_scope" in denied["error"], denied
+
+
+def test_undeclared_port_set_is_refused_under_an_allowlist(runner, lab):
+    scope = Scope({"targets": [{"kind": "url", "value": lab.base}], "categories": ["infra"],
+                   "allowed_ports": [lab.port]})
+    for params in ({"target": "127.0.0.1"},                      # top-ports: unknown set
+                   {"target": "127.0.0.1", "ports": "1-1024"}):  # range: not enumerable
+        r = runner.run(_scanner("ports"), params, scope, "eng_audit", None,
+                       target="127.0.0.1", category="infra")
+        assert r["ok"] is False and "out_of_scope" in r["error"], r
+
+
+def test_portless_host_tool_is_not_refused_by_allowed_ports(runner, lab):
+    scope = Scope({"targets": [{"kind": "url", "value": lab.base}], "categories": ["infra"],
+                   "allowed_ports": [lab.port]})
+    r = runner.run(_scanner(), {"target": "127.0.0.1"}, scope, "eng_audit", None,
+                   target="127.0.0.1", category="infra")
+    assert r["ok"] is True, r
+
+
 # --- category mislabelling must not widen authorization ---------------------
 
 def test_runner_refuses_tool_run_under_foreign_category(runner, lab):
