@@ -22,6 +22,7 @@ export default function Layout() {
             {[
               { to: "/", label: "Command center", end: true },
               { to: "/engagements", label: "Engagements" },
+              { to: "/validation", label: "Validation" },
               { to: "/tools", label: "Tools" },
               { to: "/models", label: "Models" },
               { to: "/compare", label: "Compare" },

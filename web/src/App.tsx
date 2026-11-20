@@ -8,6 +8,7 @@ import Engagements from "./pages/Engagements";
 import NewEngagement from "./pages/NewEngagement";
 import Engagement from "./pages/Engagement";
 import Finding from "./pages/Finding";
+import Validation from "./pages/Validation";
 import Tools from "./pages/Tools";
 import Models from "./pages/Models";
 import Compare from "./pages/Compare";
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="/engagements/new" element={<NewEngagement />} />
           <Route path="/engagements/:id" element={<Engagement />} />
           <Route path="/findings/:id" element={<Finding />} />
+          <Route path="/validation" element={<Validation />} />
           <Route path="/tools" element={<Tools />} />
           <Route path="/models" element={<Models />} />
           <Route path="/compare" element={<Compare />} />
