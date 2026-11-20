@@ -48,7 +48,7 @@ def main():
         "INSERT INTO engagements(id, name, profile, status, scope_json, auth_json, budgets_json, objectives_json, created_at) "
         "VALUES(?,?,?,?,?,?,?,?,?)",
         (eid, "Agent-mode PairLab", "safe_active", "draft", json.dumps(scope), json.dumps(auth),
-         json.dumps({"max_duration_s": 900, "max_usd": 3, "max_plan_rounds": 2}),
+         json.dumps({"max_duration_s": 600, "max_usd": 3, "max_plan_rounds": 2}),
          json.dumps(["Discover and validate web/API vulnerabilities in the lab application"]), time.time()))
     t0 = time.time()
     app.orchestrator().start(eid, mode="agent")

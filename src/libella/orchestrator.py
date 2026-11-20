@@ -319,8 +319,23 @@ class Orchestrator:
         self.db.execute("UPDATE engagements SET status=?, finished_at=?, status_detail=? WHERE id=?",
                         (status, time.time(), detail, engagement_id))
         self.db.emit(engagement_id, "engagement_finished", {"status": status, "detail": detail})
-        if status == "done":
-            # final report reflects terminal status (mid-run render is a preview)
+        if status in ("done", "budget_exhausted"):
+            # independent verification + report always run at termination, so findings
+            # are validated and reported even if the investigation budget capped early.
+            try:
+                eng = self.db.one("SELECT scope_json FROM engagements WHERE id=?", (engagement_id,))
+                scope = Scope(json.loads(eng["scope_json"]))
+                cands = self.db.query(
+                    "SELECT id FROM findings WHERE engagement_id=? AND state IN ('suspected','observed')",
+                    (engagement_id,))
+                for f in cands:
+                    try:
+                        self.verifier.verify(engagement_id, scope, f["id"])
+                    except Exception as e:
+                        self.db.emit(engagement_id, "degradation",
+                                     {"code": "verify_failed", "finding_id": f["id"], "detail": str(e)})
+            except Exception as e:
+                self.db.emit(engagement_id, "degradation", {"code": "finish_verify_error", "detail": str(e)})
             from .report import render_report
             render_report(self.db, self.evidence, engagement_id)
             from . import memory as mem
