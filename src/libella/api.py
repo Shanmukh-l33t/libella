@@ -104,13 +104,30 @@ def create_api(app: App) -> FastAPI:
     api.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
                        allow_methods=["*"], allow_headers=["*"])
 
+    # one-shot SSE tickets: ticket -> expiry. Only for GETs that cannot send headers.
+    # shortcut: in-process store, so tickets only work with a single uvicorn worker;
+    # upgrade to an HMAC-signed ticket if the API ever runs multiple workers.
+    tickets: dict[str, float] = {}
+
     def auth(request: Request):
         if request.url.path in ("/api/health", "/"):
             return
         tok = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        tok = tok or request.query_params.get("token", "")
-        if not secrets.compare_digest(tok, app.token):
-            raise HTTPException(401, "invalid token")
+        if tok and secrets.compare_digest(tok, app.token):
+            return
+        ticket = request.query_params.get("ticket", "")
+        if request.method == "GET" and ticket and tickets.pop(ticket, 0) > time.time():
+            return  # EventSource cannot set headers; a ticket is single-use and short-lived
+        raise HTTPException(401, "invalid token")
+
+    @api.post("/api/ticket", dependencies=[Depends(auth)])
+    def issue_ticket():
+        now = time.time()
+        for k in [k for k, exp in tickets.items() if exp <= now]:
+            tickets.pop(k, None)
+        t = secrets.token_urlsafe(24)
+        tickets[t] = now + 60
+        return {"ticket": t, "expires_in": 60}
 
     @api.get("/api/health")
     def health():

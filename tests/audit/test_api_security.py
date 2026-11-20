@@ -39,13 +39,40 @@ def test_token_of_wrong_length_is_rejected_cleanly(client, app):
     assert r.status_code == 401
 
 
-def test_sse_accepts_query_token_and_requires_one(client, app, mk_eng, lab):
+def test_sse_requires_a_single_use_ticket(client, app, mk_eng, lab):
     eid = mk_eng(lab.base)
-    assert client.get(f"/api/engagements/{eid}/stream").status_code == 401
-    with client.stream("GET", f"/api/engagements/{eid}/stream?token={app.token}") as r:
+    url = f"/api/engagements/{eid}/stream"
+    assert client.get(url).status_code == 401
+    # the long-lived token must never travel in a URL
+    assert client.get(f"{url}?token={app.token}").status_code == 401
+    assert client.get(f"{url}?ticket=forged").status_code == 401
+    assert client.post("/api/ticket").status_code == 401
+
+    h = {"Authorization": f"Bearer {app.token}"}
+    ticket = client.post("/api/ticket", headers=h).json()["ticket"]
+    with client.stream("GET", f"{url}?ticket={ticket}") as r:
         assert r.status_code == 200
         first = next(r.iter_lines())
         assert first.startswith(":") or first.startswith("id:")
+    assert client.get(f"{url}?ticket={ticket}").status_code == 401  # single use
+
+
+def test_ticket_expires(client, app, mk_eng, lab, monkeypatch):
+    eid = mk_eng(lab.base)
+    h = {"Authorization": f"Bearer {app.token}"}
+    ticket = client.post("/api/ticket", headers=h).json()["ticket"]
+    monkeypatch.setattr("libella.api.time.time", lambda: 9_999_999_999.0)
+    assert client.get(f"/api/engagements/{eid}/stream?ticket={ticket}").status_code == 401
+
+
+def test_report_download_accepts_bearer_header(client, app, mk_eng, lab):
+    eid = mk_eng(lab.base)
+    h = {"Authorization": f"Bearer {app.token}"}
+    assert client.get(f"/api/engagements/{eid}/report?format=md").status_code == 401
+    assert client.get(f"/api/engagements/{eid}/report?format=md&token={app.token}").status_code == 401
+    r = client.get(f"/api/engagements/{eid}/report?format=md", headers=h)
+    assert r.status_code == 200 and r.text.startswith("#")
+    assert client.get(f"/api/engagements/{eid}/report?format=sarif", headers=h).status_code == 200
 
 
 def test_resume_refuses_an_already_running_engagement(client, app, mk_eng, lab, monkeypatch):

@@ -1,9 +1,10 @@
 import type { Settings, ToolInfo } from "./types";
 
-const TOKEN_KEY = "libella.token";
-export const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
-export const setToken = (t: string) => localStorage.setItem(TOKEN_KEY, t.trim());
-export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
+// In memory only: never persisted to browser storage or echoed into a URL.
+let token = "";
+export const getToken = () => token;
+export const setToken = (t: string) => { token = t.trim(); };
+export const clearToken = () => { token = ""; };
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -37,8 +38,20 @@ export const put = <T>(path: string, body: unknown) => api<T>(path, { method: "P
 export const tools = () => get<ToolInfo[]>("/api/tools");
 export const settings = () => get<Settings>("/api/settings");
 
-export function reportUrl(eid: string, format: "md" | "sarif" | "pdf") {
-  return `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}&token=${encodeURIComponent(getToken())}`;
+/** EventSource cannot send headers: a single-use 60s ticket stands in for the bearer token. */
+export const mintTicket = () => post<{ ticket: string }>("/api/ticket").then((r) => r.ticket);
+
+/** Downloads use fetch so the bearer header travels instead of a token in the URL. */
+export async function downloadReport(eid: string, format: "md" | "sarif" | "pdf") {
+  const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}`;
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  const href = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = `${eid}.${format}`;
+  a.click();
+  URL.revokeObjectURL(href);
 }
 
 /** Query string from defined, non-empty values. */
