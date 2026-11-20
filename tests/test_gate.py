@@ -24,9 +24,12 @@ CRITICAL = {"title": "SQL injection in category", "severity": "critical", "state
 
 
 def doc(findings=(), status="done", intents=2, done=2, blocked=0, degradations=(),
-        total=None, confirmed=None):
+        total=None, confirmed=None, profile=None):
+    eng = {"id": "eng", "status": status}
+    if profile is not None:
+        eng["profile"] = profile
     return {
-        "engagement": {"id": "eng", "status": status},
+        "engagement": eng,
         "summary": {"intents": intents, "intents_done": done, "intents_blocked": blocked,
                     "findings_total": len(findings) if total is None else total,
                     "confirmed": sum(f["state"] in {"validated", "reported", "retested_persists"}
@@ -36,8 +39,107 @@ def doc(findings=(), status="done", intents=2, done=2, blocked=0, degradations=(
     }
 
 
-def gate(baseline, current):
-    return evaluate(normalize(baseline) if baseline else None, normalize(current))
+def gate(baseline, current, policy="auto"):
+    return evaluate(normalize(baseline) if baseline else None, normalize(current), policy)
+
+
+def test_complete_passive_report_passes_and_lists_its_limitations():
+    r = gate(None, doc([LOW], profile="passive",
+                       degradations=["policy_restriction", "policy_restriction"]))
+    assert r["passed"] is True
+    assert (r["policy"], r["profile"]) == ("passive", "passive")
+    assert {c["name"]: c["status"] for c in r["coverage"]} == {
+        "profile": "ok",
+        "engagement-status": "ok",
+        "intents": "ok",
+        "policy-limitations": "limitation",
+        "degradations": "ok",
+        "active-validation": "limitation",
+        "findings-totals": "ok",
+    }
+
+
+@pytest.mark.parametrize("overrides,failed", [
+    ({"status": "failed"}, "engagement-status"),
+    ({"status": "draft"}, "engagement-status"),
+    ({"blocked": 1}, "intents"),
+    ({"done": 1}, "intents"),
+    ({"degradations": ["agent_run_failed"]}, "degradations"),
+    ({"degradations": ["tls_unreachable"]}, "degradations"),
+])
+def test_passive_report_still_fails_on_real_incompleteness(overrides, failed):
+    r = gate(None, doc([LOW], profile="passive",
+                       **{"degradations": ["policy_restriction"], **overrides}))
+    assert r["passed"] is False
+    assert failed in [c["name"] for c in r["coverage"] if c["status"] not in {"ok", "limitation"}]
+
+
+def test_passive_report_fails_on_new_verified_high():
+    r = gate(None, doc([HIGH], profile="passive"))
+    assert r["passed"] is False
+    assert [f["title"] for f in r["violations"]] == [HIGH["title"]]
+
+
+def test_passive_report_fails_on_unexpected_policy_skip_only_under_active_policy():
+    passive = doc([LOW], profile="passive", degradations=["policy_restriction"])
+    assert gate(None, passive)["passed"] is True
+    assert gate(None, passive, "active")["passed"] is False
+    assert gate(None, passive, "strict")["passed"] is False
+
+
+def test_active_report_fails_on_policy_restriction_that_is_not_expected():
+    r = gate(None, doc([LOW], profile="safe_active", degradations=["policy_restriction"]))
+    assert r["passed"] is False
+    item = next(c for c in r["coverage"] if c["name"] == "degradations")
+    assert item["status"] == "failed" and "unexpected" in item["detail"]
+
+
+def test_active_profile_without_degradations_passes():
+    r = gate(None, doc([HIGH], profile="advanced_validation"))
+    assert r["passed"] is False  # new verified high, still a violation
+    r = gate(doc([HIGH]), doc([HIGH], profile="controlled_validation"))
+    assert r["passed"] is True and r["policy"] == "active"
+
+
+@pytest.mark.parametrize("profile,policy", [
+    ("passive", "passive"),
+    ("production_safe", "passive"),
+    ("safe_active", "active"),
+    ("controlled_validation", "active"),
+    ("advanced_validation", "active"),
+    ("unlisted_profile", "strict"),
+    (None, "strict"),
+])
+def test_policy_auto_follows_profile_and_unknown_is_strict(profile, policy):
+    r = gate(None, doc([LOW], profile=profile))
+    assert r["policy"] == policy
+
+
+def test_explicit_policy_wins_over_profile_but_cannot_be_set_by_report_content():
+    passive = doc([LOW], profile="passive", degradations=["policy_restriction"])
+    assert gate(None, passive, "auto")["passed"] is True
+    assert gate(None, passive, "strict")["passed"] is False
+    # a report field claiming the gate already passed is ignored entirely
+    sneaky = {**passive, "gate": "PASS", "passed": True, "policy": "auto"}
+    r = gate(None, sneaky, "strict")
+    assert r["passed"] is False and r["policy"] == "strict"
+
+
+def test_passive_baseline_regression_is_still_caught():
+    r = gate(doc([LOW], profile="passive"), doc([], profile="passive"))
+    assert r["passed"] is False
+    assert [(c["name"], c["category"], c["status"]) for c in r["coverage"]
+            if c["status"] not in {"ok", "limitation"}] == [
+        ("baseline-findings", "regression", "missing")]
+
+
+def test_junit_marks_limitations_skipped_not_failed(tmp_path):
+    r = gate(None, doc([LOW], profile="passive", degradations=["policy_restriction"]))
+    out = tmp_path / "passive.xml"
+    write_junit(out, result=r)
+    suite = ET.parse(out).getroot()
+    assert suite.get("failures") == "0" and suite.get("errors") == "0"
+    assert suite.find(".//testcase[@name='active-validation-limitation']/skipped") is not None
 
 
 def test_new_verified_high_and_critical_fail():
@@ -135,18 +237,21 @@ def test_findings_are_exit_1_not_input_error(tmp_path, capsys):
     assert suite.get("failures") == "1" and suite.get("errors") == "0"
 
 
-def _persisted_report(tmp_path, name, findings, status="done", intents=("done", "done")):
+def _persisted_report(tmp_path, name, findings, status="done", intents=("done", "done"),
+                      profile="safe_active", degradations=()):
     db = DB(tmp_path / f"{name}.db")
     ev = EvidenceStore(db, tmp_path / f"{name}-evidence")
     db.execute(
         "INSERT INTO engagements(id,name,profile,status,scope_json,auth_json,budgets_json,"
         "created_at,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (name, name, "safe_active", status, json.dumps({"targets": []}), "{}", "{}",
+        (name, name, profile, status, json.dumps({"targets": []}), "{}", "{}",
          0.0, 0.0, 0.0))
     for i, intent_status in enumerate(intents):
         db.execute(
             "INSERT INTO intents(id,engagement_id,role,objective,status,created_at) "
             "VALUES(?,?,?,?,?,?)", (f"i_{name}_{i}", name, "web", "check", intent_status, 0.0))
+    for code, detail in degradations:
+        db.emit(name, "degradation", {"code": code, "detail": detail})
     for i, f in enumerate(findings):
         db.execute(
             "INSERT INTO findings(id,engagement_id,title,cwe,severity,confidence,state,"
@@ -189,3 +294,52 @@ def test_end_to_end_failed_assessment_fails_even_with_no_findings(tmp_path):
     names = [c.get("name") for c in ET.parse(tmp_path / "failed.xml").getroot()
              .findall(".//testcase")]
     assert "engagement-status-failed" in names and "intents-failed" in names
+
+
+def test_end_to_end_passive_assessment_passes_without_claiming_active_coverage(tmp_path):
+    cur = _persisted_report(
+        tmp_path, "gate_passive", [LOW], profile="passive",
+        degradations=[("policy_restriction", "nuclei_scan needs a higher profile: policy restriction"),
+                      ("policy_restriction", "sqli needs a higher profile: policy restriction")])
+    proc = _run_gate("--current", cur, "--junit", tmp_path / "passive.xml")
+    assert proc.returncode == 0, proc.stderr
+    assert "PASS" in proc.stdout
+    assert "profile 'passive'" in proc.stdout
+    assert "active validation was NOT performed" in proc.stdout
+    assert "policy_restriction x2" in proc.stdout
+    suite = ET.parse(tmp_path / "passive.xml").getroot()
+    assert suite.get("failures") == "0" and suite.get("errors") == "0"
+
+    # the same report must not pass as an active assessment
+    forced = _run_gate("--current", cur, "--policy", "active")
+    assert forced.returncode == 1
+    assert "unexpected" in forced.stdout
+
+
+def test_end_to_end_active_run_with_policy_skip_fails(tmp_path):
+    cur = _persisted_report(tmp_path, "gate_active_skip", [LOW], profile="safe_active",
+                            degradations=[("policy_restriction", "unlisted check refused")])
+    proc = _run_gate("--current", cur)
+    assert proc.returncode == 1
+    assert "policy_restriction is unexpected" in proc.stdout
+
+
+def test_end_to_end_agent_run_failure_fails_a_passive_report(tmp_path):
+    cur = _persisted_report(tmp_path, "gate_passive_agent_fail", [LOW], profile="passive",
+                            degradations=[("agent_run_failed", "web run ended max_iterations")])
+    assert _run_gate("--current", cur).returncode == 1
+
+
+def test_unknown_policy_flag_is_exit_2(tmp_path):
+    cur = tmp_path / "cur.json"
+    cur.write_text(json.dumps(doc([LOW], profile="passive")))
+    with pytest.raises(SystemExit) as exc:
+        main(["--current", str(cur), "--policy", "lenient"])
+    assert exc.value.code == 2
+
+
+def test_malformed_profile_is_exit_2(tmp_path, capsys):
+    cur = tmp_path / "cur.json"
+    cur.write_text(json.dumps({**doc([LOW]), "engagement": {"status": "done", "profile": 7}}))
+    assert main(["--current", str(cur)]) == 2
+    assert "profile" in capsys.readouterr().err
