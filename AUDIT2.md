@@ -248,4 +248,4 @@ all fixed at the root cause in the owning module, none worked around at the call
 
 Baseline before this audit: 417 passed, 1 skipped, ruff had 2 pre-existing
 `tests/test_integration_e2e.py` findings (fixed). New tests: 31 in
-`tests/audit2/` (8 files), each mapped to the defect it locks down.
+`tests/audit2/` (11 files), each mapped to the defect it locks down.
