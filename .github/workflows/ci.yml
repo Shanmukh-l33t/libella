@@ -87,4 +87,5 @@ jobs:
         run: |
           pip install pip-audit
           pip install -e .
-          pip-audit --strict --skip-editable
+          pip freeze --exclude-editable > audit-requirements.txt
+          pip-audit --strict -r audit-requirements.txt
