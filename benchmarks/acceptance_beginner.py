@@ -49,12 +49,22 @@ class Stage:
         return out
 
 
-def create_engagement_current_form(page, target):
-    """Engagement creation through the new-assessment UI."""
+def create_engagement_wizard(page, target):
+    """The guided six-step new-assessment wizard, choices a beginner would make."""
+    import re
+    page.get_by_role("radio", name=re.compile(r"^Local demo lab")).check()
+    page.get_by_role("button", name="Next", exact=True).click()
     page.get_by_label("Engagement name").fill("First assessment (demo lab)")
     page.get_by_label("Target 1 value").fill(target)
-    page.get_by_label("Rate limit (req/s)").fill("50")
-    page.get_by_role("button", name="Create engagement").click()
+    page.get_by_label("Requests per second").fill("50")
+    page.get_by_role("checkbox", name=re.compile("authorized to test")).check()
+    page.get_by_role("button", name="Next", exact=True).click()      # -> access
+    page.get_by_role("button", name="Next", exact=True).click()      # -> profile
+    page.get_by_role("radio", name=re.compile(r"^Standard")).check()
+    page.get_by_role("button", name="Next", exact=True).click()      # -> readiness
+    page.get_by_text("What you are about to create").wait_for()
+    page.get_by_role("button", name="Next", exact=True).click()      # -> create & start
+    page.get_by_role("button", name="Create & start").click()
 
 
 def main(out: Path):
@@ -130,21 +140,20 @@ def main(out: Path):
                 st("2 setup: offline AI, tool inventory, go to new assessment", setup)
 
                 def create():
-                    create_engagement_current_form(page, target)
+                    create_engagement_wizard(page, target)
                     page.wait_for_url(f"{base}/engagements/eng_*", timeout=20000)
                     page.screenshot(path=out / "a2-created.png")
                     return page.url.split("/engagements/")[1].split("?")[0]
                 eid = st("3 create authorized engagement for the local lab", create)
 
                 def start():
-                    page.get_by_role("button", name="Start", exact=True).click()
                     deadline = time.time() + 30
                     while time.time() < deadline:
                         if eng_status(eid)["status"] != "draft":
                             return
                         time.sleep(0.5)
                     raise RuntimeError("engagement did not leave draft after Start")
-                st("4 start the real scan from the UI", start)
+                st("4 real scan started by the wizard", start)
 
                 def live():
                     seen_running = False
