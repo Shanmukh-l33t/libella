@@ -127,8 +127,7 @@ def health():
     return {"status": "ok", "mode": MODE, "stacks": sorted(ROOT_BODY)}
 
 
-@app.route("/<stack>", defaults={"rest": ""}, methods=["GET", "POST"])
-@app.route("/<stack>/", defaults={"rest": ""}, methods=["GET", "POST"])
+@app.route("/<stack>/", defaults={"rest": ""}, methods=["GET", "POST"], strict_slashes=False)
 @app.route("/<stack>/<path:rest>", methods=["GET", "POST"])
 def serve(stack, rest):
     if stack not in ROOT_BODY:

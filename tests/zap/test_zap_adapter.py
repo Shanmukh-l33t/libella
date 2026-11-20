@@ -119,6 +119,16 @@ def test_handler_rejects_non_targets(target):
         ZAP.handler({"target": target}, None)
 
 
+def test_specs_register_into_a_fresh_registry():
+    from libella.tools import Registry
+    from libella.tools.zap_adapter import SPECS
+    reg = Registry()
+    for spec in SPECS:
+        reg.register(spec)  # duplicate names would raise here
+    assert reg.get("zap_baseline").category == "web"
+    assert [t["name"] for t in reg.available()] == ["zap_baseline"]
+
+
 def test_spec_is_wired_to_the_binary_and_target_param():
     assert ZAP.category == "web" and ZAP.target_param == "target" and ZAP.binary
     assert ZAP.schema()["parameters"]["required"] == ["target"]

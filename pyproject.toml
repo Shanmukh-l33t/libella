@@ -11,11 +11,12 @@ dependencies = [
     "pydantic>=2.7",
     "cryptography>=42",
     "python-multipart>=0.0.9",
+    "reportlab>=4",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "flask>=3",
-       "playwright>=1.40"]  # flask: labs; playwright: browser crawl
+       "playwright>=1.40", "pypdf>=4"]  # flask: labs; playwright: browser crawl; pypdf: report tests
 
 [project.scripts]
 libella = "libella.main:cli"

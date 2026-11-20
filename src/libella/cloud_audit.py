@@ -105,29 +105,49 @@ class _Ctx:
 
 # --- IAM: wildcard admin + privilege-escalation paths -----------------------------
 
-def _policy_documents(iam) -> list[dict]:
-    """Every policy document in the account: managed (local), attached, inline."""
-    out = []
+def _policy_documents(iam) -> dict:
+    """Every policy document in the account: local, attached (even AWS-managed), inline.
+
+    Attached AWS-managed policies matter most: AdministratorAccess leaves no
+    local policy to inspect.
+    """
+    out, seen, users, roles = [], set(), [], []
+
+    def add(arn: str, label: str):
+        if arn in seen:
+            return
+        p = iam.get_policy(PolicyArn=arn)["Policy"]
+        ver = iam.get_policy_version(PolicyArn=arn, VersionId=p["DefaultVersionId"])
+        seen.add(arn)
+        out.append({"label": label, "arn": arn, "document": ver["PolicyVersion"]["Document"]})
+
     for p in iam.list_policies(Scope="Local")["Policies"]:
-        ver = iam.get_policy_version(PolicyArn=p["Arn"], VersionId=p["DefaultVersionId"])
-        out.append({"label": p["PolicyName"], "arn": p["Arn"],
-                    "document": ver["PolicyVersion"]["Document"]})
+        add(p["Arn"], p["PolicyName"])
     for user in iam.list_users()["Users"]:
         name = user["UserName"]
-        for name_inline in iam.list_user_policies(UserName=name)["PolicyNames"]:
-            doc = iam.get_user_policy(UserName=name, PolicyName=name_inline)["PolicyDocument"]
-            out.append({"label": f"{name}/{name_inline}", "arn": f"user:{name}/{name_inline}",
+        users.append(name)
+        for att in iam.list_attached_user_policies(UserName=name)["AttachedPolicies"]:
+            add(att["PolicyArn"], f"{name}:{att['PolicyName']}")
+        for inline in iam.list_user_policies(UserName=name)["PolicyNames"]:
+            doc = iam.get_user_policy(UserName=name, PolicyName=inline)["PolicyDocument"]
+            out.append({"label": f"{name}/{inline}", "arn": f"user:{name}/{inline}",
                         "document": doc})
-    return out
+    for role in iam.list_roles()["Roles"]:
+        name = role["RoleName"]
+        roles.append(name)
+        if "/aws-service-role/" in role["Path"]:
+            continue  # service-linked roles are not operator-granted permissions
+        for att in iam.list_attached_role_policies(RoleName=name)["AttachedPolicies"]:
+            add(att["PolicyArn"], f"{name}:{att['PolicyName']}")
+    return {"policies": out, "users": users, "roles": roles}
 
 
 def _check_iam(ctx: _Ctx) -> list[dict]:
     iam = ctx.clients.client("iam")
-    policies = _policy_documents(iam)
-    ev = ctx.record("cloud_iam_posture", {
-        "account_id": ctx.account_id, "policies": policies,
-        "users": [u["UserName"] for u in iam.list_users()["Users"]],
-    }, f"iam: {len(policies)} policy documents inspected")
+    found = _policy_documents(iam)
+    policies = found["policies"]
+    ev = ctx.record("cloud_iam_posture", {"account_id": ctx.account_id, **found},
+                    f"iam: {len(policies)} policy documents inspected")
     out = []
     for p in policies:
         endpoint = f"aws:iam::{ctx.account_id}:policy/{p['label']}"

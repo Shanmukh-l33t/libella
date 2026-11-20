@@ -154,6 +154,20 @@ def test_propose_finding_requires_real_evidence(platform, lab):
     assert db.one("SELECT COUNT(*) n FROM findings WHERE engagement_id='eng'")["n"] == 0
 
 
+def test_duplicate_actions_converge(platform, lab):
+    db, ev, pipe, probe, reg, runner, scope, ver = platform
+    # model keeps requesting the same check; runtime must block repeats and converge
+    same = {"thought": "again", "action": "run_check", "args": {"check": "headers", "url": lab}}
+    steps = [same, same, same, same, same]
+    ar = AgentRunner(db, ev, pipe, probe, reg, runner, ScriptedLLM(db, steps), scope, "eng")
+    res = ar.run({"id": "i", "objective": "x", "role": "web"}, "web")
+    assert res["exit_reason"] == "converged", res
+    assert res["status"] == "completed"
+    # the check executed once, repeats blocked
+    hdr_calls = db.query("SELECT * FROM investigation_steps WHERE engagement_id='eng' AND summary LIKE 'duplicate%'")
+    assert hdr_calls, "duplicate actions must be blocked and recorded"
+
+
 def test_delegation_creates_gated_intent(platform, lab):
     db, ev, pipe, probe, reg, runner, scope, ver = platform
     steps = [

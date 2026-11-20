@@ -116,6 +116,22 @@ def test_candidate_shape(vuln):
         assert f["cwe"].startswith("CWE-")
 
 
+def test_cloud_scope_kind_matches_account_or_endpoint():
+    from libella.scope import Scope
+
+    by_account = Scope({"targets": [{"kind": "cloud", "value": "123456789012"}],
+                        "categories": ["cloud"]})
+    assert by_account.check_cloud("123456789012", "http://127.0.0.1:4566").allowed
+    assert not by_account.check_cloud("999999999999", "http://127.0.0.1:4566").allowed
+    by_endpoint = Scope({"targets": [{"kind": "cloud", "value": "http://127.0.0.1:4566"}],
+                         "categories": ["cloud"]})
+    assert by_endpoint.check_cloud("123456789012", "http://127.0.0.1:4566").allowed
+    assert not by_endpoint.check_cloud("123456789012", "http://127.0.0.1:4567").allowed
+    wrong_category = Scope({"targets": [{"kind": "cloud", "value": "123456789012"}],
+                            "categories": ["web"]})
+    assert not wrong_category.check_cloud("123456789012").allowed
+
+
 def test_scope_refusal_leaves_no_findings(audit_env, labs, cloud):
     env = audit_env(labs["vuln"], account_scope="999999999999", eid="eng_refused")
     result = _run(env, cloud)

@@ -344,6 +344,9 @@ class AgentRunner:
         exit_reason = "completed"
         summary = ""
         history = []
+        executed = set()
+        dup_count = 0
+        checks_done = set()
         max_iter = charter["max_iterations"]
         while iterations < max_iter:
             iterations += 1
@@ -351,14 +354,18 @@ class AgentRunner:
             workmem = {"objective": objective,
                        "evidence_collected": produced["evidence"][-12:],
                        "findings_proposed": produced["findings"][-12:],
+                       "checks_completed": sorted(checks_done),
                        "assets": ctx["assets"][:20], "hypotheses": ctx["hypotheses"][:10],
                        "existing_findings": ctx["findings"][:15]}
             prev = json.dumps(history[-1], default=str)[:5000] if history else "none (first action)"
+            covered = len({c.split("|")[0] for c in checks_done})
+            converge_hint = (" Coverage of check classes is broad; if the surface is assessed, "
+                             "call finish now with a summary." if covered >= 5 else "")
             user = ("Investigation working memory:\n" + json.dumps(workmem, default=str)
                     + "\n\nPrevious action result:\n" + prev
                     + "\n\nDecide the next action. Use evidence_collected ids when proposing findings. "
-                      "When the objective is satisfied with evidence-backed findings, call finish. "
-                      "Do not repeat failed actions; adapt.")
+                      "Do NOT repeat an action already in checks_completed or previously executed; "
+                      "choose a new endpoint/class or finish." + converge_hint)
             try:
                 out = self.llm.complete(role, system, user, self.eng, json_schema={"type": "object"})
             except LLMError as e:
@@ -385,6 +392,25 @@ class AgentRunner:
                 history.append({"error": f"action {action} not permitted for role {role}"})
                 continue
             self._step(run_id, intent["id"], iterations, "reason", thought[:500], model=model)
+            if action == "run_check":
+                checks_done.add(f"{args.get('check')}|{args.get('url')}|{args.get('param','')}")
+            # deterministic duplicate-action guard: prevent purposeless repetition
+            if action != "finish":
+                sig = json.dumps([action, args], sort_keys=True, default=str)
+                if sig in executed:
+                    dup_count += 1
+                    history.append({"action": action, "result": {
+                        "error": "DUPLICATE: this exact action already ran. Choose a different "
+                                 "endpoint/class, propose a finding, or finish.", "duplicate": True}})
+                    self._step(run_id, intent["id"], iterations, "tool_call",
+                               f"duplicate {action} blocked ({dup_count})")
+                    if dup_count >= 3:
+                        exit_reason = "converged"
+                        summary = "Stopped: repeated duplicate actions; producing collected work."
+                        break
+                    continue
+                executed.add(sig)
+                dup_count = 0
             result = self._exec_action(action, args, run_id, intent["id"], iterations, produced)
             history.append({"action": action, "result": result})
             if action == "finish" and result.get("finish"):
@@ -393,7 +419,7 @@ class AgentRunner:
                 break
         else:
             exit_reason = "max_iterations"
-        status = "completed" if exit_reason == "completed" else (
+        status = "completed" if exit_reason in ("completed", "converged") else (
             "budget_exhausted" if exit_reason == "max_iterations" else "failed")
         self.db.execute(
             "UPDATE agent_runs SET status=?, iterations=?, tokens_in=?, tokens_out=?, cost_usd=?, "

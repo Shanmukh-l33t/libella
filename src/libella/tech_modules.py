@@ -109,7 +109,8 @@ ROWS = [
     Row("node", "/__libella_missing__", r"(?i)node_modules[\\/]|at Layer\.handle",
         "Express stack trace disclosure", "CWE-209", "medium",
         "Stack traces reveal file paths, framework versions and code structure.",
-        "Set NODE_ENV=production and a custom error handler that returns generic pages."),
+        "Set NODE_ENV=production and a custom error handler that returns generic pages.",
+        status=404),
     # ---- IIS / ASP.NET ----
     Row("iis", "/web.config", r"(?i)<configuration", "IIS web.config exposed", "CWE-200", "critical",
         "Connection strings and machine keys are readable, enabling auth forgery.",

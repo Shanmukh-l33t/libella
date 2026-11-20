@@ -45,7 +45,7 @@ def _styles():
         "h1": ParagraphStyle("h1", parent=ss["Heading1"], fontSize=17, leading=22,
                              textColor=INK, spaceBefore=10, spaceAfter=8),
         "h2": ParagraphStyle("h2", parent=ss["Heading2"], fontSize=12.5, leading=16,
-                             textColor=INK, spaceBefore=10, spaceAfter=4),
+                             textColor=INK, spaceBefore=10, spaceAfter=4, keepWithNext=1),
         "body": ParagraphStyle("b", parent=ss["Normal"], fontSize=9.5, leading=13.5, textColor=INK),
         "small": ParagraphStyle("s", parent=ss["Normal"], fontSize=8, leading=11, textColor=MUTED),
         "cell": ParagraphStyle("c", parent=ss["Normal"], fontSize=8.5, leading=11, textColor=INK),
@@ -231,7 +231,7 @@ def render_pdf(report_json: dict, out_path: str | Path) -> Path:
         flow.append(_p("A blocked or degraded check must never read as 'all clear'. The "
                        "following limitations bound the confidence of this report:", st["body"]))
         for d in degradations:
-            flow.append(_p(f"<b>{d.get('code')}</b>: {d.get('detail')}", st["body"]))
+            flow.append(_p(f"{d.get('code')}: {d.get('detail')}", st["body"]))
     else:
         flow.append(_p("No degradations were recorded for this engagement.", st["body"]))
     if eng.get("status") != "done":
