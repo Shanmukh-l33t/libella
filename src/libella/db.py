@@ -6,6 +6,13 @@ import time
 import uuid
 from pathlib import Path
 
+from .secrets import SecretBox, is_encrypted
+
+# Columns holding live session material: ciphertext at rest, plaintext through
+# DB.query()/one(). Writers must pass values through DB.seal().
+SECRET_COLUMNS = {"engagements": ("auth_json",), "auth_contexts": ("cookies_json",)}
+_SECRET_FIELDS = frozenset(c for cols in SECRET_COLUMNS.values() for c in cols)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS engagements(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, profile TEXT NOT NULL DEFAULT 'safe_active',
@@ -129,6 +136,7 @@ class DB:
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._box = SecretBox(Path(self.path).parent)
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -136,7 +144,12 @@ class DB:
         with self._lock:
             self._conn.executescript(SCHEMA)
             self._migrate()
+            migrated = self._migrate_secrets()
             self._conn.commit()
+            if migrated:  # old plaintext pages must not survive in db or WAL
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._conn.execute("VACUUM")
+                self._conn.commit()
 
     def _migrate(self):
         """Add columns to pre-existing tables (idempotent)."""
@@ -151,6 +164,41 @@ class DB:
                 if name not in existing:
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
+    def _migrate_secrets(self) -> bool:
+        """Encrypt legacy plaintext secret columns once. Ciphertext (including
+        settings) is verified before any write, so a wrong/lost key never
+        rewrites data."""
+        # A usable settings ciphertext proves the key; check it before wrapping
+        # legacy plaintext under a key that may be the wrong one.
+        for row in self._conn.execute(
+                "SELECT value_json FROM settings WHERE key IN ('api_token','llm_config')"):
+            value = row["value_json"]
+            if value and value.startswith('"'):
+                try:
+                    value = json.loads(value)  # api_token is JSON-encoded, llm_config bare
+                except ValueError:
+                    continue
+            if is_encrypted(value):
+                self._box.decrypt(value)
+        pending = []
+        for table, cols in SECRET_COLUMNS.items():
+            for row in self._conn.execute(f"SELECT id, {', '.join(cols)} FROM {table}"):
+                for col in cols:
+                    value = row[col]
+                    if not value:
+                        continue
+                    if is_encrypted(value):
+                        self._box.decrypt(value)  # raises SecretError on a wrong key
+                    else:
+                        pending.append((table, col, self._box.encrypt(value), row["id"]))
+        for table, col, sealed, row_id in pending:
+            self._conn.execute(f"UPDATE {table} SET {col}=? WHERE id=?", (sealed, row_id))
+        return bool(pending)
+
+    def seal(self, plaintext: str) -> str:
+        """Ciphertext for a SECRET_COLUMNS value, for INSERT/UPDATE parameters."""
+        return self._box.encrypt(plaintext)
+
     def execute(self, sql: str, params=()):
         with self._lock:
             cur = self._conn.execute(sql, params)
@@ -160,7 +208,12 @@ class DB:
     def query(self, sql: str, params=()) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
+            out = [dict(r) for r in rows]
+        for r in out:  # decryption outside the lock: Fernet is CPU, not I/O
+            for col in _SECRET_FIELDS:
+                if isinstance(r.get(col), str) and r[col]:
+                    r[col] = self._box.decrypt_or_plain(r[col])
+        return out
 
     def one(self, sql: str, params=()) -> dict | None:
         rows = self.query(sql, params)

@@ -22,7 +22,7 @@ from . import mcp_client  # plugin/MCP extension framework
 from .plugins import PluginHost
 from .report import render_report
 from .scope import Scope
-from .secrets import SecretBox
+from .secrets import SecretBox, is_encrypted
 from .tools import Registry
 from .tools.adapters import ALL_ADAPTERS
 from .tools.http_probe import HttpProbe
@@ -61,8 +61,8 @@ class App:
         token_row = self.db.one("SELECT value_json FROM settings WHERE key='api_token'")
         if token_row:
             stored = json.loads(token_row["value_json"])
-            self.token = self.box.decrypt_or_plain(stored)
-            if stored == self.token:  # legacy plaintext: re-encrypt at rest
+            self.token = self.box.decrypt_or_plain(stored)  # wrong key raises, never ciphertext
+            if not is_encrypted(stored):  # unambiguous legacy plaintext: re-encrypt once
                 self.db.execute("UPDATE settings SET value_json=? WHERE key='api_token'",
                                 (json.dumps(self.box.encrypt(self.token)),))
         else:
@@ -131,7 +131,7 @@ def create_api(app: App) -> FastAPI:
             "INSERT INTO engagements(id, name, profile, status, scope_json, auth_json, budgets_json, "
             "objectives_json, window_start, window_end, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (eid, name, body.get("profile", "safe_active"), "draft", json.dumps(scope_spec),
-             json.dumps(body.get("auth", {})), json.dumps(body.get("budgets", {})),
+             app.db.seal(json.dumps(body.get("auth", {}))), json.dumps(body.get("budgets", {})),
              json.dumps(body.get("objectives", [])), body.get("window_start"),
              body.get("window_end"), time.time()))
         app.db.emit(eid, "engagement_created", {"name": name})
