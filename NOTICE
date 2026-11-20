@@ -1,0 +1,22 @@
+Libella
+Copyright 2026 Libella Contributors
+
+This product includes software developed as original work for the Libella
+project (Apache-2.0).
+
+Architecture ideas were informed by study of the following open-source
+projects (no source code copied; all implementation is original):
+
+- ARTEX (Autumn-27/ARTEX, AGPL-3.0; studied via BaaRai/ARTEX English fork)
+- strix (usestrix/strix, Apache-2.0)
+- PentestGPT (GreyDGL/PentestGPT, MIT)
+- hermes-agent (NousResearch/hermes-agent, MIT)
+- PentAGI (vxcontrol/pentagi, MIT)
+- hexstrike-ai (0x4m4/hexstrike-ai, MIT)
+- Pentest-Swarm-AI (Armur-Ai/Pentest-Swarm-AI, AGPL-3.0)
+- shannon (KeygraphHQ/shannon, AGPL-3.0)
+
+Runtime tool binaries (installed separately or in the Docker image) carry
+their own licenses: nmap (NPSL), nuclei/httpx/subfinder (MIT), ffuf (MIT),
+OWASP Juice Shop (MIT), PairLab (Apache-2.0, this repo). Libella invokes
+these as subprocesses and does not link or derive from their code.

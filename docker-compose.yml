@@ -1,0 +1,25 @@
+# Libella: single-container autonomous pentest workbench.
+# Default bind is loopback-only. Set LIBELLA_TOKEN before first start.
+services:
+  libella:
+    build: .
+    image: libella:local
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      LIBELLA_TOKEN: ${LIBELLA_TOKEN:?set LIBELLA_TOKEN in .env or environment}
+      LIBELLA_DATA: /data
+    volumes:
+      - libella-data:/data
+    restart: unless-stopped
+    # Resource caps for autonomous execution
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  libella-data:

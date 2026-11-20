@@ -1,0 +1,32 @@
+{
+  "lab": "pairlab",
+  "description": "Deterministic vulnerable/hardened twin. vuln=127.0.0.1:8801, hardened=127.0.0.1:8802. All credentials and data are lab-only fakes.",
+  "identities": [
+    {"username": "alice", "password": "lab-password-123", "role": "user", "uid": 1},
+    {"username": "bob", "password": "lab-password-123", "role": "user", "uid": 2},
+    {"username": "admin", "password": "admin-lab-pass-456", "role": "admin", "uid": 3}
+  ],
+  "seeded_findings": [
+    {"id": "PL-01", "cwe": "CWE-79", "owasp": "A03:2021 Injection", "endpoint": "/search?q=", "title": "Reflected XSS", "proof": "q=<script>alert(1)</script> reflected unescaped", "present_in": "vuln"},
+    {"id": "PL-02", "cwe": "CWE-89", "owasp": "A03:2021 Injection", "endpoint": "/api/products?category=", "title": "SQL injection in category filter", "proof": "category=' UNION SELECT id,username,password,role FROM users-- returns user rows", "present_in": "vuln"},
+    {"id": "PL-03", "cwe": "CWE-89", "owasp": "A07:2021 Identification and Authentication Failures", "endpoint": "/login", "title": "Authentication bypass via SQLi", "proof": "username=admin'-- &password=x authenticates as admin", "present_in": "vuln"},
+    {"id": "PL-04", "cwe": "CWE-639", "owasp": "A01:2021 Broken Access Control", "endpoint": "/api/orders/102", "title": "IDOR/BOLA on orders", "proof": "unauthenticated or alice-session reads bob's order 102", "present_in": "vuln"},
+    {"id": "PL-05", "cwe": "CWE-22", "owasp": "A01:2021 Broken Access Control", "endpoint": "/files?name=", "title": "Path traversal", "proof": "name=../private_config.txt returns LAB_PRIVATE_MARKER", "present_in": "vuln"},
+    {"id": "PL-06", "cwe": "CWE-942", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/api/profile", "title": "CORS wildcard with credentials", "proof": "ACAO:* and ACAC:true together", "present_in": "vuln"},
+    {"id": "PL-07", "cwe": "CWE-200", "owasp": "A01:2021 Broken Access Control", "endpoint": "/api/users", "title": "Excessive data exposure (password hashes)", "proof": "unauthenticated GET returns all users incl password hashes", "present_in": "vuln"},
+    {"id": "PL-08", "cwe": "CWE-918", "owasp": "A10:2021 SSRF", "endpoint": "/fetch?url=", "title": "SSRF to internal metadata", "proof": "url=http://127.0.0.1:8801/internal/meta returns LABFAKEKEY0000", "present_in": "vuln"},
+    {"id": "PL-09", "cwe": "CWE-601", "owasp": "A01:2021 Broken Access Control", "endpoint": "/redirect?to=", "title": "Open redirect", "proof": "to=https://example.invalid/ yields 302 off-host", "present_in": "vuln"},
+    {"id": "PL-10", "cwe": "CWE-200", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/debug", "title": "Debug endpoint exposes secret key and environment", "proof": "GET /debug returns secret_key", "present_in": "vuln"},
+    {"id": "PL-11", "cwe": "CWE-548", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/uploads/", "title": "Directory listing", "proof": "GET /uploads/ lists files", "present_in": "vuln"},
+    {"id": "PL-12", "cwe": "CWE-614", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/login", "title": "Insecure session cookie flags", "proof": "session cookie lacks HttpOnly/Secure/SameSite", "present_in": "vuln"},
+    {"id": "PL-13", "cwe": "CWE-693", "owasp": "A05:2021 Security Misconfiguration", "endpoint": "/", "title": "Missing security headers", "proof": "no CSP/X-Frame-Options/X-Content-Type-Options/HSTS", "present_in": "vuln"}
+  ],
+  "negative_controls": [
+    {"id": "NC-01", "endpoint": "/", "signal": "X-Powered-By: Express/4.16.0 and Server: nginx/1.18.0 banners in vuln mode", "expected": "version signal only; must NOT become a confirmed CVE finding without configuration/exposure proof"},
+    {"id": "NC-02", "endpoint": "/api/products?category=tools", "signal": "normal parameterized-looking query", "expected": "no finding in hardened mode"},
+    {"id": "NC-03", "endpoint": "/api/orders/101", "signal": "alice reads her own order", "expected": "no finding in hardened mode (authorized access)"},
+    {"id": "NC-04", "endpoint": "/files?name=readme.txt", "signal": "legitimate file read", "expected": "no finding in either mode"},
+    {"id": "NC-05", "endpoint": "/redirect?to=/health", "signal": "relative redirect", "expected": "no finding in hardened mode"},
+    {"id": "NC-06", "endpoint": "all hardened routes", "signal": "hardened twin", "expected": "zero confirmed findings; any confirmed finding on hardened mode is a false positive"}
+  ]
+}

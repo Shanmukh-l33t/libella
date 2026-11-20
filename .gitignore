@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Runtime data (NEVER commit assessment data)
+benchmark_runs/
+*.db
+*.db-wal
+*.db-shm
+data/
+evidence/
+runs/
+*.log
+
+# Secrets / env
+.env
+.env.*
+*.pem
+*.key
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*_log.txt

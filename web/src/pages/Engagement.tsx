@@ -1,0 +1,179 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import { ArrowLeft, Pause, Play, Square, RefreshCw, Copy } from "lucide-react";
+import { get, post } from "../api";
+import type { Engagement as Eng, Event } from "../types";
+import { useApi, useStream } from "../lib/hooks";
+import { elapsed, fmtTime, money, statusTone, title } from "../lib/format";
+import { Badge, Button, ErrorNote, Modal, Select, Skeleton, Tabs, cx, useToast } from "../components/ui";
+import Overview from "./engagement/Overview";
+import Operations from "./engagement/Operations";
+import AssetsTab from "./engagement/Assets";
+import GraphTab from "./engagement/Graph";
+import FindingsTab from "./engagement/FindingsTab";
+import ReportTab from "./engagement/Report";
+
+const TABS = ["overview", "operations", "assets", "graph", "findings", "report"];
+const STARTABLE = ["draft", "done", "failed", "cancelled", "budget_exhausted"];
+
+export default function Engagement() {
+  const { id = "" } = useParams();
+  const [params, setParams] = useSearchParams();
+  const tab = TABS.includes(params.get("tab") || "") ? params.get("tab")! : "overview";
+  const eng = useApi<Eng>(`/api/engagements/${id}`);
+  const toast = useToast();
+
+  const [events, setEvents] = useState<Event[]>([]);
+  const [since, setSince] = useState<number | null>(null);
+  const [live, setLive] = useState(0);
+  const [mode, setMode] = useState("deterministic");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const feed = useRef(new Map<number, Event>());
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    get<Event[]>(`/api/engagements/${id}/events?since=0`)
+      .then((rows) => {
+        if (!alive) return;
+        for (const r of rows) feed.current.set(r.seq, r);
+        setEvents([...feed.current.values()].sort((a, b) => b.seq - a.seq).slice(0, 400));
+        setSince(rows.length ? Math.max(...rows.map((r) => r.seq)) : 0);
+      })
+      .catch(() => setSince(0));
+    return () => { alive = false; };
+  }, [id]);
+
+  const pushEvent = useCallback((kind: string, payload: any, seq: number) => {
+    feed.current.set(seq, { seq, kind, payload });
+    setEvents([...feed.current.values()].sort((a, b) => b.seq - a.seq).slice(0, 400));
+    if (timer.current) return;
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setLive((v) => v + 1);
+      eng.reload();
+    }, 600);
+  }, [eng]);
+
+  const connected = useStream(id, since, pushEvent);
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const act = async (name: "start" | "pause" | "resume" | "cancel") => {
+    setBusy(name);
+    setActionError(null);
+    try {
+      const body = name === "start" || name === "resume" ? { mode } : undefined;
+      await post(`/api/engagements/${id}/${name}`, body);
+      toast(`Engagement ${{ start: "started", pause: "paused", resume: "resumed", cancel: "cancelled" }[name]}.`, "success");
+      setConfirmCancel(false);
+      setTimeout(() => { eng.reload(); setLive((v) => v + 1); }, 350);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setActionError(msg);
+      toast(msg, "danger");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setTab = (t: string) => setParams({ tab: t }, { replace: true });
+
+  if (eng.error) return <div className="space-y-4"><BackLink /><ErrorNote error={eng.error} /></div>;
+  if (!eng.data) return (
+    <div className="space-y-4">
+      <Skeleton className="h-7 w-72" />
+      <Skeleton className="h-16 w-full" />
+      <Skeleton className="h-64 w-full" />
+    </div>
+  );
+
+  const e = eng.data;
+  const canStart = STARTABLE.includes(e.status);
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <BackLink />
+        <div className="mt-2 flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h1 className="text-xl font-semibold tracking-tight text-ink-900">{e.name}</h1>
+              <Badge tone={statusTone(e.status)} dot>{title(e.status)}</Badge>
+              <span className="hidden items-center gap-1 text-2xs text-ink-500 sm:inline-flex" title="Live event stream">
+                <span className={cx("h-1.5 w-1.5 rounded-full", connected ? "bg-sev-low" : "bg-ink-300", connected && "animate-pulse")} />
+                {connected ? "live" : "offline"}
+              </span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-500">
+              <button className="inline-flex items-center gap-1 font-mono hover:text-ink-900" title="Copy engagement id"
+                onClick={() => { navigator.clipboard.writeText(e.id).then(() => toast("Engagement id copied.")).catch(() => {}); }}>
+                {e.id} <Copy size={11} />
+              </button>
+              <span>·</span><span>profile <span className="text-ink-700">{title(e.profile)}</span></span>
+              <span>·</span><span>created {fmtTime(e.created_at)}</span>
+              <span>·</span><span>duration <span className="text-ink-700">{e.started_at ? elapsed(e.started_at, e.finished_at) : "—"}</span></span>
+              <span>·</span><span>spend <span className="text-ink-700 tabular-nums">{money(e.spend?.cost_usd)}</span></span>
+            </div>
+            {e.scope?.targets?.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {e.scope.targets.slice(0, 4).map((t, i) => (
+                  <span key={i} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-2xs text-ink-700">{t.kind}:{t.value}</span>
+                ))}
+                {e.scope.targets.length > 4 && <span className="px-1 text-2xs text-ink-500">+{e.scope.targets.length - 4} more</span>}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="ghost" icon={<RefreshCw size={13} />} aria-label="Refresh engagement" onClick={() => { eng.reload(); setLive((v) => v + 1); }} />
+            {(canStart || e.status === "paused") && (
+              <Select aria-label="Execution mode" value={mode} onChange={(ev) => setMode(ev.target.value)} className="h-8 w-[150px] text-xs">
+                <option value="deterministic">Deterministic</option>
+                <option value="llm">LLM planner</option>
+              </Select>
+            )}
+            {canStart && <Button size="sm" variant="primary" icon={<Play size={13} />} loading={busy === "start"} onClick={() => act("start")}>Start</Button>}
+            {e.status === "running" && <Button size="sm" icon={<Pause size={13} />} loading={busy === "pause"} onClick={() => act("pause")}>Pause</Button>}
+            {e.status === "paused" && <Button size="sm" variant="primary" icon={<Play size={13} />} loading={busy === "resume"} onClick={() => act("resume")}>Resume</Button>}
+            {(e.status === "running" || e.status === "paused") && (
+              <Button size="sm" variant="danger" icon={<Square size={12} />} loading={busy === "cancel"} onClick={() => setConfirmCancel(true)}>Cancel</Button>
+            )}
+          </div>
+        </div>
+        {e.status_detail && !["running", "paused", "draft"].includes(e.status) && <p className="mt-2 text-xs text-ink-500">{e.status_detail}</p>}
+        <div className="mt-3"><ErrorNote error={actionError} /></div>
+      </div>
+
+      <Tabs value={tab} onChange={setTab} tabs={[
+        { id: "overview", label: "Overview" },
+        { id: "operations", label: "Operations" },
+        { id: "assets", label: "Assets" },
+        { id: "graph", label: "Graph" },
+        { id: "findings", label: "Findings" },
+        { id: "report", label: "Report" },
+      ]} />
+
+      {tab === "overview" && <Overview eid={id} eng={e} live={live} events={events} />}
+      {tab === "operations" && <Operations eid={id} live={live} />}
+      {tab === "assets" && <AssetsTab eid={id} live={live} />}
+      {tab === "graph" && <GraphTab eid={id} live={live} />}
+      {tab === "findings" && <FindingsTab eid={id} live={live} />}
+      {tab === "report" && <ReportTab eid={id} eng={e} live={live} />}
+
+      <Modal open={confirmCancel} onClose={() => setConfirmCancel(false)} title="Cancel this engagement?"
+        footer={<>
+          <Button variant="ghost" onClick={() => setConfirmCancel(false)}>Keep running</Button>
+          <Button variant="danger" loading={busy === "cancel"} onClick={() => act("cancel")}>Cancel engagement</Button>
+        </>}>
+        Open and running intents are stopped. Captured evidence and findings are kept, and the engagement can be started again later.
+      </Modal>
+    </div>
+  );
+}
+
+function BackLink() {
+  return <Link to="/" className="inline-flex items-center gap-1 text-xs text-ink-500 hover:text-ink-900"><ArrowLeft size={13} /> All engagements</Link>;
+}

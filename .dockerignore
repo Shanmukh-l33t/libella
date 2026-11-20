@@ -1,0 +1,12 @@
+.venv
+web/node_modules
+web/dist
+benchmark_runs
+.git
+*.db
+*.log
+.env
+data
+evidence
+runs
+__pycache__
