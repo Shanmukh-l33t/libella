@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Download, FileText, RefreshCw } from "lucide-react";
 import type { Engagement, Report } from "../../types";
-import { downloadReport } from "../../api";
+import { downloadReport, type ReportFormat } from "../../api";
 import { useApi } from "../../lib/hooks";
 import { fmtTime, money, severityTone, stateTone, title } from "../../lib/format";
 import { Badge, Button, Card, EmptyState, ErrorNote, Skeleton, Stat, Table } from "../../components/ui";
@@ -11,7 +11,7 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
   const navigate = useNavigate();
   const { data, error, loading, reload } = useApi<Report>(`/api/engagements/${eid}/report?format=json&live=${live}`);
   const [dlError, setDlError] = useState<string | null>(null);
-  const download = (format: "md" | "sarif" | "pdf" | "dojo") => {
+  const download = (format: ReportFormat) => {
     setDlError(null);
     downloadReport(eid, format).catch((e) => setDlError(e instanceof Error ? e.message : String(e)));
   };
@@ -32,13 +32,17 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
             status <span className="text-ink-700">{title(data.engagement.status)}</span>
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button size="sm" icon={<RefreshCw size={13} />} onClick={reload} loading={loading}>Regenerate</Button>
+          <Button size="sm" icon={<Download size={13} />} title="Renders the same report.json through the PDF exporter"
+            onClick={() => download("pdf")}>PDF</Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("html")}>HTML</Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("docx")}>Word</Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("xlsx")}>Excel</Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("csv")}>CSV</Button>
           <Button size="sm" icon={<Download size={13} />} onClick={() => download("md")}>Markdown</Button>
           <Button size="sm" icon={<Download size={13} />} onClick={() => download("sarif")}>SARIF</Button>
           <Button size="sm" icon={<Download size={13} />} onClick={() => download("dojo")}>DefectDojo</Button>
-          <Button size="sm" icon={<Download size={13} />} title="Renders the same report.json through the PDF exporter"
-            onClick={() => download("pdf")}>PDF</Button>
         </div>
       </div>
 

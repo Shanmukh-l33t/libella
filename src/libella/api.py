@@ -9,7 +9,7 @@ from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -509,6 +509,21 @@ def create_api(app: App) -> FastAPI:
             body = defectdojo_export(json.loads((p / "report.json").read_text()))
             return JSONResponse(body, headers={
                 "Content-Disposition": f'attachment; filename="libella-{eid}-defectdojo.json"'})
+        if format in ("html", "docx", "xlsx", "csv"):
+            from . import report_formats
+            doc = json.loads((p / "report.json").read_text())
+            if format == "html":
+                return HTMLResponse(report_formats.render_html(doc))
+            if format == "csv":
+                return PlainTextResponse(report_formats.render_csv(doc), media_type="text/csv",
+                                         headers={"Content-Disposition": f'attachment; filename="{eid}.csv"'})
+            if format == "docx":
+                path = report_formats.render_docx(doc, p / "report.docx")
+                return FileResponse(path, filename=f"{eid}.docx",
+                                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            path = report_formats.render_xlsx(doc, p / "report.xlsx")
+            return FileResponse(path, filename=f"{eid}.xlsx",
+                                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         return json.loads((p / "report.json").read_text())
 
     # ---------------- remediation tracking + historical comparison (WS-Report) ----

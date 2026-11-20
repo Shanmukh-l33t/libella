@@ -45,7 +45,8 @@ export const mintTicket = (eid: string) =>
   post<{ ticket: string }>("/api/ticket", { engagement_id: eid }).then((r) => r.ticket);
 
 /** Downloads use fetch so the bearer header travels instead of a token in the URL. */
-export async function downloadReport(eid: string, format: "md" | "sarif" | "pdf" | "dojo") {
+export type ReportFormat = "md" | "sarif" | "pdf" | "dojo" | "html" | "docx" | "xlsx" | "csv";
+export async function downloadReport(eid: string, format: ReportFormat) {
   const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}`;
   const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
   if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
