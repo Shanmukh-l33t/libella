@@ -12,8 +12,12 @@ real browser. Every defect below had a failing test in `tests/audit2/` *before*
 the fix; each fix is at the root cause, not at the caller. No external hosts were
 contacted: all labs are 127.0.0.1.
 
-Result: **11 defects fixed** (4 high, 5 medium, 2 low), 29 regression tests added,
-suite `446 passed, 1 skipped`, ruff clean.
+Result: **13 defects fixed** (4 high, 7 medium, 2 low), 31 regression tests added,
+suite `448 passed, 1 skipped`, ruff clean.
+
+The auth-aware `run_baseline` battery landed in this module *during* the audit
+(commit `e7b21dc`, a parallel workstream); it was reviewed as part of the same
+window — D12/D13 below.
 
 ## Defects
 
@@ -145,7 +149,30 @@ PoC: `tests/audit2/test_report_redaction.py` (JWT absent from `report.json` and
 text extraction — the PDF path inherits `report.redact`, so one pattern covers
 both).
 
-Counts: 4 high (D1–D4), 5 medium (D5–D9), 2 low (D10, D11) = **11 defects**;
+### D12 (medium) `agent_runtime.py:248` — the baseline login bypassed every HTTP control
+The identity login inside `run_baseline` used a private
+`httpx.Client(timeout=15, verify=False)`: that request skipped the rate limiter,
+the per-hop scope check, the post-connect peer verification (DNS rebinding) and
+the evidence capture — while posting a username and password. The harvested
+cookie then authenticated IDOR probes whose session had no evidenced origin.
+PoC: `tests/audit2/test_agent_baseline.py::test_baseline_login_is_captured_as_evidence`
+(asserts a `baseline_login` exchange with an evidence id exists).
+Fix: the login goes through `HttpProbe` like every other request; cookies are
+recovered from that response (`_cookie_header`, with the comma-joined
+`Set-Cookie` collapse documented as a `shortcut`). Rate limit, per-hop scope,
+peer check and evidence now apply.
+
+### D13 (medium) `agent_runtime.py:565` — a malformed action killed the run
+`_exec_action` was called without a guard, so configuration-shaped errors (a
+`test_hints.ssrf` missing `internal_url`, an identity without `username`) raised
+out of `run()`: the agent run died mid-flight and the API surfaced a 500,
+contradicting "failure isolation: a failed intent does not kill the engagement".
+PoC: `test_agent_baseline.py::test_malformed_test_hint_degrades_instead_of_killing_the_run`
+Fix: one failing action degrades to `{"error": ...}` plus an investigation step
+the model can react to; the idor-hint block additionally tolerates the key
+shapes it uses.
+
+Counts: 4 high (D1–D4), 7 medium (D5–D9, D12, D13), 2 low (D10, D11) = **13 defects**;
 all fixed at the root cause in the owning module, none worked around at the caller.
 
 ## Attacks that were run and held
@@ -215,10 +242,10 @@ all fixed at the root cause in the owning module, none worked around at the call
 ## Verification
 
 ```
-.venv/bin/python -m pytest tests/ -q      -> 446 passed, 1 skipped
+.venv/bin/python -m pytest tests/ -q      -> 448 passed, 1 skipped
 .venv/bin/python -m ruff check src tests  -> All checks passed
 ```
 
 Baseline before this audit: 417 passed, 1 skipped, ruff had 2 pre-existing
-`tests/test_integration_e2e.py` findings (fixed). New tests: 29 in
-`tests/audit2/` (7 files), each mapped to the defect it locks down.
+`tests/test_integration_e2e.py` findings (fixed). New tests: 31 in
+`tests/audit2/` (8 files), each mapped to the defect it locks down.

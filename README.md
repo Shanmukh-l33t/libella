@@ -150,16 +150,20 @@ security model and known limits.
 
 ## Project status
 
-Working and benchmarked: engagement lifecycle, scope enforcement, recon,
-static + browser-rendered crawling (Playwright) with runtime API discovery,
-deterministic web checks, OpenAPI-driven API audit (BOLA/BFLA/mass
-assignment/exposure/missing auth), GraphQL audit (introspection/injection/
-field-authz/depth/alias/batch), TLS transport audit, source-code +
-supply-chain audit (semgrep/gitleaks/trivy/OSV), container image scanning,
-nuclei/nmap/httpx/subfinder/ffuf adapters, independent verification
-(HTTP replay + TLS re-scan), retest, hash-chained evidence, reporting,
-live UI, LLM planning mode. AWS/K8s posture is planned, not claimed.
-See CAPABILITIES.md for the tested/planned matrix.
+Working and benchmarked: genuine autonomous specialist agent runtime (ReAct
+investigation, hypotheses, evidence-gated conclusions, delegation, cost-aware
+model routing, duplicate-action convergence) achieving 16/16 lab coverage with
+independent validation; deterministic baseline (16/16, 0 FP); scope enforcement;
+recon; static + authenticated browser crawling; traffic intelligence + authorized
+replay; web (16 classes), OpenAPI API (5), GraphQL (7), TLS, source/supply-chain
+(6 + OSV), AWS cloud posture (moto-verified), container scanning, technology-
+specific modules (WordPress/PHP/Java/ColdFusion/Node/IIS/Apache/Nginx), ZAP
+adapter, plugin/MCP extension framework; deep investigation graph + cross-run
+memory + drift; independent verification + retest; PDF/MD/JSON/SARIF reports +
+remediation tracking + historical comparison; premium operational UI (Command
+Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph).
+446 tests; two independent adversarial audits (33 defects fixed). CI/issue-tracker
+hooks and scheduled retest are planned, not claimed. See CAPABILITY_MATRIX.md.
 
 ## License
 

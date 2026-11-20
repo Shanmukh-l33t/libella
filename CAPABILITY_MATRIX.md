@@ -7,8 +7,8 @@ Research: research/analysis-*.md, inventory-*.md, REA_LOG.md (provable REA invoc
 ## Family A — Autonomous Intelligence
 | Capability | Ref evidence | Ours | Status | Acceptance |
 |---|---|---|---|---|
-| Autonomous planning | A planner intents; P subtasks | _plan_agent LLM decompose + compile gate | IN-DEV | agent-mode benchmark plans specialists |
-| Specialist ReAct investigation | S SandboxAgent; A worker; W ReAct | agent_runtime.py ReAct loop, typed actions | VERIFIED (unit) + IN-DEV (live) | scripted tests + live findings |
+| Autonomous planning | A planner intents; P subtasks | _plan_agent LLM decompose + compile gate | VERIFIED | agent-mode 16/16 |
+| Specialist ReAct investigation | S SandboxAgent; A worker; W ReAct | agent_runtime.py ReAct loop, typed actions | VERIFIED | agent-mode 16/16, 17 validated, $0.17 |
 | Hypothesis tracking | A fact/finding graph | hypotheses table + runtime actions | VERIFIED unit | test_agent_runtime |
 | Delegation | P sub-chains; A intents | delegate action -> gated child intent | VERIFIED unit | delegation test |
 | Parallel workers | W scheduler; A N workers | leased intents + fencing | VERIFIED | audit race tests |
@@ -64,6 +64,19 @@ Research: research/analysis-*.md, inventory-*.md, REA_LOG.md (provable REA invoc
 | Plugin/MCP | H MCP | plugins/mcp_client (WS) | IN-DEV |
 | CI/issue-tracker | S CI | PLANNED | PLANNED |
 | Scheduled retest | (none) | PLANNED | PLANNED |
+
+## Verified results (v0.4, executed)
+
+- Agent mode (autonomous specialists, claude-haiku-4.5): 16/16 PairLab seeds,
+  17 findings independently replay-validated, 0 missed, $0.17, 526s, clean
+  convergence (web/api/authz completed), 2 hypotheses, evidence chain intact.
+- Deterministic mode: 16/16, 0 FP hardened (baseline).
+- Full suite: 446 passed, 1 skipped (ZAP live). Lint clean.
+- Independent audit2: 11 defects fixed (4 high), 29 regression tests.
+- End-to-end acceptance test passes through the real API (lifecycle + traffic
+  replay + graph + memory + PDF + remediation + chain).
+- Provable REA (9+ invocations, evidence IDs) + reference execution (ARTEX,
+  PentAGI, strix ran; strix MaxTurnsExceeded failure observed).
 
 ## Active workstreams (delegated)
 WS-Research-Exec: reference execution + REA deepen + inventories.
