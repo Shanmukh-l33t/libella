@@ -75,6 +75,11 @@ class Registry:
     def for_category(self, category: str) -> list[ToolSpec]:
         return [t for t in self.tools.values() if t.category == category]
 
+    def diagnostics(self) -> list[dict]:
+        """Functional readiness per tool (executes the version command, cached)."""
+        from .diagnostics import diagnose
+        return [diagnose(t) for t in self.tools.values()]
+
 
 def validate_params(spec: ToolSpec, params: dict) -> dict:
     """Deterministic parameter validation. Reject unknown/missing/mistyped."""
