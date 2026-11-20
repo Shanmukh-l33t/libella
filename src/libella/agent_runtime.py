@@ -36,15 +36,13 @@ CHARTERS = {
     "web": {
         "charter": "You are the Web Security specialist. Investigate web application behavior: "
                    "injection, XSS, SSTI, traversal, SSRF, access control, sessions, headers, "
-                   "cookies, uploads, misconfiguration, business logic. METHOD: first http_request "
-                   "the target to learn its endpoints/params, then systematically run_check each "
-                   "relevant class (xss, sqli, ssti, traversal, redirect, cors, headers, cookies, "
-                   "upload, sensitive_paths) on discovered endpoints/params. run_check auto-submits "
-                   "evidence-backed findings. Record a hypothesis for promising leads. After you "
-                   "have covered the main classes on the discovered surface, call finish with a "
-                   "summary. Do NOT keep re-probing the same endpoint after coverage is sufficient. "
-                   "Distinguish real vulnerabilities from scanner noise.",
-        "actions": ["http_request", "run_check", "run_tool", "record_hypothesis", "update_hypothesis",
+                   "cookies, uploads, misconfiguration, business logic. METHOD: FIRST call "
+                   "run_baseline on the target for comprehensive coverage (auto-submits findings), "
+                   "then http_request to learn endpoints and investigate business logic / authz / "
+                   "deeper issues with run_check and propose_finding. Record hypotheses for leads. "
+                   "After baseline + targeted investigation, call finish with a summary. Do NOT "
+                   "repeat actions. Distinguish real vulnerabilities from scanner noise.",
+        "actions": ["http_request", "run_baseline", "run_check", "run_tool", "record_hypothesis", "update_hypothesis",
                     "record_observation", "propose_finding", "read_context", "delegate", "finish"],
         "max_iterations": 24,
     },
@@ -57,7 +55,7 @@ CHARTERS = {
                    "objects. Use propose_finding with replayable proof for confirmed issues. After "
                    "covering the endpoints, call finish. Always emit a valid JSON action; never "
                    "reply with plain text.",
-        "actions": ["http_request", "run_check", "run_tool", "record_hypothesis", "update_hypothesis",
+        "actions": ["http_request", "run_baseline", "run_check", "run_tool", "record_hypothesis", "update_hypothesis",
                     "record_observation", "propose_finding", "read_context", "delegate", "finish"],
         "max_iterations": 24,
     },
@@ -114,6 +112,7 @@ ACTION_SCHEMA = """Respond with ONE JSON object only:
 {"thought": "<your reasoning>", "action": "<one of: %s>", "args": {<action args>}}
 Action args:
 - http_request: {"url","method"?,"headers"?,"body"?}
+- run_baseline: {"url"}  # comprehensive deterministic check battery; run FIRST for coverage
 - run_check: {"check":"xss|sqli|ssti|traversal|redirect|cors|headers|cookies|upload|sensitive_paths|auth_bypass|idor|ssrf","url","param"?,"extra"?}
 - run_tool: {"tool":"nmap|nuclei|httpx|subfinder|ffuf","params":{...}}
 - record_hypothesis: {"statement","kind"?,"asset_id"?}
@@ -183,6 +182,42 @@ class AgentRunner:
                     "evidence_id": r.get("evidence_id"), "exchange_id": r.get("exchange_id"),
                     "body": (r.get("body") or "")[:4000], "headers": r.get("headers"),
                     "error": r.get("error")}
+        if action == "run_baseline":
+            url = args.get("url", "").rstrip("/")
+            if not self.scope.check_url(url).allowed:
+                return {"error": "out of scope"}
+            c = self.checks
+            cands = []
+            cands += c.security_headers(url)
+            cands += c.cors(url)
+            cands += c.sensitive_paths(url)
+            cands += c.cookie_flags(url)
+            cands += c.file_upload(url + "/upload", url)
+            from urllib.parse import urlparse, parse_qs
+            from .checks import COMMON_PARAM_ENDPOINTS
+            for ep in [url + e for e in COMMON_PARAM_ENDPOINTS]:
+                if not self.scope.check_url(ep).allowed:
+                    continue
+                pr = self.probe.request(self.eng, self.scope, ep, tool="baseline_probe")
+                if not pr.get("ok") or pr["status"] == 404:
+                    continue
+                pbase = ep.split("?")[0]
+                for p in parse_qs(urlparse(ep).query):
+                    cands += c.reflected_xss(pbase, p)
+                    cands += c.sqli(pbase, p)
+                    cands += c.ssti(pbase, p)
+                    cands += c.path_traversal(pbase, p)
+                    cands += c.open_redirect(pbase, p)
+            submitted = []
+            for cand in cands:
+                res = self.pipeline.submit_candidate(self.eng, cand, intent_id)
+                submitted.append(res)
+                produced["findings"].append(res["id"])
+                produced["evidence"].extend(cand.get("evidence_ids", []))
+            self._step(run_id, intent_id, seq, "tool_call",
+                       f"baseline battery {url}: {len(cands)} candidates")
+            return {"ok": True, "candidates": len(cands), "submitted": len(submitted),
+                    "note": "baseline submitted; now investigate authz/business logic, then finish"}
         if action == "run_check":
             name = args.get("check")
             method = CHECK_METHODS.get(name)
