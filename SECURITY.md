@@ -37,6 +37,17 @@ See THREAT_MODEL.md. Summary of enforced controls:
 
 ## Known residual risks (honest list)
 
+Earlier versions wrote the instance token to startup logs and accepted it in URLs.
+Treat the old token as disclosed to anyone who could read those logs. Stop all
+Libella processes using the data directory. With the upgraded code, run
+`libella --data-dir <directory> --rotate-token`, then restart the service.
+`LIBELLA_TOKEN` is for first initialization; changing it does not rotate an existing
+instance. Retrieve the replacement with `libella --data-dir <directory> --show-token`
+on a private terminal (in Compose, `docker compose exec libella libella --data-dir /data --show-token`).
+Update API clients. Restoring an older database also restores the older token:
+rotate again before serving traffic. Protect terminal recordings, backups, and
+reverse-proxy logs. Do not log Authorization headers, cookies, or URL queries.
+
 - Subprocess scanners that re-resolve DNS have a TOCTOU window between the
   platform's scope check and the tool's own connection. The platform HTTP
   client is peer-verified; full network-namespace egress isolation is roadmap.

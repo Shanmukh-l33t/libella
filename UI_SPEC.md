@@ -116,7 +116,7 @@ handles 401 -> token screen. Dev: vite proxy /api -> http://127.0.0.1:8787.
 ## Verification required before handoff
 
 1. `npm run build` succeeds; web/dist exists.
-2. Start backend: `cd /home/computebox/project-pentest/libella && .venv/bin/python -m libella.main --port 8788 --data-dir /tmp/libella-ui-test` (token printed).
+2. Start the backend with a fresh local data directory. In a second private terminal run `libella --show-token --data-dir <same-directory>`. Do not capture the token in screenshots or logs.
 3. Create a real engagement via curl against lab http://127.0.0.1:8801 (scope url target), start it, wait for done.
 4. Verify via curl that every API route the UI uses returns real data.
 5. If a browser tool is available, load the UI, screenshot dashboard +
