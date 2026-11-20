@@ -247,6 +247,10 @@ class Orchestrator:
         self.db.execute("UPDATE engagements SET status=?, finished_at=?, status_detail=? WHERE id=?",
                         (status, time.time(), detail, engagement_id))
         self.db.emit(engagement_id, "engagement_finished", {"status": status, "detail": detail})
+        if status == "done":
+            # final report reflects terminal status (mid-run render is a preview)
+            from .report import render_report
+            render_report(self.db, self.evidence, engagement_id)
 
     # ---- intent execution ----
 
