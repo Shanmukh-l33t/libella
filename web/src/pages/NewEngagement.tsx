@@ -67,7 +67,7 @@ export default function NewEngagement() {
     if (!(nRps > 0)) fe.rps = "Rate limit must be greater than 0.";
     if (!(Number.isInteger(nConc) && nConc > 0)) fe.concurrency = "Concurrency must be a positive integer.";
     if (duration && !(Number(duration) > 0)) fe.duration = "Duration must be a positive number of seconds.";
-    if (budget && Number(budget) < 0) fe.budget = "Budget cannot be negative.";
+    if (budget && !(Number(budget) > 0)) fe.budget = "Budget must be a positive number.";
     let testHints: unknown = undefined;
     if (hints.trim()) {
       try { testHints = JSON.parse(hints); } catch { fe.hints = "Test hints must be valid JSON."; }
@@ -222,7 +222,7 @@ export default function NewEngagement() {
         </div>
       </Card>
 
-      <Card title="Profile" description="How much the engine is allowed to touch. Stored per engagement and enforced by the scope engine.">
+      <Card title="Profile" description="How much the engine is allowed to touch. Stored per engagement and enforced by the assessment policy engine.">
         <div className="grid gap-2 sm:grid-cols-3">
           {PROFILES.map((p) => (
             <label key={p.id} className={cx("cursor-pointer rounded border p-3 transition-colors duration-150",
@@ -264,7 +264,7 @@ export default function NewEngagement() {
             <Input id="dur" type="number" min={1} value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="1800" error={!!fieldErrors.duration} />
           </Field>
           <Field label="Max spend (USD)" htmlFor="budget" error={fieldErrors.budget} hint="Blank = no cap">
-            <Input id="budget" type="number" min={0} step="0.01" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="5.00" error={!!fieldErrors.budget} />
+            <Input id="budget" type="number" min={0.01} step="0.01" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="5.00" error={!!fieldErrors.budget} />
           </Field>
         </div>
       </Card>

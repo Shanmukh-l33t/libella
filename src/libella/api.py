@@ -19,9 +19,10 @@ from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
 from .llm import LLM
-from .orchestrator import Orchestrator
+from .orchestrator import MODES, Orchestrator
 from . import __version__, mcp_client  # plugin/MCP extension framework
 from .plugins import PluginHost
+from .policy import DEFAULT_PROFILE, PROFILES
 from .provider_diagnostic import normalize_base, diagnostic_result, same_base, test_connection
 from .report import render_report
 from .scope import Scope
@@ -204,12 +205,24 @@ def create_api(app: App) -> FastAPI:
             Scope(scope_spec)  # validate fail-closed at creation
         except ValueError as e:
             raise HTTPException(400, f"invalid scope: {e}")
+        profile = body.get("profile", DEFAULT_PROFILE)
+        if profile not in PROFILES:
+            raise HTTPException(400, f"unknown profile {profile!r}; expected one of "
+                                     f"{', '.join(PROFILES)}")
+        budgets = body.get("budgets", {})
+        if not isinstance(budgets, dict):
+            raise HTTPException(400, "budgets must be an object")
+        for key in ("max_duration_s", "max_usd", "max_plan_rounds"):
+            value = budgets.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not value > 0):
+                raise HTTPException(400, f"budget {key} must be a positive number")
         eid = new_id("eng")
         app.db.execute(
             "INSERT INTO engagements(id, name, profile, status, scope_json, auth_json, budgets_json, "
             "objectives_json, window_start, window_end, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (eid, name, body.get("profile", "safe_active"), "draft", json.dumps(scope_spec),
-             app.db.seal(json.dumps(body.get("auth", {}))), json.dumps(body.get("budgets", {})),
+            (eid, name, profile, "draft", json.dumps(scope_spec),
+             app.db.seal(json.dumps(body.get("auth", {}))), json.dumps(budgets),
              json.dumps(body.get("objectives", [])), body.get("window_start"),
              body.get("window_end"), time.time()))
         app.db.emit(eid, "engagement_created", {"name": name})
@@ -237,14 +250,26 @@ def create_api(app: App) -> FastAPI:
         r["spend"] = app.llm().spend(eid) if app.llm() else {"cost_usd": 0}
         return r
 
+    def _check_startable(mode: str, profile: str):
+        """Refuse a run that cannot honour its mode or a profile the engine cannot enforce."""
+        if mode not in MODES:
+            raise HTTPException(400, f"unknown mode {mode!r}; expected one of {', '.join(MODES)}")
+        if profile not in PROFILES:
+            raise HTTPException(400, f"engagement has unknown profile {profile!r}; "
+                                     f"expected one of {', '.join(PROFILES)}")
+        if mode in ("llm", "agent") and app.llm() is None:
+            raise HTTPException(400, f"mode {mode!r} requires a configured LLM provider; "
+                                     "configure one in Settings or start in deterministic mode")
+
     @api.post("/api/engagements/{eid}/start", dependencies=[Depends(auth)])
     def start(eid: str, body: dict | None = None):
-        r = app.db.one("SELECT status FROM engagements WHERE id=?", (eid,))
+        r = app.db.one("SELECT status, profile FROM engagements WHERE id=?", (eid,))
         if not r:
             raise HTTPException(404)
         if r["status"] not in ("draft", "done", "failed", "cancelled", "budget_exhausted"):
             raise HTTPException(409, f"cannot start from status {r['status']}")
         mode = (body or {}).get("mode", "deterministic")
+        _check_startable(mode, r["profile"])
         app.start_async(eid, mode)
         return {"started": True, "mode": mode}
 
@@ -255,7 +280,7 @@ def create_api(app: App) -> FastAPI:
 
     @api.post("/api/engagements/{eid}/resume", dependencies=[Depends(auth)])
     def resume(eid: str, body: dict | None = None):
-        r = app.db.one("SELECT status FROM engagements WHERE id=?", (eid,))
+        r = app.db.one("SELECT status, profile FROM engagements WHERE id=?", (eid,))
         if not r:
             raise HTTPException(404)
         if r["status"] not in ("draft", "paused", "failed", "cancelled", "budget_exhausted"):
@@ -264,6 +289,7 @@ def create_api(app: App) -> FastAPI:
         if t is not None and t.is_alive():
             raise HTTPException(409, "engagement worker already running")
         mode = (body or {}).get("mode", "deterministic")
+        _check_startable(mode, r["profile"])
         t = threading.Thread(target=app._run_guarded,
                              args=(app.orchestrator(), eid, mode), daemon=True)
         app._threads[eid] = t

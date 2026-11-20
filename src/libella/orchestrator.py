@@ -19,6 +19,7 @@ from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
 from .llm import LLM, LLMError
+from .policy import DEFAULT_PROFILE, permits
 from .scope import Scope
 from .tools import Registry
 from .tools.adapters import PARSERS
@@ -27,6 +28,7 @@ from .tools.runner import ToolRunner
 from .verifier import Verifier
 
 LEASE_S = 120
+MODES = ("deterministic", "llm", "agent")
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
          "code_audit", "api_audit", "container_scan", "graphql_audit"}
 
@@ -50,17 +52,26 @@ class Orchestrator:
         eng = self.db.one("SELECT * FROM engagements WHERE id=?", (engagement_id,))
         if eng is None:
             raise KeyError(engagement_id)
+        self._check_mode(mode)
         scope = Scope(json.loads(eng["scope_json"]))
         self.db.execute("UPDATE engagements SET status='running', started_at=? WHERE id=?",
                         (time.time(), engagement_id))
         self.db.emit(engagement_id, "engagement_started", {"mode": mode})
-        if mode == "agent" and self.llm:
+        if mode == "agent":
             self._plan_agent(engagement_id, scope, eng)
         else:
             self._plan_deterministic(engagement_id, scope, eng)
-            if mode == "llm" and self.llm:
+            if mode == "llm":
                 self._plan_llm(engagement_id, scope, eng)
         self._run_loop(engagement_id, scope, eng, mode)
+
+    def _check_mode(self, mode: str):
+        """Refuse a run that cannot be what it claims (no silent deterministic fallback)."""
+        if mode not in MODES:
+            raise ValueError(f"unknown mode {mode!r}; expected one of {', '.join(MODES)}")
+        if mode in ("llm", "agent") and self.llm is None:
+            raise ValueError(f"mode {mode!r} requires a configured LLM provider; configure one "
+                             "in Settings or start in deterministic mode")
 
     def cancel(self, engagement_id: str):
         self.db.execute("UPDATE engagements SET status='cancelled', finished_at=? WHERE id=?",
@@ -75,19 +86,41 @@ class Orchestrator:
 
     def resume(self, engagement_id: str, mode: str = "deterministic"):
         eng = self.db.one("SELECT * FROM engagements WHERE id=?", (engagement_id,))
+        self._check_mode(mode)
         scope = Scope(json.loads(eng["scope_json"]))
         self.db.execute("UPDATE engagements SET status='running' WHERE id=?", (engagement_id,))
-        self.db.emit(engagement_id, "engagement_resumed", {})
+        self.db.emit(engagement_id, "engagement_resumed", {"mode": mode})
         self._run_loop(engagement_id, scope, eng, mode)
+
+    # ---- policy ----
+
+    def _profile(self, engagement_id: str) -> str:
+        row = self.db.one("SELECT profile FROM engagements WHERE id=?", (engagement_id,))
+        return (row or {}).get("profile") or DEFAULT_PROFILE
+
+    def _policy_skip(self, engagement_id: str, unit: str, profile: str,
+                     intent_id: str | None = None):
+        """Skipped work is never silent: it lands in the report's limitations."""
+        payload = {"code": "policy_restriction", "unit": unit,
+                   "detail": f"{unit} needs a higher assessment profile than "
+                             f"{profile!r}: policy restriction"}
+        if intent_id:
+            payload["intent_id"] = intent_id
+        self.db.emit(engagement_id, "degradation", payload)
 
     # ---- planning ----
 
     def _add_intent(self, engagement_id, role, objective, depends=None, informed=None, assets=None):
+        profile = self._profile(engagement_id)
+        if not permits(role, profile):
+            self._policy_skip(engagement_id, role, profile)
+            return None
         iid = new_id("i")
         self.db.execute(
             "INSERT INTO intents(id, engagement_id, role, objective, status, depends_on_json, "
             "informed_by_json, asset_ids_json, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (iid, engagement_id, role, objective, "open", json.dumps(depends or []),
+            (iid, engagement_id, role, objective, "open",
+             json.dumps([d for d in (depends or []) if d]),
              json.dumps(informed or []), json.dumps(assets or []), time.time()),
         )
         self.db.emit(engagement_id, "intent_created", {"intent_id": iid, "role": role,
@@ -213,8 +246,13 @@ class Orchestrator:
                     planned.append(self._add_intent(engagement_id, role, obj[:500]))
             except LLMError as e:
                 self.db.emit(engagement_id, "degradation", {"code": "agent_planner_failed", "detail": str(e)})
+        planned = [i for i in planned if i]
         if not planned:
-            # fallback: deterministic plan provides the specialist intents
+            # fallback: deterministic plan provides the specialist intents, visibly
+            self.db.emit(engagement_id, "degradation",
+                         {"code": "agent_plan_fallback",
+                          "detail": "no specialist intents were planned; fell back to the "
+                                    "deterministic pipeline"})
             self._plan_deterministic(engagement_id, scope, eng)
             return
         verify_id = self._add_intent(engagement_id, "verify",
@@ -263,8 +301,8 @@ class Orchestrator:
                     self._finish(engagement_id, "done", "all intents resolved")
                     return
             try:
-                self._execute(engagement_id, scope, eng, intent, mode)
-                if self._complete(intent, "done"):
+                status, result = self._execute(engagement_id, scope, eng, intent, mode)
+                if self._complete(intent, status, result) and status == "done":
                     self.db.emit(engagement_id, "intent_done", {"intent_id": intent["id"]})
             except Exception as e:
                 if self._complete(intent, "blocked", {"error": str(e)}):
@@ -344,9 +382,15 @@ class Orchestrator:
     # ---- intent execution ----
 
     def _execute(self, engagement_id: str, scope: Scope, eng: dict, intent: dict,
-                 mode: str = "deterministic"):
+                 mode: str = "deterministic") -> tuple[str, dict]:
+        """Run one intent; return (intent status, result) so the caller records it honestly."""
         role = intent["role"]
         obj = intent["objective"]
+        profile = eng.get("profile") or DEFAULT_PROFILE
+        if not permits(role, profile):
+            # defense in depth: a pre-existing or model-proposed intent is not authority
+            self._policy_skip(engagement_id, role, profile, intent["id"])
+            return "exhausted", {"skipped": "policy_restriction", "profile": profile}
         self.db.emit(engagement_id, "intent_running", {"intent_id": intent["id"], "role": role})
         # agent mode: genuine specialist investigation via the autonomous runtime.
         # verification and reporting stay deterministic/independent in every mode.
@@ -355,8 +399,16 @@ class Orchestrator:
             if role in CHARTERS:
                 ar = AgentRunner(self.db, self.evidence, self.pipeline, self.probe,
                                  self.registry, self.runner, self.llm, scope, engagement_id)
-                ar.run(intent, role)
-                return
+                res = ar.run(intent, role)
+                result = {"agent_run": res["run_id"], "exit_reason": res["exit_reason"]}
+                if res["status"] != "completed":
+                    # a run that did not finish its investigation is not a pass
+                    self.db.emit(engagement_id, "degradation",
+                                 {"code": "agent_run_failed", "intent_id": intent["id"],
+                                  "detail": f"{role} run ended {res['exit_reason']}: "
+                                            f"{res.get('summary') or ''}"[:500]})
+                    return "blocked", result
+                return "done", result
         if role == "recon":
             self._do_recon(engagement_id, scope, obj, intent["id"])
         elif role == "crawl":
@@ -382,6 +434,7 @@ class Orchestrator:
             render_report(self.db, self.evidence, engagement_id)
         else:
             raise ValueError(f"unknown role {role}")
+        return "done", {}
 
     def _upsert_asset(self, engagement_id, kind, key, value=None, parent=None, by="recon"):
         existing = self.db.one("SELECT id FROM assets WHERE engagement_id=? AND kind=? AND key=?",
@@ -500,11 +553,24 @@ class Orchestrator:
                          {"intent_id": intent_id, "url": base})
             return
         checks = WebChecks(self.probe, engagement_id, scope)
+        profile = eng.get("profile") or DEFAULT_PROFILE
+        skipped: list[str] = []
+
+        def allow(unit: str) -> bool:
+            if permits(unit, profile):
+                return True
+            if unit not in skipped:
+                skipped.append(unit)
+            return False
+
         candidates = []
-        candidates += checks.security_headers(url)
-        candidates += checks.cors(url)
-        candidates += checks.sensitive_paths(url)
-        signals = checks.version_signals(url)
+        if allow("security_headers"):
+            candidates += checks.security_headers(url)
+        if allow("cors"):
+            candidates += checks.cors(url)
+        if allow("sensitive_paths"):
+            candidates += checks.sensitive_paths(url)
+        signals = checks.version_signals(url) if allow("version_signals") else []
         for s in signals:
             self.pipeline.record_observation(engagement_id, intent_id, "version_signal",
                                              f"{s['header']}: {s['value']} (not a finding)", s["evidence_id"])
@@ -523,33 +589,41 @@ class Orchestrator:
                 if ("/rest/" in ep or "/api/" in ep) and not ep.endswith((".js", ".css", ".ico")):
                     for guess in ("q", "id"):
                         gbase = ep
-                        candidates += checks.reflected_xss(gbase, guess)
-                        candidates += checks.sqli(gbase, guess)
+                        if allow("reflected_xss"):
+                            candidates += checks.reflected_xss(gbase, guess)
+                        if allow("sqli"):
+                            candidates += checks.sqli(gbase, guess)
                 continue
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(ep).query)
             base = ep.split("?")[0]
             for p in params:
-                candidates += checks.reflected_xss(base, p)
-                candidates += checks.sqli(base, p)
-                candidates += checks.ssti(base, p)
-                candidates += checks.path_traversal(base, p)
-                candidates += checks.open_redirect(base, p)
-        # login cookie check via forms
+                if allow("reflected_xss"):
+                    candidates += checks.reflected_xss(base, p)
+                if allow("sqli"):
+                    candidates += checks.sqli(base, p)
+                if allow("ssti"):
+                    candidates += checks.ssti(base, p)
+                if allow("path_traversal"):
+                    candidates += checks.path_traversal(base, p)
+                if allow("open_redirect"):
+                    candidates += checks.open_redirect(base, p)
+        # login cookie check via forms (posting credentials needs an active profile)
         auth = json.loads(eng["auth_json"])
-        for ident in auth.get("identities", []):
-            lu = ident.get("login_url")
-            if lu and scope.check_url(lu).allowed:
-                body = f"{ident.get('username_field','username')}={ident['username']}&{ident.get('password_field','password')}={ident['password']}"
-                candidates += checks.cookie_flags(lu, method="POST", body=body,
-                                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
+        if allow("auth_bypass"):
+            for ident in auth.get("identities", []):
+                lu = ident.get("login_url")
+                if lu and scope.check_url(lu).allowed:
+                    body = f"{ident.get('username_field','username')}={ident['username']}&{ident.get('password_field','password')}={ident['password']}"
+                    candidates += checks.cookie_flags(lu, method="POST", body=body,
+                                                      headers={"Content-Type": "application/x-www-form-urlencoded"})
         # operator-supplied lab/test hints (explicit, in-scope only)
         hints = auth.get("test_hints", {})
-        if "ssrf" in hints:
+        if "ssrf" in hints and allow("ssrf"):
             h = hints["ssrf"]
             if scope.check_url(h["internal_url"]).allowed:
                 candidates += checks.ssrf(h["url"], h["param"], h["internal_url"], h["marker"])
-        if "sqli_union" in hints:
+        if "sqli_union" in hints and allow("sqli_union"):
             h = hints["sqli_union"]
             candidates += checks.sqli_union(h["url"], h["param"], h["payload"], h["marker"])
         # parameter mining on common endpoint patterns
@@ -565,21 +639,26 @@ class Orchestrator:
                 continue
             pbase = full.split("?")[0]
             for p in parse_qs(urlparse(full).query):
-                candidates += checks.reflected_xss(pbase, p)
-                candidates += checks.sqli(pbase, p)
-                candidates += checks.ssti(pbase, p)
-                candidates += checks.path_traversal(pbase, p)
-                candidates += checks.open_redirect(pbase, p)
+                if allow("reflected_xss"):
+                    candidates += checks.reflected_xss(pbase, p)
+                if allow("sqli"):
+                    candidates += checks.sqli(pbase, p)
+                if allow("ssti"):
+                    candidates += checks.ssti(pbase, p)
+                if allow("path_traversal"):
+                    candidates += checks.path_traversal(pbase, p)
+                if allow("open_redirect"):
+                    candidates += checks.open_redirect(pbase, p)
         for ap in COMMON_API_PATHS:
-            if scope.check_url(base + ap).allowed:
+            if allow("cors") and scope.check_url(base + ap).allowed:
                 candidates += checks.cors(base + ap)
-        if scope.check_url(base + "/upload").allowed:
+        if allow("file_upload") and scope.check_url(base + "/upload").allowed:
             candidates += checks.file_upload(base + "/upload", base)
         # authenticated checks: login each identity, test auth bypass + IDOR
         import httpx
         for ident in auth.get("identities", []):
             lu = ident.get("login_url")
-            if not lu or not scope.check_url(lu).allowed:
+            if not allow("auth_bypass") or not lu or not scope.check_url(lu).allowed:
                 continue
             uf, pf = ident.get("username_field", "username"), ident.get("password_field", "password")
             candidates += checks.auth_bypass(lu, uf, pf)
@@ -601,6 +680,8 @@ class Orchestrator:
                 client.close()
         for cand in candidates:
             self.pipeline.submit_candidate(engagement_id, cand, intent_id)
+        if skipped:
+            self._policy_skip(engagement_id, ", ".join(skipped), profile, intent_id)
         self.db.emit(engagement_id, "checks_complete",
                      {"intent_id": intent_id, "candidates": len(candidates)})
 

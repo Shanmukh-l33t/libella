@@ -144,7 +144,8 @@ security model and known limits.
 - Fail-closed scope: empty scope is rejected at creation.
 - Metadata/link-local ranges blocked unless explicitly targeted.
 - Per-engagement rate, concurrency, duration, and cost budgets.
-- Profiles: passive, safe_active, advanced_validation (explicit opt-in).
+- Profiles: passive, safe_active, advanced_validation — enforced in planning and at
+  execution; skipped work is reported as a coverage limitation.
 - Emergency stop: cancel propagates to intents and subprocesses.
 - Localhost-only bind by default; token auth on every API route.
 - Credentials redacted from logs, evidence views, and reports.
