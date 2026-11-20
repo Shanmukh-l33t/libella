@@ -44,6 +44,14 @@ class Verifier:
                     return None  # tampered/unreadable proof is not proof
         return None
 
+    @staticmethod
+    def _replay_category(scope) -> str:
+        """Replay under a category the engagement actually permits."""
+        for c in ("web", "api", "infra", "recon"):
+            if c in scope.categories:
+                return c
+        return next(iter(scope.categories), "web")
+
     def verify(self, engagement_id: str, scope, finding_id: str) -> dict:
         f = self.db.one("SELECT * FROM findings WHERE id=? AND engagement_id=?",
                         (finding_id, engagement_id))
@@ -65,7 +73,7 @@ class Verifier:
         r = self.probe.request(
             engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
             headers=pr.get("headers"), body=pr.get("body"), tool="verifier_replay",
-            follow_redirects=False,
+            follow_redirects=False, category=self._replay_category(scope),
         )
         if not r.get("ok"):
             return self._record(finding_id, attempt, "replay", None,
@@ -193,7 +201,8 @@ class Verifier:
             return {"verdict": verdict, "detail": detail, "finding_id": finding_id}
         r = self.probe.request(engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
                                headers=pr.get("headers"), body=pr.get("body"),
-                               tool="retest", follow_redirects=False)
+                               tool="retest", follow_redirects=False,
+                               category=self._replay_category(scope))
         if not r.get("ok"):
             verdict, detail = "inconclusive", f"request failed: {r.get('error')}"
         else:
