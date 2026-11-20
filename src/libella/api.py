@@ -413,6 +413,11 @@ def create_api(app: App) -> FastAPI:
             from .report_pdf import render_pdf
             pdf = render_pdf(json.loads((p / "report.json").read_text()), p / "report.pdf")
             return FileResponse(pdf, media_type="application/pdf", filename=f"{eid}.pdf")
+        if format == "dojo":
+            from .export_dojo import defectdojo_export
+            body = defectdojo_export(json.loads((p / "report.json").read_text()))
+            return JSONResponse(body, headers={
+                "Content-Disposition": f'attachment; filename="libella-{eid}-defectdojo.json"'})
         return json.loads((p / "report.json").read_text())
 
     # ---------------- remediation tracking + historical comparison (WS-Report) ----

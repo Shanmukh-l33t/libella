@@ -42,14 +42,14 @@ export const settings = () => get<Settings>("/api/settings");
 export const mintTicket = () => post<{ ticket: string }>("/api/ticket").then((r) => r.ticket);
 
 /** Downloads use fetch so the bearer header travels instead of a token in the URL. */
-export async function downloadReport(eid: string, format: "md" | "sarif" | "pdf") {
+export async function downloadReport(eid: string, format: "md" | "sarif" | "pdf" | "dojo") {
   const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}`;
   const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
   if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
   const href = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = href;
-  a.download = `${eid}.${format}`;
+  a.download = format === "dojo" ? `libella-${eid}-defectdojo.json` : `${eid}.${format}`;
   a.click();
   URL.revokeObjectURL(href);
 }

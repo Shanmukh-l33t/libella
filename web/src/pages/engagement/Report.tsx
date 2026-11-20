@@ -11,7 +11,7 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
   const navigate = useNavigate();
   const { data, error, loading, reload } = useApi<Report>(`/api/engagements/${eid}/report?format=json&live=${live}`);
   const [dlError, setDlError] = useState<string | null>(null);
-  const download = (format: "md" | "sarif" | "pdf") => {
+  const download = (format: "md" | "sarif" | "pdf" | "dojo") => {
     setDlError(null);
     downloadReport(eid, format).catch((e) => setDlError(e instanceof Error ? e.message : String(e)));
   };
@@ -36,6 +36,7 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
           <Button size="sm" icon={<RefreshCw size={13} />} onClick={reload} loading={loading}>Regenerate</Button>
           <Button size="sm" icon={<Download size={13} />} onClick={() => download("md")}>Markdown</Button>
           <Button size="sm" icon={<Download size={13} />} onClick={() => download("sarif")}>SARIF</Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("dojo")}>DefectDojo</Button>
           <Button size="sm" icon={<Download size={13} />} title="Renders the same report.json through the PDF exporter"
             onClick={() => download("pdf")}>PDF</Button>
         </div>
