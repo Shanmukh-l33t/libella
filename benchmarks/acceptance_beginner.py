@@ -15,14 +15,11 @@ import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
-import uvicorn
+import httpx
 from playwright.sync_api import expect, sync_playwright
-
-from libella.api import App, create_api
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_TIMEOUT_S = int(os.environ.get("ACCEPTANCE_RUN_TIMEOUT", "1500"))
@@ -70,21 +67,28 @@ def main(out: Path):
     st = Stage()
     status = {"ok": False}
     with tempfile.TemporaryDirectory() as data:
-        os.environ.setdefault("LIBELLA_WEB_DIST", str(ROOT / "web/dist"))
-        app = App(Path(data) / "data")
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        host, port = sock.getsockname()
-        base = f"http://{host}:{port}"
-        server = uvicorn.Server(uvicorn.Config(create_api(app), log_level="warning"))
-        threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True).start()
+        port = free_port()
+        token = "acceptance-" + os.urandom(12).hex()
+        base = f"http://127.0.0.1:{port}"
+        backend = subprocess.Popen(
+            [sys.executable, "-m", "libella.main", "--data-dir", str(Path(data) / "data"),
+             "--port", str(port)],
+            env={**os.environ, "LIBELLA_TOKEN": token, "PYTHONPATH": str(ROOT / "src"),
+                 "LIBELLA_WEB_DIST": str(ROOT / "web/dist")},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        api = httpx.Client(base_url=base, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+
+        def eng_status(eid):
+            return api.get(f"/api/engagements/{eid}").json()
+
         try:
             def wait_up():
-                import httpx
-                for _ in range(100):
-                    if server.started:
-                        break
-                    time.sleep(0.1)
+                for _ in range(150):
+                    try:
+                        if api.get("/api/health").status_code == 200:
+                            break
+                    except httpx.HTTPError:
+                        time.sleep(0.2)
                 for _ in range(100):
                     try:
                         if httpx.get(target, timeout=1).status_code < 500:
@@ -103,7 +107,7 @@ def main(out: Path):
 
                 def connect():
                     page.goto(base)
-                    page.get_by_label("API token").fill(app.token)
+                    page.get_by_label("API token").fill(token)
                     page.get_by_role("button", name="Connect", exact=True).click()
                     expect(page.get_by_role("heading", name="Get started")).to_be_visible(timeout=15000)
                 st("1 fresh install: connect, Get started shown", connect)
@@ -136,7 +140,7 @@ def main(out: Path):
                     page.get_by_role("button", name="Start", exact=True).click()
                     deadline = time.time() + 30
                     while time.time() < deadline:
-                        if app.db.one("SELECT status FROM engagements WHERE id=?", (eid,))["status"] != "draft":
+                        if eng_status(eid)["status"] != "draft":
                             return
                         time.sleep(0.5)
                     raise RuntimeError("engagement did not leave draft after Start")
@@ -147,7 +151,7 @@ def main(out: Path):
                     t0 = time.time()
                     last = None
                     while time.time() - t0 < RUN_TIMEOUT_S:
-                        s = app.db.one("SELECT status FROM engagements WHERE id=?", (eid,))["status"]
+                        s = eng_status(eid)["status"]
                         if s == "running":
                             seen_running = True
                             if last is None or time.time() - last > 60:
@@ -156,22 +160,30 @@ def main(out: Path):
                         if s not in ("running", "draft"):
                             break
                         time.sleep(3)
-                    s = app.db.one("SELECT status, status_detail FROM engagements WHERE id=?", (eid,))
+                    s = eng_status(eid)
+                    done_at = time.time()
                     if s["status"] != "done":
                         raise RuntimeError(f"run ended {s['status']}: {s['status_detail']}")
                     assert seen_running, "never observed the running state"
-                    tools_run = app.db.query(
-                        "SELECT tool, error FROM tool_calls WHERE engagement_id=? AND scope_decision LIKE 'executed%'", (eid,))
-                    return {"tool_calls_executed": len(tools_run),
-                            "tools": sorted({t["tool"] for t in tools_run})}
+                    # the live workspace must reflect completion without a manual reload
+                    # the engagement header (h1 + status badge) must flip to Done without a reload
+                    expect(page.locator("h1").first.locator("xpath=..")).to_contain_text("Done", timeout=30000)
+                    ui_lag = round(time.time() - done_at, 1)
+                    page.screenshot(path=out / "a3-done.png")
+                    calls = api.get(f"/api/engagements/{eid}/tool-calls").json()
+                    ran = [c for c in calls if str(c.get("scope_decision", "")).startswith("executed")]
+                    return {"tool_calls_executed": len(ran), "tools": sorted({c["tool"] for c in ran}),
+                            "ui_done_lag_s": ui_lag}
                 run = st("5 run to completion with live state", live)
 
                 def findings():
                     page.get_by_role("tab", name="Findings").click(timeout=20000)
-                    rows = app.db.query("SELECT title, state FROM findings WHERE engagement_id=?", (eid,))
+                    expect(page).to_have_url(f"{base}/engagements/{eid}?tab=findings", timeout=10000)
+                    rows = api.get(f"/api/engagements/{eid}/findings").json()
                     verified = [r for r in rows if r["state"] in ("validated", "reported", "retested_persists")]
                     assert verified, f"no independently verified findings ({len(rows)} total)"
                     expect(page.get_by_text(verified[0]["title"], exact=False).first).to_be_visible(timeout=15000)
+                    expect(page.locator("td", has_text="Validated").first).to_be_visible(timeout=15000)
                     page.screenshot(path=out / "a4-findings.png")
                     return {"findings": len(rows), "verified": len(verified)}
                 fnd = st("6 review genuine findings in the UI", findings)
@@ -194,8 +206,8 @@ def main(out: Path):
                     dl.value.save_as(pdf)
                     from pypdf import PdfReader
                     text = "\n".join(p.extract_text() or "" for p in PdfReader(str(pdf)).pages)
-                    title = app.db.one("SELECT title FROM findings WHERE engagement_id=? AND state IN "
-                                       "('validated','reported') LIMIT 1", (eid,))["title"]
+                    title = next(f["title"] for f in api.get(f"/api/engagements/{eid}/findings").json()
+                                 if f["state"] in ("validated", "reported"))
                     assert title.split()[0] in text, "verified finding missing from reopened PDF"
                     assert "Coverage" in text or "limitation" in text.lower() or "Degradation" in text
                     return {"pdf_bytes": pdf.stat().st_size, "pdf_pages": len(PdfReader(str(pdf)).pages)}
@@ -205,10 +217,9 @@ def main(out: Path):
                 browser.close()
             status = {"ok": True, "engagement": eid, "run": run, "findings": fnd, "report": rpt}
         finally:
-            server.should_exit = True
+            backend.terminate()
             lab.terminate()
-            time.sleep(0.5)
-            sock.close()
+            backend.wait(10)
             (out / "acceptance_beginner.json").write_text(json.dumps({**status, "stages": st.log}, indent=2))
     print(json.dumps(status))
 
