@@ -177,7 +177,7 @@ def compare_engagements(db: DB, eng_a: str, eng_b: str) -> dict:
     b_rows = db.query(f"SELECT {cols} FROM findings WHERE engagement_id=?", (eng_b,))
     a, b = _index(a_rows), _index(b_rows)
 
-    new, fixed, persisting, changed = [], [], [], []
+    new, fixed, persisting, changed, absent = [], [], [], [], []
     for key, fb in b.items():
         fa = a.get(key)
         if fa is None:
@@ -194,7 +194,7 @@ def compare_engagements(db: DB, eng_a: str, eng_b: str) -> dict:
             persisting.append({**fb, "dedup_key": key, "previous_state": fa["state"]})
     for key, fa in a.items():
         if key not in b:
-            fixed.append({**fa, "dedup_key": key, "reason": "absent_in_b"})
+            absent.append({**fa, "dedup_key": key, "reason": "absent_in_b"})
 
     retests = {}
     for r in db.query("SELECT finding_id, verdict, detail, created_at FROM retests "
@@ -202,7 +202,7 @@ def compare_engagements(db: DB, eng_a: str, eng_b: str) -> dict:
                       "ORDER BY created_at", (eng_b,)):
         retests.setdefault(r["finding_id"], []).append(
             {"verdict": r["verdict"], "detail": r["detail"], "created_at": r["created_at"]})
-    for bucket in (new, fixed, persisting, changed):
+    for bucket in (new, fixed, persisting, changed, absent):
         for f in bucket:
             f["retests"] = retests.get(f["id"], [])
 
@@ -211,9 +211,9 @@ def compare_engagements(db: DB, eng_a: str, eng_b: str) -> dict:
     return {
         "a": {"id": eng_a, "name": name.get(eng_a), "findings": len(a_rows)},
         "b": {"id": eng_b, "name": name.get(eng_b), "findings": len(b_rows)},
-        "new": new, "fixed": fixed, "persisting": persisting, "severity_changed": changed,
+        "not_observed": absent, "new": new, "fixed": fixed, "persisting": persisting, "severity_changed": changed,
         "counts": {"new": len(new), "fixed": len(fixed), "persisting": len(persisting),
-                   "severity_changed": len(changed)},
+                   "severity_changed": len(changed), "not_observed": len(absent)},
         "retest_verdicts": {f["id"]: [r["verdict"] for r in f["retests"]]
                             for f in new + persisting + changed if f["retests"]},
     }

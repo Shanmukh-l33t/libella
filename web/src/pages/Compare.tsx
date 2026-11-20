@@ -60,9 +60,10 @@ export default function Compare() {
         </div>
       ) : cmp.loading && !d ? <Skeleton className="h-64 w-full" /> : !d ? <ErrorNote error={cmp.error} /> : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
             <Mini label="New in follow-up" value={d.counts?.new ?? 0} />
-            <Mini label="Fixed / gone" value={d.counts?.fixed ?? 0} tone={d.counts?.fixed ? "success" : undefined} />
+            <Mini label="Retested fixed" value={d.counts?.fixed ?? 0} tone={d.counts?.fixed ? "success" : undefined} />
+            <Mini label="Not observed" value={d.counts?.not_observed ?? 0} />
             <Mini label="Persisting" value={d.counts?.persisting ?? 0} />
             <Mini label="Severity changed" value={d.counts?.severity_changed ?? 0} />
             <Mini label="Findings a → b" value={`${d.a?.findings ?? 0} → ${d.b?.findings ?? 0}`} />
@@ -70,7 +71,8 @@ export default function Compare() {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <DiffList title={`New in ${d.b?.name || "follow-up"}`} hint="Not present in the baseline (by dedup key)." rows={d.new || []} empty="nothing new" />
-            <DiffList title="Fixed or absent" hint="Retested fixed, or no longer detected in the follow-up." rows={d.fixed || []} empty="nothing fixed or absent" tone="success" />
+            <DiffList title="Retested fixed" hint="Marked fixed by a follow-up retest." rows={d.fixed || []} empty="no confirmed fixes" tone="success" />
+            <DiffList title="Not observed" hint="Absent from the follow-up. This is not evidence of a fix." rows={d.not_observed || []} empty="no missing baseline findings" />
             <DiffList title="Persisting" hint="Same dedup key, still present. A retest verdict decides whether it is really fixed." rows={d.persisting || []} empty="nothing persisting" />
             <SeverityList rows={d.severity_changed || []} />
           </div>

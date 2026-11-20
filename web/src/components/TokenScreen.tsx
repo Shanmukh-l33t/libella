@@ -7,7 +7,7 @@ export default function TokenScreen({ onAuthed }: { onAuthed: () => void }) {
   const [token, setTok] = useState(getToken());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [health, setHealth] = useState<{ version?: string; tools?: unknown[] } | null>(null);
+  const [health, setHealth] = useState<{ version?: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/health").then((r) => r.json()).then(setHealth).catch(() => setHealth(null));
@@ -58,7 +58,7 @@ export default function TokenScreen({ onAuthed }: { onAuthed: () => void }) {
         <div className="mt-4 flex items-center justify-between px-1 text-xs text-ink-500">
           <span className="inline-flex items-center gap-1.5">
             <ShieldCheck size={13} className={health ? "text-sev-low" : "text-ink-300"} />
-            {health ? `Backend ${health.version || ""} · ${health.tools?.length ?? 0} tools` : "Backend unreachable"}
+            {health ? `Backend ${health.version || ""}` : "Backend unreachable"}
           </span>
           <span>localhost only</span>
         </div>

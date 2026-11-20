@@ -136,9 +136,10 @@ export interface CompareResult {
   b: { id: string; name: string; findings: number };
   new: Finding[];
   fixed: Finding[];
+  not_observed: Finding[];
   persisting: Finding[];
   severity_changed: (Finding & { previous_severity?: string; direction?: "worse" | "better" })[];
-  counts: { new: number; fixed: number; persisting: number; severity_changed: number };
+  counts: { new: number; not_observed: number; fixed: number; persisting: number; severity_changed: number };
   retest_verdicts?: Record<string, string[]>;
 }
 
