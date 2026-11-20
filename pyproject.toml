@@ -41,3 +41,4 @@ select = ["E4", "E7", "E9", "F", "W"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--import-mode=importlib"  # same-basename test files in different dirs
