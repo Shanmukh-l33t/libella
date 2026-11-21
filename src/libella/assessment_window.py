@@ -52,3 +52,15 @@ def stored_window_refusal(db, engagement_id: str) -> str | None:
     except ValueError as exc:
         return f"invalid assessment window: {exc}"
     return None if allowed else detail
+
+
+def stored_stop_refusal(db, engagement_id: str) -> str | None:
+    """Why this engagement may not touch the target at all right now.
+
+    One gate for every egress path (HTTP probe, tool subprocesses, browser crawl):
+    an operator pause or cancel stops traffic, and a closed window stops it too.
+    """
+    row = db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,))
+    if row and row["status"] in ("paused", "cancelled"):
+        return f"engagement is {row['status']}: target traffic is stopped"
+    return stored_window_refusal(db, engagement_id)

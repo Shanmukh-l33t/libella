@@ -20,16 +20,22 @@ from libella.tools import ToolSpec
 from libella.tools.runner import ToolRunner
 
 
+LAB_SEEN: list[str] = []  # paths that actually reached the target in the lab fixture
+
+
 @pytest.fixture
 def lab():
+    LAB_SEEN.clear()
     app = Flask("exec-controls-lab")
 
     @app.get("/")
     def index():
+        LAB_SEEN.append("/")
         return "<html><body>home</body></html>"
 
     @app.get("/search")
     def search():
+        LAB_SEEN.append("/search")
         return f"<html><body>Results: {request.args.get('q', '')}</body></html>"
 
     srv = make_server("127.0.0.1", 0, app)
@@ -311,6 +317,79 @@ def test_cancelling_the_engagement_kills_a_running_tool(app, lab):
     assert not t.is_alive(), "cancelled engagement left the subprocess running"
     assert elapsed < 5, f"cancel took {elapsed:.1f}s"
     assert result["status"] == "cancelled", result
+
+
+def test_pausing_stops_a_running_tool_and_the_probe(app, lab):
+    """Pause is a control, not a label: it kills the tool and stops probe traffic."""
+    eid = _eng(app, _spec(lab), status="running")
+    spec = ToolSpec(name="slow", description="", category="recon", binary="sh", timeout_s=120,
+                    params={"target": {"type": "string"}}, required=["target"],
+                    handler=lambda p, d: ["sh", "-c", "sleep 30"])
+    result = {}
+
+    def run():
+        result.update(app.runner.run(spec, {"target": "127.0.0.1"}, Scope(_spec(lab)),
+                                     eid, None, target="127.0.0.1", category="recon"))
+
+    t = threading.Thread(target=run)
+    started = time.time()
+    t.start()
+    time.sleep(0.4)
+    app.orchestrator().pause(eid)
+    t.join(10)
+    assert not t.is_alive(), "a paused engagement left the subprocess running"
+    assert time.time() - started < 5
+    assert result["status"] == "cancelled" and "paused" in result["stopped_by"], result
+
+    r = app.probe.request(eid, Scope(_spec(lab)), f"{lab}/", category="recon")
+    assert r["ok"] is False and "paused" in r["error"], r
+    assert LAB_SEEN == [], "a paused engagement still sent a request to the target"
+
+
+def test_cancelling_stops_the_probe_too(app, lab):
+    eid = _eng(app, _spec(lab), status="running")
+    app.orchestrator().cancel(eid)
+    r = app.probe.request(eid, Scope(_spec(lab)), f"{lab}/", category="recon")
+    assert r["ok"] is False and "cancelled" in r["error"], r
+    assert LAB_SEEN == [], "a cancelled engagement still sent a request to the target"
+
+
+def test_closed_window_kills_a_running_tool(app, lab):
+    """A window that closes mid-tool ends the tool, not the tool's own timeout."""
+    now = time.time()
+    eid = _eng(app, _spec(lab), window=(now - 60, now + 0.6), status="running")
+    spec = ToolSpec(name="slow", description="", category="recon", binary="sh", timeout_s=120,
+                    params={"target": {"type": "string"}}, required=["target"],
+                    handler=lambda p, d: ["sh", "-c", "sleep 30"])
+    result = {}
+    t = threading.Thread(target=lambda: result.update(
+        app.runner.run(spec, {"target": "127.0.0.1"}, Scope(_spec(lab)), eid, None,
+                       target="127.0.0.1", category="recon")))
+    started = time.time()
+    t.start()
+    t.join(10)
+    assert not t.is_alive(), "the tool outlived the authorized window"
+    assert time.time() - started < 5
+    assert "window_end" in result["stopped_by"], result
+
+
+def test_pause_reopens_the_interrupted_intent(app, lab, monkeypatch):
+    """A pause lands mid-intent: the step is re-opened for resume, not recorded as done."""
+    eid = _eng(app, _spec(lab), status="running")
+    app.db.execute("INSERT INTO intents(id, engagement_id, role, objective, status, created_at) "
+                   "VALUES('i_open', ?, 'recon', 'Fingerprint', 'open', ?)", (eid, time.time()))
+    orch = app.orchestrator()
+
+    def paused_mid_step(*a, **k):
+        app.db.execute("UPDATE engagements SET status='paused' WHERE id=?", (eid,))
+        return "done", {"partial": True}
+
+    monkeypatch.setattr(orch, "_execute", paused_mid_step)
+    eng = _row(app, eid)
+    orch._run_loop(eid, Scope(json.loads(eng["scope_json"])), eng, "deterministic")
+    it = app.db.one("SELECT * FROM intents WHERE id='i_open'")
+    assert it["status"] == "open" and it["result_json"] is None, it
+    assert _row(app, eid)["status"] == "paused", _row(app, eid)["status"]
 
 
 def test_tool_timeout_cap_is_kept(app, lab):

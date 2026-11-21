@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from ..assessment_window import stored_window_refusal
+from ..assessment_window import stored_stop_refusal
 from ..db import DB, new_id
 from ..evidence import EvidenceStore
 from ..report import redact_headers
@@ -109,7 +109,7 @@ class HttpProbe:
             hops = 0
             last = None
             while True:
-                refusal = stored_window_refusal(self.db, engagement_id)
+                refusal = stored_stop_refusal(self.db, engagement_id)
                 if refusal:
                     self.db.emit(engagement_id, "scope_refusal", {"reason": refusal, "tool": tool})
                     return {"ok": False, "error": refusal}

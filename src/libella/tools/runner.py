@@ -4,8 +4,9 @@ The LLM never composes a command line. Adapters build argv from typed
 params; this runner re-checks scope, executes without a shell, caps output,
 and writes an audit row for every call (including refusals).
 
-A subprocess is killed (process group) when its timeout expires or the
-engagement is cancelled, so a cancel is not bounded by the tool's timeout.
+A subprocess is killed (process group) when its timeout expires, when the
+engagement is cancelled or paused, or when its authorized window closes, so
+a control is never bounded by the tool's own timeout.
 """
 import json
 import os
@@ -15,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+from ..assessment_window import stored_stop_refusal
 from ..db import DB, new_id
 from ..evidence import EvidenceStore
 from ..scope import Decision, Scope
@@ -114,8 +116,9 @@ class ToolRunner:
         stdout, stderr, exit_code, timed_out, truncated = _run_capped(
             argv, rundir, {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(rundir),
                            "LANG": "C.UTF-8", "NO_COLOR": "1"}, spec.timeout_s,
-            should_stop=lambda: self._cancelled(engagement_id))
-        cancelled = not timed_out and self._cancelled(engagement_id)
+            should_stop=lambda: self._stop_reason(engagement_id) is not None)
+        stopped_by = None if timed_out else self._stop_reason(engagement_id)
+        cancelled = stopped_by is not None
 
         duration_ms = (time.time() - started) * 1000
         artifact = self.evidence.put(
@@ -123,6 +126,7 @@ class ToolRunner:
             json.dumps({"argv": argv, "stdout": stdout.decode(errors="replace"),
                         "stderr": stderr.decode(errors="replace"), "exit_code": exit_code,
                         "timed_out": timed_out, "cancelled": cancelled,
+                        "stopped_by": stopped_by,
                         "truncated": truncated}, default=str).encode(),
             "tool_output",
         )
@@ -140,17 +144,20 @@ class ToolRunner:
             "truncated": truncated,
             "partial": timed_out or cancelled,
             "cancelled": cancelled,
+            "stopped_by": stopped_by,
         }
+        if stopped_by:
+            # why it stopped, so a caller reporting r["error"] says something true
+            result["error"] = stopped_by
         if timed_out:
             result["degradation"] = "timeout_partial_never_complete"
         elif cancelled:
             result["degradation"] = "cancelled_partial_never_complete"
         return result
 
-    def _cancelled(self, engagement_id: str) -> bool:
-        """A cancelled engagement must not keep a subprocess alive."""
-        row = self.db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,))
-        return bool(row) and row["status"] == "cancelled"
+    def _stop_reason(self, engagement_id: str) -> str | None:
+        """A cancelled/paused engagement, or a closed window, must not keep a subprocess alive."""
+        return stored_stop_refusal(self.db, engagement_id)
 
     def _audit(self, call_id, engagement_id, intent_id, tool, argv, target,
                decision, exit_code, started, artifact_id, error):

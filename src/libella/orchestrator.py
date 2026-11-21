@@ -364,6 +364,14 @@ class Orchestrator:
             try:
                 with self.gate.slot():
                     status, result = self._execute(engagement_id, scope, eng, intent, mode)
+                if self._paused(engagement_id):
+                    # a pause interrupts in-flight work: re-open the intent so resume
+                    # redoes it instead of recording a partial step as done
+                    self.db.execute(
+                        "UPDATE intents SET status='open', claim_token=NULL, finished_at=NULL, "
+                        "result_json=NULL WHERE id=? AND claim_token=?",
+                        (intent["id"], intent.get("claim_token")))
+                    return
                 if self._complete(intent, status, result) and status == "done":
                     self.db.emit(engagement_id, "intent_done", {"intent_id": intent["id"]})
             except Exception as e:
@@ -408,6 +416,10 @@ class Orchestrator:
                 it["claim_token"] = token
                 return it
         return None
+
+    def _paused(self, engagement_id: str) -> bool:
+        row = self.db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,))
+        return bool(row) and row["status"] == "paused"
 
     def _sweep_leases(self, engagement_id: str):
         self.db.execute(
