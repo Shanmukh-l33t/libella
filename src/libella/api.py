@@ -278,6 +278,7 @@ def create_api(app: App) -> FastAPI:
         r["scope"] = json.loads(r.pop("scope_json"))
         r["budgets"] = json.loads(r.pop("budgets_json"))
         r["auth"] = _public_auth(json.loads(r.pop("auth_json")))
+        r["standards"] = json.loads(r.pop("standards_json") or "{}")
         r["spend"] = app.llm().spend(eid) if app.llm() else {"cost_usd": 0}
         return r
 
@@ -654,25 +655,53 @@ def create_api(app: App) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(404, f"engagement not found: {exc}")
 
-    # ---- OWASP WSTG 4.2 coverage ledger (manual/defensive review, no execution) ----
-    @api.get("/api/engagements/{eid}/coverage/wstg", dependencies=[Depends(auth)])
-    def wstg_coverage(eid: str):
+    # ---- standards coverage ledger (per-requirement accounting, no execution) ----
+    from .standards import available as _standards_available
+
+    @api.get("/api/standards", dependencies=[Depends(auth)])
+    def list_standards():
+        return {"standards": _standards_available()}
+
+    @api.get("/api/engagements/{eid}/coverage/{framework}", dependencies=[Depends(auth)])
+    def coverage_workspace(eid: str, framework: str = "wstg"):
         from .coverage import workspace
         try:
-            return workspace(app.db, eid)
+            return workspace(app.db, eid, framework)
+        except KeyError as exc:  # unknown standard id
+            raise HTTPException(404, f"unknown standard: {exc}") from None
         except LookupError as exc:
             raise HTTPException(404, str(exc))
 
-    @api.put("/api/engagements/{eid}/coverage/wstg/{test_id}", dependencies=[Depends(auth)])
-    def wstg_record(eid: str, test_id: str, body: dict):
+    @api.put("/api/engagements/{eid}/coverage/{framework}/{requirement_id}",
+             dependencies=[Depends(auth)])
+    def coverage_record(eid: str, framework: str, requirement_id: str, body: dict):
         from .coverage import record
         try:
-            return record(app.db, eid, test_id, body.get("status"), body.get("note"),
-                          body.get("evidence_id"))
-        except LookupError as exc:
+            return record(app.db, eid, requirement_id, body.get("status"), body.get("note"),
+                          body.get("evidence_id"), framework)
+        except LookupError as exc:  # covers KeyError for an unknown standard id
             raise HTTPException(404, str(exc))
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+
+    @api.put("/api/engagements/{eid}/standards", dependencies=[Depends(auth)])
+    def set_standards(eid: str, body: dict):
+        """Select the verification level per standard. Only what policy can honour."""
+        from .standards import levels
+        if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
+            raise HTTPException(404, "engagement not found")
+        chosen = {}
+        for framework, cfg in (body or {}).items():
+            allowed = levels(framework)
+            if not allowed:
+                raise HTTPException(400, f"{framework} has no selectable verification level")
+            level = (cfg or {}).get("level")
+            if level not in allowed:
+                raise HTTPException(400, f"{framework} level must be one of {allowed}")
+            chosen[framework] = {"level": level}
+        app.db.execute("UPDATE engagements SET standards_json=? WHERE id=?",
+                       (json.dumps(chosen), eid))
+        return chosen
 
     @api.get("/api/tools", dependencies=[Depends(auth)])
     def tools():

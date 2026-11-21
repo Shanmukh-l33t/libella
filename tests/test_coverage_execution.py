@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from libella import check_mapping, coverage  # noqa: E402
+from libella import check_mapping, coverage, standards  # noqa: E402
 from libella.api import App, create_api  # noqa: E402
 from libella.report import render_report  # noqa: E402
 
@@ -95,7 +95,7 @@ def test_mapping_only_claims_tests_the_check_executes():
     # every mapped unit must justify every ID with a rationale and a real unit name
     for unit, row in check_mapping.CHECKS.items():
         assert row["why"] and len(row["why"]) > 20
-        assert all(t in coverage.TITLES for t in row["wstg"]), unit
+        assert all(t in standards.spec("wstg")["requirements"] for t in row["wstg"]), unit
     # untested surfaces are absent, not assumed
     assert "WSTG-CLNT-08" not in check_mapping.TESTS
     assert "WSTG-INPV-05" in check_mapping.tests_for("sqli")

@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from libella import coverage  # noqa: E402
+from libella import standards  # noqa: E402
 from libella.api import App, create_api  # noqa: E402
 
 SCOPE = {"targets": [{"kind": "url", "value": "http://127.0.0.1:8801"}],
@@ -51,12 +51,14 @@ def _put(client, test_id, **body):
 
 
 def test_catalog_is_the_wstg_4_2_test_list():
-    ids = [t[0] for t in coverage.CATALOG]
+    catalog = [(rid, standards.requirement("wstg", rid)["title"])
+               for rid in standards.requirements("wstg")]
+    ids = [t[0] for t in catalog]
     assert len(ids) == 96 and len(set(ids)) == 96
-    assert coverage.FRAMEWORK["version"] == "4.2"
+    assert standards.framework("wstg")["version"] == "4.2"
     assert {i.split("-")[1] for i in ids} == set(CATEGORIES)
-    assert all(t[1] and t[1] == t[1].strip() for t in coverage.CATALOG)
-    by_id = dict(coverage.CATALOG)
+    assert all(t[1] and t[1] == t[1].strip() for t in catalog)
+    by_id = dict(catalog)
     assert by_id["WSTG-INFO-01"] == "Conduct Search Engine Discovery Reconnaissance for Information Leakage"
     assert by_id["WSTG-INPV-19"] == "Testing for Server-Side Request Forgery"
     assert by_id["WSTG-CLNT-13"] == "Testing for Cross Site Script Inclusion"

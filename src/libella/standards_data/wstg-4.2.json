@@ -1,0 +1,827 @@
+{
+ "framework": {
+  "id": "OWASP-WSTG",
+  "version": "4.2",
+  "title": "OWASP Web Security Testing Guide",
+  "source": "https://owasp.org/www-project-web-security-testing-guide/v42/",
+  "license": "CC BY-SA 4.0",
+  "retrieved": "2026-11-20",
+  "note": "Curated test catalog transcribed from the OWASP WSTG v4.2 test index; ids and titles follow the published guide."
+ },
+ "requirements": [
+  {
+   "id": "WSTG-INFO-01",
+   "title": "Conduct Search Engine Discovery Reconnaissance for Information Leakage",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-02",
+   "title": "Fingerprint Web Server",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-03",
+   "title": "Review Webserver Metafiles for Information Leakage",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-04",
+   "title": "Enumerate Applications on Webserver",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-05",
+   "title": "Review Webpage Content for Information Leakage",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-06",
+   "title": "Identify Application Entry Points",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-07",
+   "title": "Map Execution Paths Through Application",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-08",
+   "title": "Fingerprint Web Application Framework",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-09",
+   "title": "Fingerprint Web Application",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INFO-10",
+   "title": "Map Application Architecture",
+   "chapter": "WSTG-INFO",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-01",
+   "title": "Test Network Infrastructure Configuration",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-02",
+   "title": "Test Application Platform Configuration",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-03",
+   "title": "Test File Extensions Handling for Sensitive Information",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-04",
+   "title": "Review Old Backup and Unreferenced Files for Sensitive Information",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-05",
+   "title": "Enumerate Infrastructure and Application Admin Interfaces",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-06",
+   "title": "Test HTTP Methods",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-07",
+   "title": "Test HTTP Strict Transport Security",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-08",
+   "title": "Test RIA Cross Domain Policy",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-09",
+   "title": "Test File Permission",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-10",
+   "title": "Test for Subdomain Takeover",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CONF-11",
+   "title": "Test Cloud Storage",
+   "chapter": "WSTG-CONF",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-IDNT-01",
+   "title": "Test Role Definitions",
+   "chapter": "WSTG-IDNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-IDNT-02",
+   "title": "Test User Registration Process",
+   "chapter": "WSTG-IDNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-IDNT-03",
+   "title": "Test Account Provisioning Process",
+   "chapter": "WSTG-IDNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-IDNT-04",
+   "title": "Testing for Account Enumeration and Guessable User Account",
+   "chapter": "WSTG-IDNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-IDNT-05",
+   "title": "Testing for Weak or Unenforced Username Policy",
+   "chapter": "WSTG-IDNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-01",
+   "title": "Testing for Credentials Transported over an Encrypted Channel",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-02",
+   "title": "Testing for Default Credentials",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-03",
+   "title": "Testing for Weak Lock Out Mechanism",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-04",
+   "title": "Testing for Bypassing Authentication Schema",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-05",
+   "title": "Testing for Vulnerable Remember Password",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-06",
+   "title": "Testing for Browser Cache Weaknesses",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-07",
+   "title": "Testing for Weak Password Policy",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-08",
+   "title": "Testing for Weak Security Question Answer",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-09",
+   "title": "Testing for Weak Password Change or Reset Functionalities",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHN-10",
+   "title": "Testing for Weaker Authentication in Alternative Channel",
+   "chapter": "WSTG-ATHN",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHZ-01",
+   "title": "Testing Directory Traversal File Include",
+   "chapter": "WSTG-ATHZ",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHZ-02",
+   "title": "Testing for Bypassing Authorization Schema",
+   "chapter": "WSTG-ATHZ",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHZ-03",
+   "title": "Testing for Privilege Escalation",
+   "chapter": "WSTG-ATHZ",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ATHZ-04",
+   "title": "Testing for Insecure Direct Object References",
+   "chapter": "WSTG-ATHZ",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-01",
+   "title": "Testing for Session Management Schema",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-02",
+   "title": "Testing for Cookies Attributes",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-03",
+   "title": "Testing for Session Fixation",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-04",
+   "title": "Testing for Exposed Session Variables",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-05",
+   "title": "Testing for Cross Site Request Forgery",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-06",
+   "title": "Testing for Logout Functionality",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-07",
+   "title": "Testing Session Timeout",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-08",
+   "title": "Testing for Session Puzzling",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-SESS-09",
+   "title": "Testing for Session Hijacking",
+   "chapter": "WSTG-SESS",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-01",
+   "title": "Testing for Reflected Cross Site Scripting",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-02",
+   "title": "Testing for Stored Cross Site Scripting",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-03",
+   "title": "Testing for HTTP Verb Tampering",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-04",
+   "title": "Testing for HTTP Parameter Pollution",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-05",
+   "title": "Testing for SQL Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-06",
+   "title": "Testing for LDAP Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-07",
+   "title": "Testing for XML Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-08",
+   "title": "Testing for SSI Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-09",
+   "title": "Testing for XPath Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-10",
+   "title": "Testing for IMAP SMTP Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-11",
+   "title": "Testing for Code Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-12",
+   "title": "Testing for Command Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-13",
+   "title": "Testing for Format String Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-14",
+   "title": "Testing for Incubated Vulnerability",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-15",
+   "title": "Testing for HTTP Splitting Smuggling",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-16",
+   "title": "Testing for HTTP Incoming Requests",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-17",
+   "title": "Testing for Host Header Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-18",
+   "title": "Testing for Server-side Template Injection",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-INPV-19",
+   "title": "Testing for Server-Side Request Forgery",
+   "chapter": "WSTG-INPV",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ERRH-01",
+   "title": "Testing for Improper Error Handling",
+   "chapter": "WSTG-ERRH",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-ERRH-02",
+   "title": "Testing for Stack Traces",
+   "chapter": "WSTG-ERRH",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CRYP-01",
+   "title": "Testing for Weak Transport Layer Security",
+   "chapter": "WSTG-CRYP",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CRYP-02",
+   "title": "Testing for Padding Oracle",
+   "chapter": "WSTG-CRYP",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CRYP-03",
+   "title": "Testing for Sensitive Information Sent via Unencrypted Channels",
+   "chapter": "WSTG-CRYP",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CRYP-04",
+   "title": "Testing for Weak Encryption",
+   "chapter": "WSTG-CRYP",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-01",
+   "title": "Test Business Logic Data Validation",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-02",
+   "title": "Test Ability to Forge Requests",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-03",
+   "title": "Test Integrity Checks",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-04",
+   "title": "Test for Process Timing",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-05",
+   "title": "Test Number of Times a Function Can Be Used Limits",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-06",
+   "title": "Testing for the Circumvention of Work Flows",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-07",
+   "title": "Test Defenses Against Application Misuse",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-08",
+   "title": "Test Upload of Unexpected File Types",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-BUSL-09",
+   "title": "Test Upload of Malicious Files",
+   "chapter": "WSTG-BUSL",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-01",
+   "title": "Testing for DOM-Based Cross Site Scripting",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-02",
+   "title": "Testing for JavaScript Execution",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-03",
+   "title": "Testing for HTML Injection",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-04",
+   "title": "Testing for Client-side URL Redirect",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-05",
+   "title": "Testing for CSS Injection",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-06",
+   "title": "Testing for Client-side Resource Manipulation",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-07",
+   "title": "Testing Cross Origin Resource Sharing",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-08",
+   "title": "Testing for Cross Site Flashing",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-09",
+   "title": "Testing for Clickjacking",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-10",
+   "title": "Testing WebSockets",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-11",
+   "title": "Testing Web Messaging",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-12",
+   "title": "Testing Browser Storage",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  },
+  {
+   "id": "WSTG-CLNT-13",
+   "title": "Testing for Cross Site Script Inclusion",
+   "chapter": "WSTG-CLNT",
+   "section": null,
+   "level": null,
+   "cwe": []
+  }
+ ],
+ "chapters": [
+  {
+   "id": "WSTG-INFO",
+   "name": "Information Gathering"
+  },
+  {
+   "id": "WSTG-CONF",
+   "name": "Configuration and Deployment Management Testing"
+  },
+  {
+   "id": "WSTG-IDNT",
+   "name": "Identity Management Testing"
+  },
+  {
+   "id": "WSTG-ATHN",
+   "name": "Authentication Testing"
+  },
+  {
+   "id": "WSTG-ATHZ",
+   "name": "Authorization Testing"
+  },
+  {
+   "id": "WSTG-SESS",
+   "name": "Session Management Testing"
+  },
+  {
+   "id": "WSTG-INPV",
+   "name": "Input Validation Testing"
+  },
+  {
+   "id": "WSTG-ERRH",
+   "name": "Testing for Error Handling"
+  },
+  {
+   "id": "WSTG-CRYP",
+   "name": "Testing for Weak Cryptography"
+  },
+  {
+   "id": "WSTG-BUSL",
+   "name": "Business Logic Testing"
+  },
+  {
+   "id": "WSTG-CLNT",
+   "name": "Client-side Testing"
+  }
+ ]
+}

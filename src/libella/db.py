@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS engagements(
   status TEXT NOT NULL DEFAULT 'draft', scope_json TEXT NOT NULL, auth_json TEXT NOT NULL DEFAULT '{}',
   budgets_json TEXT NOT NULL DEFAULT '{}', objectives_json TEXT NOT NULL DEFAULT '[]',
   window_start TEXT, window_end TEXT, created_at REAL, started_at REAL, finished_at REAL,
-  status_detail TEXT
+  status_detail TEXT, standards_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS assets(
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
@@ -116,8 +116,11 @@ CREATE TABLE IF NOT EXISTS asset_changes(
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, asset_key TEXT NOT NULL,
   change_kind TEXT NOT NULL, old_json TEXT, new_json TEXT, detected_at REAL
 );
+-- requirement ids are namespaced by standard (WSTG-... vs V1.1.1), so one key
+-- covers every standard without a composite primary key change
 CREATE TABLE IF NOT EXISTS coverage_entries(
   engagement_id TEXT NOT NULL, test_id TEXT NOT NULL, status TEXT NOT NULL,
+  framework TEXT NOT NULL DEFAULT 'wstg',
   note TEXT, evidence_id TEXT, updated_at REAL,
   PRIMARY KEY(engagement_id, test_id)
 );
@@ -166,6 +169,8 @@ class DB:
                          ("fix_commit", "TEXT"), ("remediated_at", "REAL"),
                          ("due_at", "TEXT"), ("remediation_state", "TEXT DEFAULT 'open'")],
             "exchanges": [("replay_of", "TEXT"), ("tags_json", "TEXT DEFAULT '[]'")],
+            "engagements": [("standards_json", "TEXT NOT NULL DEFAULT '{}'")],
+            "coverage_entries": [("framework", "TEXT NOT NULL DEFAULT 'wstg'")],
         }
         for table, cols in additions.items():
             existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}

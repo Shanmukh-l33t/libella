@@ -1,0 +1,252 @@
+"""The standards engine: versioned catalogs, applicability, and honest coverage.
+
+These tests hold the two claims that make the ledger trustworthy:
+
+* the catalog is the published standard (exact ids, chapters, levels) and the
+  evidence mapping may only name requirements that exist in it;
+* a requirement is only ever accounted for by a check that really covers it, so a
+  partial check reports `partial_evidence` and an unexecuted requirement is never
+  counted as assessed.
+"""
+import json
+import sys
+import time
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from libella import check_mapping, coverage, standards  # noqa: E402
+from libella.api import App, create_api  # noqa: E402
+
+WEB_SCOPE = {"targets": [{"kind": "url", "value": "http://127.0.0.1:8801"}],
+             "categories": ["web"], "rate_limit_rps": 20}
+
+
+def _app(tmp_path, categories=("web",), level=None):
+    app = App(tmp_path / "data")
+    scope = {**WEB_SCOPE, "categories": list(categories)}
+    app.db.execute(
+        "INSERT INTO engagements(id, name, profile, status, scope_json, auth_json, budgets_json, "
+        "created_at, standards_json) VALUES(?,?,?,?,?,?,?,?,?)",
+        ("eng_s", "standards", "safe_active", "draft", json.dumps(scope), "{}", "{}",
+         time.time(), json.dumps({"asvs": {"level": level}} if level else {})))
+    return app
+
+
+@pytest.fixture
+def app(tmp_path):
+    return _app(tmp_path)
+
+
+@pytest.fixture
+def client(app):
+    c = TestClient(create_api(app))
+    c.headers.update({"Authorization": f"Bearer {app.token}"})
+    return c
+
+
+def exchange(app, eid, tool):
+    app.db.execute(
+        "INSERT INTO exchanges(id, engagement_id, method, url, status, tool, created_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (eid, "eng_s", "GET", "http://127.0.0.1:8801/", 200, tool, time.time()))
+
+
+def finding(app, fid, cwe, state):
+    app.db.execute(
+        "INSERT INTO findings(id, engagement_id, title, cwe, severity, confidence, state, "
+        "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        (fid, "eng_s", "x", cwe, "high", "high", state, time.time(), time.time()))
+
+
+def item(ws, rid):
+    return next(t for c in ws["categories"] for t in c["tests"] if t["id"] == rid)
+
+
+# ---- the catalog is the published standard ---------------------------------
+
+def test_asvs_catalog_is_the_official_5_0_0_export():
+    reqs = standards.requirements("asvs")
+    assert len(reqs) == 345 and len(set(reqs)) == 345
+    by = {rid: standards.requirement("asvs", rid) for rid in reqs}
+    assert by["V1.1.1"]["level"] == 2
+    assert by["V1.2.1"]["level"] == 1
+    assert by["V1.2.10"]["level"] == 3
+    assert by["V1.2.4"]["chapter"] == "V1" and by["V1.2.4"]["section"] == "V1.2"
+    assert by["V1.2.4"]["title"].startswith("Verify that data selection or database queries")
+    assert "parameterized queries" in by["V1.2.4"]["title"]
+    assert len({r["chapter"] for r in by.values()}) == 17
+    fw = standards.framework("asvs")
+    assert (fw["id"], fw["version"], fw["license"]) == ("ASVS", "5.0.0", "CC BY-SA 4.0")
+    assert fw["upstream_sha"] == "82fb2f41cdb623e0b11e4d9a6b97c4306c1d119c"
+
+
+def test_levels_are_cumulative_and_match_the_published_counts():
+    assert [len(standards.requirements("asvs", lv)) for lv in (1, 2, 3)] == [70, 253, 345]
+
+
+def test_wstg_keeps_its_4_2_identity_in_the_same_shape():
+    assert standards.framework("wstg")["version"] == "4.2"
+    assert len(standards.requirements("wstg")) == 96
+    assert standards.levels("wstg") == []
+
+
+def test_every_mapping_row_names_a_real_requirement_and_unit():
+    for fid in ("wstg", "asvs"):
+        spec = standards.spec(fid)
+        assert spec["units"], fid
+        for unit, row in spec["units"].items():
+            assert row["why"], f"{fid}/{unit} claims requirements without a reason"
+            for rid in row["ids"]:
+                assert rid in spec["requirements"], f"{fid}/{unit} names unknown {rid}"
+                assert row["strength"].get(rid) in (None, "direct", "partial", "indirect")
+    # units named by the mapping are units the engine can actually record
+    wstg_units = set(standards.spec("wstg")["units"])
+    assert set(check_mapping.CHECKS) == wstg_units
+    asvs_units = set(standards.spec("asvs")["units"])
+    assert {"security_headers", "sqli", "tls_audit", "api_audit", "graphql_audit"} <= asvs_units
+
+
+def test_requirement_ids_do_not_collide_across_standards():
+    # coverage_entries is keyed by (engagement, test_id); that only holds because
+    # each standard namespaces its ids
+    a = set(standards.requirements("asvs"))
+    w = set(standards.requirements("wstg"))
+    assert not a & w
+
+
+# ---- applicability ----------------------------------------------------------
+
+def test_a_non_web_engagement_marks_asvs_not_applicable(app):
+    app.db.execute("UPDATE engagements SET scope_json=? WHERE id=?",
+                   (json.dumps({**WEB_SCOPE, "categories": ["repo"]}), "eng_s"))
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    assert ws["summary"]["applicable"] == 0
+    assert ws["summary"]["statuses"]["not_applicable"] == ws["summary"]["total"]
+
+
+def test_selected_level_limits_the_ledger_and_says_what_it_excluded(tmp_path):
+    app = _app(tmp_path, level=1)
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    assert ws["summary"]["total"] == 70
+    assert ws["summary"]["level"] == 1
+    assert ws["summary"]["excluded_by_level"] == 345 - 70
+    assert len(ws["categories"]) == 17
+
+
+def test_unmapped_requirements_keep_their_reason(app):
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    v16 = item(ws, "V16.5.1")
+    assert v16["automatic"]["status"] == "requires_manual"
+    assert "log pipeline" in v16["automatic"]["reason"]
+    # WebRTC is catalogued, has no check, and must not be silently dropped
+    assert item(ws, "V17.1.1")["automatic"]["status"] == "requires_manual"
+
+
+# ---- honest derivation ------------------------------------------------------
+
+def test_direct_check_that_ran_is_not_a_requirement_pass_but_is_recorded(app):
+    exchange(app, "ex_hdr", "headers_check")
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    hsts = item(ws, "V3.4.1")
+    assert hsts["automatic"]["status"] == "completed_no_issue"
+    assert hsts["automatic"]["strength"] == "direct"
+    assert hsts["evidence"]["exchanges"] == ["ex_hdr"]
+    csp = item(ws, "V3.4.3")  # header presence only: cannot pass the directive requirement
+    assert csp["automatic"]["status"] == "partial_evidence"
+    assert csp["automatic"]["strength"] == "partial"
+
+
+def test_verified_finding_fails_the_requirement_and_unverified_only_raises_it(app):
+    exchange(app, "ex_sql", "sqli_check")
+    finding(app, "f1", "CWE-89", "suspected")
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    assert item(ws, "V1.2.4")["automatic"]["status"] == "finding_unverified"
+    app.db.execute("UPDATE findings SET state='validated' WHERE id='f1'")
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    v = item(ws, "V1.2.4")
+    assert v["automatic"]["status"] == "finding_verified"
+    assert v["evidence"]["findings"] == ["f1"]
+    # a SQL injection finding says nothing about the encoding requirement
+    assert item(ws, "V1.2.1")["automatic"]["status"] not in (
+        "finding_verified", "finding_unverified")
+
+
+def test_one_exchange_accounts_for_both_standards_without_duplicating_work(app):
+    exchange(app, "ex_hdr", "headers_check")
+    wstg = coverage.workspace(app.db, "eng_s", "wstg")
+    asvs = coverage.workspace(app.db, "eng_s", "asvs")
+    assert item(wstg, "WSTG-CONF-07")["automatic"]["status"] == "completed_no_issue"
+    assert item(asvs, "V3.4.1")["automatic"]["status"] == "completed_no_issue"
+    assert "ex_hdr" in item(wstg, "WSTG-CONF-07")["evidence"]["exchanges"]
+    assert "ex_hdr" in item(asvs, "V3.4.1")["evidence"]["exchanges"]
+    assert wstg["summary"]["total"] == 96 and asvs["summary"]["total"] == 345
+
+
+def test_a_mitigated_target_is_inconclusive_not_secure(app):
+    exchange(app, "ex_hdr", "headers_check")
+    app.db.emit("eng_s", "degradation",
+                {"code": "target_mitigated", "units": ["headers_check"]})
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    assert item(ws, "V3.4.1")["automatic"]["status"] == "inconclusive"
+
+
+# ---- recording a review ----------------------------------------------------
+
+def test_recording_a_review_needs_evidence_or_a_reason(app):
+    with pytest.raises(ValueError):
+        coverage.record(app.db, "eng_s", "V3.4.1", "covered", framework="asvs")
+    with pytest.raises(ValueError):
+        coverage.record(app.db, "eng_s", "V3.4.1", "manual", framework="asvs")
+    ws = coverage.record(app.db, "eng_s", "V3.4.1", "manual",
+                            "verified in the operator console", framework="asvs")
+    assert item(ws, "V3.4.1")["status"] == "manual"
+    assert ws["summary"]["manual_required"] + ws["summary"]["statuses"]["requires_manual"] >= 1
+    with pytest.raises(LookupError):
+        coverage.record(app.db, "eng_s", "V9.9.9", "manual", "nope", framework="asvs")
+
+
+def test_evidence_from_another_engagement_is_refused(app):
+    app.db.execute(
+        "INSERT INTO engagements(id, name, profile, status, scope_json, created_at) "
+        "VALUES(?,?,?,?,?,?)", ("eng_other", "o", "safe_active", "draft", json.dumps(WEB_SCOPE),
+                                time.time()))
+    app.db.execute(
+        "INSERT INTO evidence(id, engagement_id, sha256, kind, path, bytes, created_at, "
+        "prev_hash, chain_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+        ("ev_foreign", "eng_other", "x" * 64, "http", "blob/x", 1, time.time(), "p", "c"))
+    with pytest.raises(ValueError):
+        coverage.record(app.db, "eng_s", "V3.4.1", "covered", None, "ev_foreign",
+                        framework="asvs")
+
+
+def test_api_selects_a_level_and_serves_that_ledger(client):
+    assert client.get("/api/standards").json()["standards"]
+    r = client.put("/api/engagements/eng_s/standards", json={"asvs": {"level": 3}})
+    assert r.status_code == 200 and r.json() == {"asvs": {"level": 3}}
+    ws = client.get("/api/engagements/eng_s/coverage/asvs").json()
+    assert ws["summary"]["total"] == 345 and ws["summary"]["level"] == 3
+    assert client.put("/api/engagements/eng_s/standards",
+                      json={"asvs": {"level": 9}}).status_code == 400
+    assert client.put("/api/engagements/eng_s/standards",
+                      json={"wstg": {"level": 1}}).status_code == 400
+    assert client.get("/api/engagements/eng_s/coverage/nosuch").status_code == 404
+    assert client.put("/api/engagements/eng_s/coverage/asvs/V9.9.9",
+                      json={"status": "manual", "note": "x"}).status_code == 404
+
+
+def test_a_recorded_asvs_review_survives_the_wstg_ledger(app, client):
+    exchange(app, "ex_hdr", "headers_check")
+    client.put("/api/engagements/eng_s/coverage/asvs/V3.4.1",
+               json={"status": "manual", "note": "checked in the browser console"})
+    asvs = client.get("/api/engagements/eng_s/coverage/asvs").json()
+    wstg = client.get("/api/engagements/eng_s/coverage/wstg").json()
+    assert item(asvs, "V3.4.1")["status"] == "manual"
+    assert item(wstg, "WSTG-CONF-07")["status"] == "completed_no_issue"
+    rows = app.db.query(
+        "SELECT test_id, framework FROM coverage_entries WHERE engagement_id='eng_s'")
+    assert rows == [{"test_id": "V3.4.1", "framework": "asvs"}]

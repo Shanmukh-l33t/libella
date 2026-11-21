@@ -10,11 +10,11 @@ import { Badge, Button, Card, EmptyState, ErrorNote, Field, Input, Modal, Select
 type AutoStatus =
   | "not_applicable" | "not_supported" | "requires_manual" | "skipped_policy"
   | "skipped_dependency" | "attempted" | "inconclusive" | "failed"
-  | "completed_no_issue" | "finding_unverified" | "finding_verified";
+  | "completed_no_issue" | "partial_evidence" | "finding_unverified" | "finding_verified";
 const AUTO: AutoStatus[] = [
   "not_applicable", "not_supported", "requires_manual", "skipped_policy", "skipped_dependency",
-  "attempted", "inconclusive", "failed", "completed_no_issue", "finding_unverified",
-  "finding_verified",
+  "attempted", "inconclusive", "failed", "completed_no_issue", "partial_evidence",
+  "finding_unverified", "finding_verified",
 ];
 /** Manual review vocabulary, exactly as the server stores it. */
 type Review = "covered" | "manual" | "unsupported" | "unknown";
@@ -24,7 +24,7 @@ const AUTO_TONE: Record<AutoStatus, "success" | "info" | "warning" | "danger" | 
   not_applicable: "neutral", not_supported: "warning", requires_manual: "warning",
   skipped_policy: "warning", skipped_dependency: "warning", attempted: "info",
   inconclusive: "warning", failed: "danger", completed_no_issue: "success",
-  finding_unverified: "info", finding_verified: "danger",
+  partial_evidence: "info", finding_unverified: "info", finding_verified: "danger",
 };
 const AUTO_HELP: Record<AutoStatus, string> = {
   not_applicable: "The engagement scope has no web category, so the web framework does not apply.",
@@ -36,6 +36,7 @@ const AUTO_HELP: Record<AutoStatus, string> = {
   inconclusive: "Ran partially (timeout/cancel) or never ran; nothing can be concluded.",
   failed: "The mapped check ran and failed. No result.",
   completed_no_issue: "The mapped check executed and recorded no finding. Only as good as the check.",
+  partial_evidence: "A mapped check ran and recorded no finding, but it only covers PART of this requirement. Not a pass.",
   finding_unverified: "A finding from the mapped check is recorded but not independently validated.",
   finding_verified: "A finding from the mapped check was independently replayed.",
 };
@@ -52,16 +53,19 @@ const REVIEW_HELP: Record<Review, string> = {
 interface Evidence { tool_calls: string[]; exchanges: string[]; intents: string[]; events: number[]; findings: string[] }
 interface Item {
   id: string; title: string; status: AutoStatus | Review;
+  level?: number | null; section?: string | null; section_title?: string | null;
   automatic: { status: AutoStatus; reason: string; units: string[] };
   manual: { status: Review; note?: string | null; evidence_id?: string | null; updated_at?: number | null } | null;
   evidence: Evidence;
 }
 interface Category { id: string; name: string; counts: Record<AutoStatus, number>; tests: Item[] }
 interface Workspace {
-  framework: { id: string; version: string; title: string; source: string; tests: number };
+  framework: { id: string; version: string; title: string; source: string; requirements: number;
+    groups: number; levels: number[] };
   engagement_id: string;
-  summary: Record<"total" | "applicable" | "supported" | "attempted" | "completed" | "with_findings"
-    | "skipped" | "manual_required" | "not_tested", number>
+  summary: Record<"total" | "applicable" | "supported" | "attempted" | "completed" | "partial"
+    | "with_findings" | "skipped" | "manual_required" | "not_tested" | "catalog"
+    | "excluded_by_level", number> & { level: number | null }
     & { statuses: Record<AutoStatus, number>; manual: Record<"covered" | "manual" | "unsupported", number> };
   categories: Category[];
 }
@@ -70,7 +74,12 @@ export default function Coverage() {
   const [params, setParams] = useSearchParams();
   const engagements = useApi<Engagement[]>("/api/engagements");
   const eid = params.get("engagement") || "";
-  const ws = useApi<Workspace>(eid ? `/api/engagements/${encodeURIComponent(eid)}/coverage/wstg` : null);
+  const fw = params.get("framework") || "wstg";
+  const ws = useApi<Workspace>(eid
+    ? `/api/engagements/${encodeURIComponent(eid)}/coverage/${encodeURIComponent(fw)}`
+    : null);
+  const standards = useApi<{ standards: { id: string; framework: { title: string; version: string };
+    levels: number[]; requirements: number }[] }>("/api/standards");
   const [editing, setEditing] = useState<Item | null>(null);
   const [status, setStatus] = useState<Review>("manual");
   const [note, setNote] = useState("");
@@ -89,7 +98,7 @@ export default function Coverage() {
     setSaving(true); setError(null);
     try {
       // The server owns the rules: covered needs this engagement's evidence, manual/unsupported need a note.
-      await put(`/api/engagements/${encodeURIComponent(eid)}/coverage/wstg/${encodeURIComponent(editing.id)}`,
+      await put(`/api/engagements/${encodeURIComponent(eid)}/coverage/${encodeURIComponent(fw)}/${encodeURIComponent(editing.id)}`,
         { status, note: note.trim(), evidence_id: evidence.trim() || undefined });
       setEditing(null);
       ws.reload();
@@ -100,6 +109,22 @@ export default function Coverage() {
     }
   };
 
+  const setFramework = (value: string) => {
+    const next = new URLSearchParams(params);
+    next.set("framework", value);
+    setParams(next, { replace: true });
+  };
+
+  const setLevel = async (level: number) => {
+    setError(null);
+    try {
+      await put(`/api/engagements/${encodeURIComponent(eid)}/standards`, { [fw]: { level } });
+      ws.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const list = engagements.data || [];
   const d = ws.data;
   const rows = (tests: Item[]) => (filter === "all" ? tests : tests.filter((t) => t.status === filter));
@@ -107,9 +132,10 @@ export default function Coverage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight text-ink-900">WSTG 4.2 coverage</h1>
+        <h1 className="text-xl font-semibold tracking-tight text-ink-900">Security standards &amp; coverage</h1>
         <p className="mt-1 max-w-3xl text-sm text-ink-500">
-          Two records per test, both always shown. <span className="font-medium text-ink-700">Executed</span> is
+          Every applicable requirement of the selected standard, accounted for. Two records per
+          requirement, both always shown. <span className="font-medium text-ink-700">Executed</span> is
           derived from what this engagement actually ran — intents, tool calls, captured exchanges and findings.
           <span className="font-medium text-ink-700"> Review</span> is what an operator recorded by hand and
           overrides the displayed status when set. A test that was not tested is not a pass, and nothing here
@@ -132,6 +158,27 @@ export default function Coverage() {
             </Select>
           </label>
           <label className="block w-full max-w-xs">
+            <span className="label">Standard</span>
+            <Select aria-label="Standard" value={fw} onChange={(e) => setFramework(e.target.value)}>
+              {(standards.data?.standards || []).map((st) => (
+                <option key={st.id} value={st.id}>
+                  {st.framework.title} v{st.framework.version} · {st.requirements}
+                </option>
+              ))}
+            </Select>
+          </label>
+          {d && d.framework.levels.length > 0 && (
+            <label className="block w-full max-w-[10rem]">
+              <span className="label">Verification level</span>
+              <Select aria-label="Verification level" value={String(d.summary.level ?? 2)}
+                onChange={(e) => setLevel(Number(e.target.value))}>
+                {d.framework.levels.map((lv) => (
+                  <option key={lv} value={lv}>Level {lv}</option>
+                ))}
+              </Select>
+            </label>
+          )}
+          <label className="block w-full max-w-xs">
             <span className="label">Filter by status</span>
             <Select aria-label="Filter by status" value={filter}
               onChange={(e) => setFilter(e.target.value as typeof filter)}>
@@ -153,7 +200,7 @@ export default function Coverage() {
 
       {!eid ? (
         <Card><EmptyState icon={<ClipboardCheck size={22} />} title="Choose an engagement"
-          description={`The catalog lists all ${d?.framework.tests || 96} WSTG 4.2 tests grouped by category.`} /></Card>
+          description={`The catalog lists every requirement of the selected standard, grouped by chapter.`} /></Card>
       ) : ws.loading && !d ? <Skeleton className="h-64 w-full" /> : !d ? null : (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -161,13 +208,16 @@ export default function Coverage() {
             <Mini label="Supported" value={d.summary.supported} hint="a Libella check can exercise them" />
             <Mini label="Attempted" value={d.summary.attempted} hint="a check started" />
             <Mini label="Completed" value={d.summary.completed} tone="success" hint="executed to a result" />
+            <Mini label="Partial" value={d.summary.partial} hint="a check covered only part of the requirement" />
             <Mini label="With findings" value={d.summary.with_findings} tone="danger" hint="verified or unverified" />
             <Mini label="Skipped" value={d.summary.skipped} hint="profile or dependency" />
             <Mini label="Manual required" value={d.summary.manual_required} hint="no automated check exists" />
             <Mini label="Not tested" value={d.summary.not_tested} tone="danger" hint="never completed — not a pass" />
           </div>
           <p className="text-xs text-ink-500">
-            {d.framework.title} v{d.framework.version} · {d.framework.tests} tests ·{" "}
+            {d.framework.title} v{d.framework.version} · {d.summary.total} of {d.summary.catalog}{" "}
+            requirements{typeof d.summary.level === "number" ? ` at Level ${d.summary.level}` : ""}
+            {d.summary.excluded_by_level > 0 ? ` · ${d.summary.excluded_by_level} excluded by that level` : ""} ·{" "}
             <a className="link" href={d.framework.source} target="_blank" rel="noreferrer">catalog source</a>
           </p>
 
@@ -186,8 +236,17 @@ export default function Coverage() {
                   <Table<Item>
                     rows={tests} getKey={(t) => t.id} dense onRowClick={open}
                     columns={[
-                      { key: "id", label: "ID", render: (t) => <span className="font-mono text-2xs text-ink-700">{t.id}</span> },
-                      { key: "title", label: "Test", render: (t) => <span className="text-xs text-ink-900">{t.title}</span> },
+                      { key: "id", label: "ID", render: (t) => (
+                        <span className="font-mono text-2xs text-ink-700">{t.id}</span>
+                      ) },
+                      ...(d.framework.levels.length > 0 ? [{ key: "level", label: "Level",
+                        render: (t: Item) => <span className="text-2xs text-ink-500">L{t.level ?? "—"}</span> }] : []),
+                      { key: "title", label: "Requirement", render: (t) => (
+                        <div className="space-y-0.5">
+                          {t.section_title && <div className="text-2xs text-ink-500">{t.section_title}</div>}
+                          <span className="text-xs text-ink-900">{t.title}</span>
+                        </div>
+                      ) },
                       { key: "auto", label: "Executed", sortValue: (t) => t.automatic.status, render: (t) => (
                         <div className="space-y-0.5">
                           <Badge tone={AUTO_TONE[t.automatic.status]}>{t.automatic.status}</Badge>
