@@ -639,7 +639,7 @@ class AgentRunner:
                   + tool_schemas)
         objective = intent.get("objective", "")
         budgets = self._budgets()
-        max_usd = float(budgets.get("max_usd", 10.0))
+        max_usd = engagement_usd = float(budgets.get("max_usd", 10.0))
         deadline = time.time() + float(budgets.get("max_duration_s", 3600))
         # a specialist ceiling is already clamped at creation; re-clamping here keeps
         # it under the engagement budget even if the stored charter drifted
@@ -687,10 +687,15 @@ class AgentRunner:
             tokens_in += out["usage"]["input_tokens"]
             tokens_out += out["usage"]["output_tokens"]
             cost += out["usage"]["cost_usd"]
-            if cost > max_usd or time.time() > deadline:
+            # the engagement ceiling is shared: parents, inline specialists and other
+            # intents all spend from it, so this run's own cost is not the whole bill
+            over_engagement = self._spent_usd() > engagement_usd
+            if cost > max_usd or over_engagement or time.time() > deadline:
                 exit_reason = "budget_exhausted"
                 summary = (f"Stopped: engagement budget reached "
                            f"({cost:.4f} USD of {max_usd:.4f})" if cost > max_usd
+                           else f"Stopped: engagement spend passed {engagement_usd:.4f} USD"
+                           if over_engagement
                            else "Stopped: engagement wall-clock budget reached")
                 break
             parsed = out.get("parsed")

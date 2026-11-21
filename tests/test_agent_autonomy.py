@@ -324,3 +324,20 @@ def test_specialist_evidence_gate_still_holds(platform, lab):
     assert res["status"] == "completed", res
     assert res["findings"] == []
     assert db.one("SELECT COUNT(*) n FROM findings WHERE engagement_id='eng'")["n"] == 0
+
+
+def test_run_stops_when_the_shared_engagement_spend_passes_the_ceiling(platform, lab):
+    # another intent (or an inline specialist) already spent the engagement's budget:
+    # this run's own cost is tiny, but the shared ceiling must still stop it
+    agent, llm = _agent(platform, [
+        {"thought": "probe", "action": "http_request", "args": {"url": lab + "/search?q=a"}},
+        {"thought": "probe", "action": "http_request", "args": {"url": lab + "/search?q=b"}},
+    ], budgets={"max_usd": 1.0})
+    agent.db.execute(
+        "INSERT INTO llm_usage(id, engagement_id, role, model, input_tokens, output_tokens, "
+        "cost_usd, created_at) VALUES('u1','eng','web','m',1,1,1.5,0)")
+    res = agent.run({"id": "i_budget", "objective": "probe"}, "web")
+    assert res["status"] == "budget_exhausted"
+    assert "engagement spend passed" in res["summary"]
+    assert len(llm.users) == 1  # stopped on the first turn, no target request issued
+    assert agent.db.one("SELECT COUNT(*) n FROM exchanges")["n"] == 0
