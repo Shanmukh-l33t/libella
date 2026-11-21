@@ -166,21 +166,49 @@ def test_failed_tool_call_is_failed(app):
     assert it["automatic"]["status"] == "failed"
 
 
+def produced(app, fid, cwe, state, tool, controls=()):
+    """A finding bound to evidence a named check captured, as the pipeline writes it."""
+    ev = f"ev_{fid}"
+    app.db.execute(
+        "INSERT INTO evidence(id, engagement_id, sha256, kind, path, bytes, created_at, "
+        "prev_hash, chain_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+        (ev, "eng_x", "x" * 64, "http", "blob/" + ev, 1, time.time(), "p", "c"))
+    app.db.execute(
+        "INSERT INTO exchanges(id, engagement_id, evidence_id, method, url, status, tool, "
+        "created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (f"ex_{fid}", "eng_x", ev, "GET", "http://127.0.0.1:8801/", 200, tool, time.time()))
+    app.db.execute(
+        "INSERT INTO findings(id, engagement_id, title, cwe, severity, confidence, state, "
+        "evidence_ids_json, controls_json, controls_source, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (fid, "eng_x", "x", cwe, "high", "high", state, json.dumps([ev]),
+         json.dumps(list(controls)), "check" if controls else "none", time.time(), time.time()))
+    return fid
+
+
 def test_findings_upgrade_status_and_keep_verification_honest(app):
-    finding(app, "f_verified", "CWE-79", "validated")
-    finding(app, "f_suspected", "CWE-89", "suspected")
+    produced(app, "f_verified", "CWE-79", "validated", "xss_check")
+    produced(app, "f_suspected", "CWE-89", "suspected", "sqli_check")
     ws = coverage.workspace(app.db, "eng_x")
     xss = item(ws, "WSTG-INPV-01")
     sqli = item(ws, "WSTG-INPV-05")
     assert xss["automatic"]["status"] == "finding_verified"
     assert xss["evidence"]["findings"] == ["f_verified"]
     assert sqli["automatic"]["status"] == "finding_unverified"
-    # one SQLi proof is evidence for SQL injection AND for the auth-bypass test it
-    # was found through — the same finding can legitimately witness both.
-    assert item(ws, "WSTG-ATHN-04")["automatic"]["status"] == "finding_unverified"
-    assert ws["summary"]["with_findings"] == 3
+    # a SQL injection found by the parameter probe is NOT authentication-bypass
+    # evidence, even though both checks emit CWE-89: attribution follows the producer
+    assert "f_suspected" not in item(ws, "WSTG-ATHN-04")["evidence"]["findings"]
+    assert ws["summary"]["with_findings"] == 2
     # CWE-79 must not leak onto SQL injection coverage
     assert "f_verified" not in sqli["evidence"]["findings"]
+
+
+def test_a_finding_without_a_recoverable_producer_is_never_auto_attributed(app):
+    finding(app, "f_orphan", "CWE-79", "validated")  # no evidence trail at all
+    ws = coverage.workspace(app.db, "eng_x")
+    assert "f_orphan" not in item(ws, "WSTG-INPV-01")["evidence"]["findings"]
+    orphan = [f for f in ws["unattributed_findings"] if f["id"] == "f_orphan"]
+    assert orphan and "no producing check" in orphan[0]["reason"]
 
 
 def test_planned_but_unrun_check_is_inconclusive(app):

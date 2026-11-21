@@ -666,7 +666,7 @@ def create_api(app: App) -> FastAPI:
     def coverage_workspace(eid: str, framework: str = "wstg"):
         from .coverage import workspace
         try:
-            return workspace(app.db, eid, framework)
+            return workspace(app.db, eid, framework, app.evidence)
         except KeyError as exc:  # unknown standard id
             raise HTTPException(404, f"unknown standard: {exc}") from None
         except LookupError as exc:
@@ -680,6 +680,19 @@ def create_api(app: App) -> FastAPI:
             return record(app.db, eid, requirement_id, body.get("status"), body.get("note"),
                           body.get("evidence_id"), framework)
         except LookupError as exc:  # covers KeyError for an unknown standard id
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @api.post("/api/engagements/{eid}/coverage/{framework}/{requirement_id}/links",
+              dependencies=[Depends(auth)])
+    def coverage_link(eid: str, framework: str, requirement_id: str, body: dict):
+        """Analyst correction of finding -> requirement attribution, kept as history."""
+        from .coverage import link
+        try:
+            return link(app.db, eid, framework, requirement_id, body.get("finding_id"),
+                        body.get("action"), body.get("note"))
+        except LookupError as exc:
             raise HTTPException(404, str(exc))
         except ValueError as exc:
             raise HTTPException(400, str(exc))

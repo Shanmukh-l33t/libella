@@ -32,7 +32,7 @@ def _rows(rows) -> dict:
     out: list = []
     for r in rows:
         if "union" in r:
-            ids, cwe, strength, match = [], {}, {}, {}
+            ids, cwe, strength, controls = [], {}, {}, {}
             for unit in r["union"]:
                 src = next((o for o in out if o["unit"] == unit), None)
                 if src is None:
@@ -42,9 +42,10 @@ def _rows(rows) -> dict:
                         ids.append(rid)
                     cwe[rid] = tuple(dict.fromkeys(cwe.get(rid, ()) + tuple(src["cwe"].get(rid, ()))))
                     strength[rid] = src["strength"].get(rid) or "direct"
-                    match[rid] = tuple(dict.fromkeys(match.get(rid, ()) + src["match"].get(rid, ())))
+                    controls[rid] = tuple(dict.fromkeys(controls.get(rid, ())
+                                                        + src["controls"].get(rid, ())))
             row = {"unit": r["unit"], "ids": tuple(ids), "cwe": cwe, "strength": strength,
-                   "match": match,
+                   "controls": controls,
                    "union_of": tuple(r["union"])}
         else:
             spec = r.get("requirements") or {}
@@ -54,7 +55,7 @@ def _rows(rows) -> dict:
             row = {"unit": r["unit"], "ids": ids,
                    "cwe": {rid: tuple(v.get("cwe") or ()) for rid, v in spec.items()},
                    "strength": {rid: v.get("strength") or "direct" for rid, v in spec.items()},
-                   "match": {rid: tuple(v.get("match") or ()) for rid, v in spec.items()},
+                   "controls": {rid: tuple(v.get("controls") or ()) for rid, v in spec.items()},
                    "union_of": tuple(r.get("union_of") or ())}
         row.update({"why": r.get("why") or r.get("note") or "",
                     "exchanges": tuple(r.get("exchanges") or ()),
@@ -116,7 +117,8 @@ def _wstg() -> dict:
     for unit, row in mapping.CHECKS.items():
         rows.append({
             "unit": unit,
-            "requirements": {rid: {"strength": "direct", "cwe": row["cwe_by_test"].get(rid, ())}
+            "requirements": {rid: {"strength": "direct", "cwe": row["cwe_by_test"].get(rid, ()),
+                                   "controls": (row.get("controls") or {}).get(rid, ())}
                              for rid in row["wstg"]},
             # check_mapping already expanded its unions, but keeps the membership:
             # a role row must not mask a refused individual method
@@ -219,30 +221,32 @@ def unit_row(fid: str, unit: str):
 
 
 def findings_for(fid: str, rid: str, findings, produced_by=None) -> list:
-    """Findings that are evidence against this requirement.
+    """Findings that are evidence against this requirement, by structured relation only.
 
-    A finding counts only when (a) its CWE is one a mapped check emits for this
-    requirement, (b) when its producing unit is known, that unit is one mapped to
-    the requirement (a CWE-200 from a path probe is not GraphQL introspection
-    evidence), and (c) when the mapping names a `match` for the requirement, the
-    finding title names it (a missing-CSP finding is not a missing-HSTS one).
-    `produced_by` maps finding id -> set of units recovered from its evidence.
+    A finding counts only when ALL hold:
+      (a) its evidence traces to a unit mapped to this requirement (`produced_by`,
+          recovered from captured exchanges/tool artifacts); a finding with no
+          recoverable producer is never attributed automatically;
+      (b) its CWE is one that producing unit emits for this requirement;
+      (c) when that unit's mapping restricts the requirement to control ids, the
+          finding asserted one of them (`controls_json`). Titles are never read.
     """
     s = spec(fid)
-    mapped = s["by_requirement"].get(rid, ())
-    units = [u for u in mapped if not s["units"][u]["union_of"]]
-    cwes = {c for u in units for c in (s["units"][u]["cwe"].get(rid) or ())}
-    matches = {m.lower() for u in units for m in (s["units"][u]["match"].get(rid) or ())}
+    mapped = set(s["by_requirement"].get(rid, ()))
     out = []
     for f in findings:
-        if f["cwe"] not in cwes:
-            continue
-        origin = (produced_by or {}).get(f["id"])
-        if origin and not origin & set(mapped):
-            continue
-        if matches and not any(m in (f.get("title") or "").lower() for m in matches):
-            continue
-        out.append(f)
+        origin = (produced_by or {}).get(f["id"]) or set()
+        asserted = set(json.loads(f.get("controls_json") or "[]")) if isinstance(
+            f.get("controls_json"), str) else set(f.get("controls_json") or ())
+        for unit in origin & mapped:
+            row = s["units"][unit]
+            if f["cwe"] not in (row["cwe"].get(rid) or ()):
+                continue
+            need = set(row["controls"].get(rid) or ())
+            if need and not need & asserted:
+                continue
+            out.append(f)
+            break
     return out
 
 

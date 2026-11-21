@@ -18,6 +18,9 @@ ROWS = (
      "why": "Crawler records reachable pages, forms, parameters and JS-mined endpoints"},
     {"unit": "security_headers", "exchanges": ("headers_check",),
      "wstg": ("WSTG-CONF-07", "WSTG-CLNT-09"), "cwe": ("CWE-693",),
+     # one header finding names several headers; only the relevant ones count
+     "controls": {"WSTG-CONF-07": ("header.hsts",),
+                  "WSTG-CLNT-09": ("header.x_frame_options", "header.csp")},
      "why": "reports missing HSTS and X-Frame-Options/CSP on a real response"},
     {"unit": "cookie_flags", "exchanges": ("cookie_check",),
      "wstg": ("WSTG-SESS-02",), "cwe": ("CWE-614",),

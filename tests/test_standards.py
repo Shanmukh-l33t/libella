@@ -162,8 +162,7 @@ def test_direct_check_that_ran_is_not_a_requirement_pass_but_is_recorded(app):
 
 
 def test_verified_finding_fails_the_requirement_and_unverified_only_raises_it(app):
-    exchange(app, "ex_sql", "sqli_check")
-    finding(app, "f1", "CWE-89", "suspected")
+    _finding_from(app, "f1", "CWE-89", "SQL injection", "sqli_check", state="suspected")
     ws = coverage.workspace(app.db, "eng_s", "asvs")
     assert item(ws, "V1.2.4")["automatic"]["status"] == "finding_unverified"
     app.db.execute("UPDATE findings SET state='validated' WHERE id='f1'")
@@ -252,7 +251,7 @@ def test_a_recorded_asvs_review_survives_the_wstg_ledger(app, client):
     assert rows == [{"test_id": "V3.4.1", "framework": "asvs"}]
 
 
-def _finding_from(app, fid, cwe, title, tool, state="validated"):
+def _finding_from(app, fid, cwe, title, tool, state="validated", controls=()):
     """A finding bound to evidence captured by a named check, as the pipeline writes it."""
     ev = f"ev_{fid}"
     app.db.execute(
@@ -265,9 +264,10 @@ def _finding_from(app, fid, cwe, title, tool, state="validated"):
         (f"ex_{fid}", "eng_s", ev, "GET", "http://127.0.0.1:8801/", 200, tool, time.time()))
     app.db.execute(
         "INSERT INTO findings(id, engagement_id, title, cwe, severity, confidence, state, "
-        "evidence_ids_json, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (fid, "eng_s", title, cwe, "high", "high", state, json.dumps([ev]), time.time(),
-         time.time()))
+        "evidence_ids_json, controls_json, controls_source, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (fid, "eng_s", title, cwe, "high", "high", state, json.dumps([ev]),
+         json.dumps(list(controls)), "check" if controls else "none", time.time(), time.time()))
 
 
 def test_a_finding_only_fails_requirements_its_own_check_maps_to(app):
@@ -282,8 +282,9 @@ def test_a_finding_only_fails_requirements_its_own_check_maps_to(app):
 
 
 def test_a_header_finding_only_fails_the_headers_it_names(app):
-    _finding_from(app, "f_hdr", "CWE-693", "Missing security headers (CSP, Referrer-Policy)",
-                  "headers_check")
+    # deliberately MISLEADING title: attribution must follow the asserted controls only
+    _finding_from(app, "f_hdr", "CWE-693", "Missing security headers (HSTS, X-Content-Type-Options)",
+                  "headers_check", controls=("header.csp", "header.referrer_policy"))
     ws = coverage.workspace(app.db, "eng_s", "asvs")
     assert item(ws, "V3.4.3")["automatic"]["status"] == "finding_verified"  # CSP
     assert item(ws, "V3.4.5")["automatic"]["status"] == "finding_verified"  # Referrer-Policy
@@ -296,7 +297,8 @@ def test_report_carries_every_selected_standard_and_real_chapter_counts(tmp_path
     from libella.report import render_report
     from libella.report_kinds import coverage_md
     app = _app(tmp_path, level=2)
-    _finding_from(app, "f_hdr", "CWE-693", "Missing security headers (HSTS)", "headers_check")
+    _finding_from(app, "f_hdr", "CWE-693", "Missing security headers (HSTS)", "headers_check",
+                  controls=("header.hsts",))
     out = render_report(app.db, app.evidence, "eng_s", tmp_path / "rep")
     doc = json.loads((Path(out["outdir"]) / "report.json").read_text())
     md = (Path(out["outdir"]) / "report.md").read_text()
@@ -309,3 +311,80 @@ def test_report_carries_every_selected_standard_and_real_chapter_counts(tmp_path
     row = next(line for line in view.splitlines() if line.startswith("| Configuration and"))
     assert row.split("|")[3].strip() != "0"
     assert "ASVS" in view or "Application Security Verification Standard" in view
+
+
+def test_a_header_finding_without_control_ids_fails_no_header_requirement(app):
+    # a header finding that asserts no control cannot be pinned to a header: it must
+    # not fail any of them by default, and it is listed for analyst review
+    _finding_from(app, "f_vague", "CWE-693", "Missing security headers (HSTS)", "headers_check")
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    for rid in ("V3.4.1", "V3.4.3", "V3.4.4", "V3.4.5", "V3.4.6"):
+        assert "f_vague" not in item(ws, rid)["evidence"]["findings"], rid
+    assert any(f["id"] == "f_vague" for f in ws["unattributed_findings"])
+
+
+def test_cookie_controls_are_requirement_specific(app):
+    _finding_from(app, "f_ck", "CWE-614", "Session cookie 'sid' missing flags", "cookie_check",
+                  controls=("cookie.samesite",))
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    assert item(ws, "V3.3.2")["automatic"]["status"] == "finding_verified"   # SameSite
+    assert "f_ck" not in item(ws, "V3.3.1")["evidence"]["findings"]          # Secure
+    assert "f_ck" not in item(ws, "V3.3.4")["evidence"]["findings"]          # HttpOnly
+
+
+def test_wrong_category_and_wrong_cwe_never_attribute(app):
+    # a TLS finding (tls_audit, CWE-326) and a CORS finding must not fail an injection
+    # requirement, and an injection-unit finding with an unrelated CWE fails nothing
+    _finding_from(app, "f_cors", "CWE-942", "CORS", "cors_check")
+    _finding_from(app, "f_odd", "CWE-1021", "odd", "sqli_check")
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    assert item(ws, "V3.4.2")["evidence"]["findings"] == ["f_cors"]
+    assert "f_cors" not in item(ws, "V1.2.4")["evidence"]["findings"]
+    assert all("f_odd" not in t["evidence"]["findings"] for c in ws["categories"] for t in c["tests"])
+
+
+def test_analyst_can_add_and_remove_an_attribution_with_history(app, client):
+    _finding_from(app, "f_vague", "CWE-693", "headers", "headers_check")
+    url = "/api/engagements/eng_s/coverage/asvs/V3.4.1/links"
+    assert client.post(url, json={"finding_id": "f_vague", "action": "add"}).status_code == 400
+    r = client.post(url, json={"finding_id": "f_vague", "action": "add",
+                               "note": "response confirms HSTS absent on every page"})
+    assert r.status_code == 200
+    ws = client.get("/api/engagements/eng_s/coverage/asvs").json()
+    assert item(ws, "V3.4.1")["evidence"]["findings"] == ["f_vague"]
+    client.post(url, json={"finding_id": "f_vague", "action": "remove", "note": "duplicate"})
+    ws = client.get("/api/engagements/eng_s/coverage/asvs").json()
+    assert "f_vague" not in item(ws, "V3.4.1")["evidence"]["findings"]
+    hist = client.post(url, json={"finding_id": "f_vague", "action": "add",
+                                  "note": "re-added after review"}).json()["history"]
+    assert [h["action"] for h in hist] == ["add", "remove", "add"]
+    assert client.post(url, json={"finding_id": "f_nope", "action": "add",
+                                  "note": "x"}).status_code == 404
+
+
+def test_legacy_findings_get_controls_from_the_check_quote_not_the_title(app):
+    from libella import controls
+    assert controls.from_quote("missing: CSP, HSTS", "header_fact") == ["header.csp", "header.hsts"]
+    assert controls.from_quote("sid|Secure,SameSite", "cookie_fact") == [
+        "cookie.samesite", "cookie.secure"]
+    assert controls.from_quote("Missing security headers (HSTS)", "body") == []
+
+
+def test_pipeline_persists_controls_and_migrates_legacy_rows(app):
+    from libella.checks import _candidate
+    ev = app.evidence.put_json("eng_s", {"status": 200}, "http")["id"]
+    cand = _candidate("Missing security headers (HSTS)", "CWE-693", None, "medium", "high",
+                      "http://127.0.0.1:8801", "d", "i", "r", ev, "missing: HSTS",
+                      {"method": "GET", "url": "http://127.0.0.1:8801"}, "headers:x",
+                      quote_in="header_fact", controls=["header.hsts"])
+    fid = app.pipeline.submit_candidate("eng_s", cand)["id"]
+    row = app.db.one("SELECT controls_json, controls_source FROM findings WHERE id=?", (fid,))
+    assert (json.loads(row["controls_json"]), row["controls_source"]) == (["header.hsts"], "check")
+    # a pre-upgrade finding: same proof spec, no controls recorded
+    legacy = app.pipeline.submit_candidate("eng_s", {**cand, "dedup_key": "headers:old",
+                                                     "controls": []})["id"]
+    app.db.execute("UPDATE findings SET controls_json='[]', controls_source=NULL WHERE id=?",
+                   (legacy,))
+    coverage.workspace(app.db, "eng_s", "asvs", app.evidence)
+    row = app.db.one("SELECT controls_json, controls_source FROM findings WHERE id=?", (legacy,))
+    assert (json.loads(row["controls_json"]), row["controls_source"]) == (["header.hsts"], "migrated")

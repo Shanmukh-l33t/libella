@@ -6,6 +6,7 @@ a verbatim quote. Nothing here trusts scanner banners or model prose.
 import re
 import uuid
 
+from .controls import COOKIE_CONTROLS, HEADER_CONTROLS
 from .tools.http_probe import HttpProbe
 
 CANARY = "libella" + uuid.uuid4().hex[:6]
@@ -35,13 +36,15 @@ SEC_HEADERS = {
 
 def _candidate(title, cwe, owasp, severity, confidence, endpoint, description,
                impact, remediation, evidence_id, quote, proof_request, dedup_key,
-                quote_in="body"):
+               quote_in="body", controls=()):
     return {
         "title": title, "cwe": cwe, "owasp": owasp, "severity": severity,
         "confidence": confidence, "endpoint": endpoint, "description": description,
         "impact": impact, "remediation": remediation,
         "evidence_ids": [evidence_id], "quote": quote, "quote_in": quote_in,
         "proof_request": proof_request, "dedup_key": dedup_key,
+        # structured control ids this candidate asserts failed (controls.py)
+        "controls": sorted(set(controls)),
     }
 
 
@@ -94,6 +97,8 @@ class WebChecks:
             "Set the missing headers at the server or application layer.",
             r["evidence_id"], quote, self._proof(url),
             f"headers:{url}", quote_in="header_fact",
+            controls=[HEADER_CONTROLS[h] for h in SEC_HEADERS
+                      if h not in {k.lower() for k in r["headers"]}],
         )]
 
     def cookie_flags(self, url: str, method="GET", body=None, headers=None) -> list[dict]:
@@ -124,6 +129,7 @@ class WebChecks:
                     r["evidence_id"], f"{name}|{','.join(problems)}",
                     {"method": method, "url": url, "body": body, "headers": headers},
                     f"cookie:{url}:{name}", quote_in="cookie_fact",
+                    controls=[COOKIE_CONTROLS[p] for p in problems],
                 ))
         return out
 

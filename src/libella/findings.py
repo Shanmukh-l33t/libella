@@ -51,11 +51,16 @@ class FindingPipeline:
                 for e in ev_ids
             )
             derived_source = "captured_exchange" if all_real else "unbound"
+        controls = sorted(set(cand.get("controls") or ()))
         if existing:
             merged = sorted(set(json.loads(existing["evidence_ids_json"])) | set(ev_ids))
+            known = set(json.loads(existing.get("controls_json") or "[]"))
             self.db.execute(
-                "UPDATE findings SET evidence_ids_json=?, updated_at=? WHERE id=?",
-                (json.dumps(merged), time.time(), existing["id"]),
+                "UPDATE findings SET evidence_ids_json=?, controls_json=?, controls_source=?, "
+                "updated_at=? WHERE id=?",
+                (json.dumps(merged), json.dumps(sorted(known | set(controls))),
+                 existing.get("controls_source") or ("check" if controls else "none"),
+                 time.time(), existing["id"]),
             )
             self.db.emit(engagement_id, "finding_dedup",
                          {"finding_id": existing["id"], "dedup_key": dedup})
@@ -66,11 +71,13 @@ class FindingPipeline:
         self.db.execute(
             "INSERT INTO findings(id, engagement_id, title, cwe, owasp, severity, cvss, confidence, "
             "asset_id, endpoint, state, description, impact, remediation, dedup_key, "
-            "evidence_ids_json, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "evidence_ids_json, created_at, updated_at, controls_json, controls_source) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (fid, engagement_id, cand["title"], cand.get("cwe"), cand.get("owasp"),
              cand.get("severity", "info"), cand.get("cvss"), cand.get("confidence", "low"),
              cand.get("asset_id"), cand.get("endpoint"), state, cand.get("description"),
-             cand.get("impact"), cand.get("remediation"), dedup, json.dumps(ev_ids), now, now),
+             cand.get("impact"), cand.get("remediation"), dedup, json.dumps(ev_ids), now, now,
+             json.dumps(controls), "check" if controls else "none"),
         )
         # store the proof request + quote as evidence so verification can replay
         proof_ev = self.evidence.put_json(engagement_id, {

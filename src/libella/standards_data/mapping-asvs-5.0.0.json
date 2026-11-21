@@ -1,7 +1,7 @@
 {
  "framework": "ASVS",
  "version": "5.0.0",
- "note": "Hand-authored evidence mapping from Libella's executed units to ASVS 5.0.0 requirements. Strength: direct = the check exercises the property the requirement states; partial = it exercises part of it; indirect = it records a related observation only. A requirement listed here is NOT claimed as verified by a passing run. `match` narrows a multi-control finding to the requirement whose control its title names.",
+ "note": "Hand-authored evidence mapping from Libella's executed units to ASVS 5.0.0 requirements. Strength: direct = the check exercises the property the requirement states; partial = it exercises part of it; indirect = it records a related observation only. A requirement listed here is NOT claimed as verified by a passing run. `controls` restricts a multi-control check to findings that asserted that control id (see controls.py); titles are never consulted.",
  "applies_to": [
   "web",
   "api"
@@ -19,9 +19,8 @@
      "cwe": [
       "CWE-693"
      ],
-     "match": [
-      "HSTS",
-      "Strict-Transport-Security"
+     "controls": [
+      "header.hsts"
      ]
     },
     "V3.4.3": {
@@ -29,9 +28,8 @@
      "cwe": [
       "CWE-693"
      ],
-     "match": [
-      "CSP",
-      "Content-Security-Policy"
+     "controls": [
+      "header.csp"
      ]
     },
     "V3.4.4": {
@@ -39,8 +37,8 @@
      "cwe": [
       "CWE-693"
      ],
-     "match": [
-      "X-Content-Type-Options"
+     "controls": [
+      "header.x_content_type_options"
      ]
     },
     "V3.4.5": {
@@ -48,8 +46,8 @@
      "cwe": [
       "CWE-693"
      ],
-     "match": [
-      "Referrer-Policy"
+     "controls": [
+      "header.referrer_policy"
      ]
     },
     "V3.4.6": {
@@ -57,10 +55,8 @@
      "cwe": [
       "CWE-693"
      ],
-     "match": [
-      "CSP",
-      "Content-Security-Policy",
-      "frame-ancestors"
+     "controls": [
+      "header.csp"
      ]
     }
    }
@@ -77,8 +73,8 @@
      "cwe": [
       "CWE-614"
      ],
-     "match": [
-      "Secure"
+     "controls": [
+      "cookie.secure"
      ]
     },
     "V3.3.2": {
@@ -86,8 +82,8 @@
      "cwe": [
       "CWE-614"
      ],
-     "match": [
-      "SameSite"
+     "controls": [
+      "cookie.samesite"
      ]
     },
     "V3.3.4": {
@@ -95,8 +91,8 @@
      "cwe": [
       "CWE-614"
      ],
-     "match": [
-      "HttpOnly"
+     "controls": [
+      "cookie.httponly"
      ]
     }
    }

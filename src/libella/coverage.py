@@ -21,7 +21,7 @@ partial check is not a passing requirement.
 import json
 import time
 
-from . import standards
+from . import controls, standards
 from .db import DB
 
 DEFAULT = "wstg"
@@ -192,7 +192,7 @@ def _strength(spec: dict, rid: str, units) -> str:
 
 
 def _derive(spec: dict, rid: str, slots: dict, findings, profile: str, categories,
-            produced_by=None) -> tuple:
+            produced_by=None, links=None) -> tuple:
     """Automatic status + evidence pointers for one requirement, from recorded execution."""
     every = spec["by_requirement"].get(rid, ())
     # per-method rows are precise; a role row (which runs all of them) only speaks
@@ -204,6 +204,13 @@ def _derive(spec: dict, rid: str, slots: dict, findings, profile: str, categorie
                 "reason": f"engagement scope has no {' or '.join(spec['applies_to'])} category"}, \
                _pointers(slots, [])
     if not units:
+        linked = _attributed(spec, rid, findings, produced_by or {}, links or {})
+        if linked:  # no automated check, but an analyst tied a finding to it
+            verified = [f for f in linked if f["state"] in CONFIRMED_STATES]
+            f = (verified or linked)[0]
+            return {"status": "finding_verified" if verified else "finding_unverified",
+                    "units": [], "reason": f"analyst-linked finding {f['id']} ({f['cwe']}, "
+                                           f"{f['state']})"}, _pointers(slots, [], linked)
         blocked = spec["not_supported"].get(rid)
         if blocked:
             return {"status": "not_supported", "units": [], "reason": blocked}, \
@@ -215,7 +222,7 @@ def _derive(spec: dict, rid: str, slots: dict, findings, profile: str, categorie
         row = spec["units"][unit]
         names = (unit, *row.get("tools", ()), *row.get("alias_evidence", ()))
         states[unit] = _unit_state(_merge(slots, names))
-    hits = standards.findings_for(spec["id"], rid, findings, produced_by)
+    hits = _attributed(spec, rid, findings, produced_by or {}, links or {})
     pointers = _pointers(slots, units, hits, spec)
     if hits:
         verified = [f for f in hits if f["state"] in CONFIRMED_STATES]
@@ -253,7 +260,61 @@ def level_for(db: DB, engagement_id: str, framework: str) -> int | None:
     return value if isinstance(value, int) and value in standards.levels(framework) else None
 
 
-def workspace(db: DB, engagement_id: str, framework: str = DEFAULT) -> dict:
+def _links(db: DB, engagement_id: str, framework: str) -> dict:
+    """(requirement, finding) -> the analyst's latest attribution decision.
+
+    requirement_links is append-only: every add/remove stays as audit history and
+    the newest row per pair is the one in force.
+    """
+    current: dict = {}
+    for r in db.query("SELECT * FROM requirement_links WHERE engagement_id=? AND framework=? "
+                      "ORDER BY id", (engagement_id, framework)):
+        current[(r["requirement_id"], r["finding_id"])] = r
+    return current
+
+
+def _attributed(spec, rid, findings, produced_by, links) -> list:
+    """Automatic structured attribution, then analyst corrections on top."""
+    hits = {f["id"]: f for f in standards.findings_for(spec["id"], rid, findings, produced_by)}
+    by_id = {f["id"]: f for f in findings}
+    for (req, fid), row in links.items():
+        if req != rid or fid not in by_id:
+            continue
+        if row["action"] == "remove":
+            hits.pop(fid, None)
+        elif row["action"] == "add":
+            hits[fid] = {**by_id[fid], "linked_by": "analyst"}
+    return list(hits.values())
+
+
+def link(db: DB, engagement_id: str, framework: str, requirement_id: str, finding_id: str,
+         action: str, note: str, actor: str = "operator") -> dict:
+    """Record an analyst attribution decision (add/remove) with a mandatory reason."""
+    _engagement(db, engagement_id)
+    spec = standards.spec(framework)
+    if requirement_id not in spec["requirements"]:
+        raise LookupError(f"unknown {framework} requirement {requirement_id}")
+    if not db.one("SELECT id FROM findings WHERE id=? AND engagement_id=?",
+                  (finding_id, engagement_id)):
+        raise LookupError("finding not found in this engagement")
+    if action not in ("add", "remove"):
+        raise ValueError("action must be add or remove")
+    note = (note or "").strip() if isinstance(note, str) else ""
+    if not note:
+        raise ValueError("an attribution change needs a note explaining why")
+    if len(note) > NOTE_MAX:
+        raise ValueError(f"note exceeds {NOTE_MAX} characters")
+    db.execute("INSERT INTO requirement_links(engagement_id, framework, requirement_id, "
+               "finding_id, action, note, actor, created_at) VALUES(?,?,?,?,?,?,?,?)",
+               (engagement_id, framework, requirement_id, finding_id, action, note, actor,
+                time.time()))
+    return {"history": db.query(
+        "SELECT requirement_id, finding_id, action, note, actor, created_at FROM "
+        "requirement_links WHERE engagement_id=? AND framework=? AND requirement_id=? ORDER BY id",
+        (engagement_id, framework, requirement_id))}
+
+
+def workspace(db: DB, engagement_id: str, framework: str = DEFAULT, evidence=None) -> dict:
     """Catalog + automatic execution status + recorded review for one engagement."""
     _engagement(db, engagement_id)
     spec = standards.spec(framework)
@@ -263,9 +324,12 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT) -> dict:
     level = level_for(db, engagement_id, framework)
     in_scope = set(standards.requirements(framework, level))
     slots = _unit_slots(db, engagement_id, spec)
-    findings = db.query("SELECT id, cwe, state, title, evidence_ids_json FROM findings "
-                        "WHERE engagement_id=?", (engagement_id,))
+    if evidence is not None:
+        controls.migrate(db, evidence, engagement_id)
+    findings = db.query("SELECT id, cwe, state, title, evidence_ids_json, controls_json, "
+                        "controls_source FROM findings WHERE engagement_id=?", (engagement_id,))
     produced_by = _provenance(db, engagement_id, spec, findings)
+    links = _links(db, engagement_id, framework)
     recorded = {r["test_id"]: r for r in db.query(
         "SELECT * FROM coverage_entries WHERE engagement_id=? AND framework=?",
         (engagement_id, framework))}
@@ -281,7 +345,7 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT) -> dict:
                 continue
             req = spec["requirements"][rid]
             auto, pointers = _derive(spec, rid, slots, findings, profile, scope_categories,
-                                     produced_by)
+                                     produced_by, links)
             row = recorded.get(rid) or {}
             review = row["status"] if row.get("status") in STATUSES else None
             entry = {"status": review, "note": row.get("note"),
@@ -316,7 +380,14 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT) -> dict:
         "not_tested": applicable - completed,
         "statuses": statuses, "manual": manual,
     }
-    return {"framework": {**spec["framework"], **{"requirements": len(spec["order"]),
+    attributed = {fid for c in categories for t in c["tests"] for fid in t["evidence"]["findings"]}
+    unattributed = [{"id": f["id"], "title": f["title"], "cwe": f["cwe"], "state": f["state"],
+                     "reason": ("no producing check could be recovered from its evidence"
+                                if not produced_by.get(f["id"])
+                                else "its producing check maps to no requirement here")}
+                    for f in findings if f["id"] not in attributed]
+    return {"unattributed_findings": unattributed,
+            "framework": {**spec["framework"], **{"requirements": len(spec["order"]),
                                                   "groups": len(spec["groups"]),
                                                   "applies_to": spec["applies_to"]}},
             "engagement_id": engagement_id, "summary": summary,

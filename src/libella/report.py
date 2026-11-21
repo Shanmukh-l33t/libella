@@ -222,13 +222,13 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
                            if t["automatic"]["status"] not in coverage.COMPLETED
                            and t["status"] != "covered"],
         }
-    report["coverage"] = _ledger(coverage.workspace(db, engagement_id))
+    report["coverage"] = _ledger(coverage.workspace(db, engagement_id, evidence=evidence))
     # every standard the engagement selected is accounted for in the report itself
     try:
         selected = json.loads(eng.get("standards_json") or "{}")
     except ValueError:
         selected = {}
-    report["standards"] = [_ledger(coverage.workspace(db, engagement_id, fid))
+    report["standards"] = [_ledger(coverage.workspace(db, engagement_id, fid, evidence))
                            for fid in selected if fid != coverage.DEFAULT]
     for f in findings:
         vs = [v for v in verifications if v["finding_id"] == f["id"]]
