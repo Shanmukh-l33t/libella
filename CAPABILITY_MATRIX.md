@@ -72,10 +72,17 @@ Research: research/analysis-*.md, inventory-*.md, REA_LOG.md (provable REA invoc
   17 findings independently replay-validated, 0 missed, $0.17, 526s, clean
   convergence (web/api/authz completed), 2 hypotheses, evidence chain intact.
 - Deterministic mode: 16/16, 0 FP hardened (baseline).
-- Full suite: 653 passed, 1 skipped (ZAP live), lint clean — counted on branch
-  `data-protection`, version 0.5.0 (not yet tagged). The benchmark gate is not part
-  of that suite: PairLab last recorded 16/16 vuln, 0 FP hardened, and was not re-run
-  on this branch.
+- Full suite: 752 passed, 1 skipped (ZAP live), lint clean, counted on branch
+  `defensive-readiness` at the commit that adds this line (v0.5.0, not tagged).
+  PairLab gate re-run on the same code: 16/16 vuln, 0 FP hardened, evidence chains intact.
+- Browser journeys executed on that code: A beginner (wizard, real PairLab scan to
+  Done, 11/11 findings verified, PDF reopened, SSE p50 0.34 s), C tool readiness
+  levels, D target credentials (redirect not followed, out-of-scope sink 0 requests,
+  secret absent everywhere), E execution controls (pause/cancel/window close stop
+  all egress, 5 req/s cap held), F report recovery (failed render keeps last report,
+  all exports reopen, tampered evidence reads broken).
+- Retest: a removed route reads `fixed (route removed)` only with corroborating
+  signals (control URL up, consistent repeat, no block page); otherwise inconclusive.
 - Independent audit2: 13 defects fixed (4 high, 7 medium, 2 low), 31 regression tests.
 - End-to-end acceptance test passes through the real API (lifecycle + traffic
   replay + graph + memory + PDF + remediation + chain).
