@@ -128,6 +128,16 @@ def main() -> int:
         failures.append("report.md has no ASVS Level 2 coverage section")
     # attribution: a finding only fails requirements its own check maps to
     produced = {f["id"]: f for f in app.pipeline.list(eid)}
+    rows = {r["id"]: r for r in app.db.query(
+        "SELECT id, controls_json, controls_source FROM findings WHERE engagement_id=?", (eid,))}
+    need = {"V3.4.1": "header.hsts", "V3.4.3": "header.csp",
+            "V3.4.4": "header.x_content_type_options", "V3.4.5": "header.referrer_policy",
+            "V3.4.6": "header.csp", "V3.3.1": "cookie.secure", "V3.3.2": "cookie.samesite",
+            "V3.3.4": "cookie.httponly"}
+    for rid, control in need.items():
+        for fid in (reqs.get(rid) or {}).get("evidence", {}).get("findings", []):
+            if control not in json.loads(rows[fid]["controls_json"] or "[]"):
+                failures.append(f"{rid} cites {fid}, which never asserted {control}")
     for rid, t in executed.items():
         for fid in t["evidence"]["findings"]:
             if rid == "V4.3.2" and "graphql" not in (produced[fid]["title"] or "").lower():
