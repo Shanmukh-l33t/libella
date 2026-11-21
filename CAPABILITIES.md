@@ -94,6 +94,7 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | Captured session credentials sealed at rest | TESTED | exchanges request/response header columns are Fernet ciphertext; evidence blobs keep redacted headers; replay reads the sealed column. tests/traffic/test_credential_capture.py |
 | SARIF / JSON / Markdown reports | TESTED | deterministic rendering; files replaced atomically, one artifact row per unchanged state (tests/report/test_report_atomic.py) |
 | PDF / HTML / DOCX / XLSX / CSV exports | TESTED | report_formats.py + report_pdf.py; redaction inherited, CSV formula guard; every format downloaded and validated through the built UI (benchmarks/check_report_exports.py, tests/report/test_report_formats.py) |
+| Export failure recovery | TESTED | a failing re-render returns an actionable 500 (named path, previous report untouched) and the Report tab keeps its controls for a retry; every export reopens and a tampered blob shows a broken chain in Chromium (benchmarks/check_report_recovery_ui.py, tests/report/test_report_api.py) |
 | Target API credential diagnostic | NOT SHIPPED | prototype withdrawn pending a server-approved destination boundary |
 
 ## Platform / UX

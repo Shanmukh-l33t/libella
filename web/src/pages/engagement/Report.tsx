@@ -16,7 +16,14 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
     downloadReport(eid, format).catch((e) => setDlError(e instanceof Error ? e.message : String(e)));
   };
 
-  if (error) return <ErrorNote error={error} />;
+  // Keep the last good report and the controls on screen: a failed re-render must
+  // leave the operator a way to retry, not replace the whole tab with an error.
+  if (error && !data) return (
+    <div className="space-y-3">
+      <ErrorNote error={error} />
+      <Button size="sm" icon={<RefreshCw size={13} />} onClick={reload} loading={loading}>Retry</Button>
+    </div>
+  );
   if (loading && !data) return <Skeleton className="h-64 w-full" />;
   if (!data) return <EmptyState title="Report unavailable" description="The API returned no report for this engagement." />;
 
@@ -46,7 +53,7 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
         </div>
       </div>
 
-      <ErrorNote error={dlError} />
+      <ErrorNote error={error || dlError} />
 
       {data.engagement.status !== "done" && (
         <div className="rounded border border-[#FEDF89] bg-[#FFFAEB] px-4 py-3 text-sm text-ink-700">

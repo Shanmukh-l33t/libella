@@ -1,4 +1,7 @@
 """API surface: PDF export, remediation updates, board, engagement comparison."""
+from pathlib import Path
+
+from libella.report import render_report
 
 
 def test_report_pdf_format(client, pair):
@@ -7,6 +10,27 @@ def test_report_pdf_format(client, pair):
     assert r.headers["content-type"] == "application/pdf"
     assert r.content[:5] == b"%PDF-"
     assert len(r.content) > 3000
+
+
+def test_render_failure_is_actionable_and_leaves_no_partial_report(client, pair):
+    """An unwritable report path must name itself in the error, not read as a server bug."""
+    outdir = Path(render_report(pair.db, pair.evidence, "eng_a")["outdir"])
+    md = (outdir / "report.md").read_text()
+    (outdir / "report.json").unlink()
+    (outdir / "report.json").mkdir()  # os.replace(...) now fails with EISDIR for every user
+    try:
+        r = client.get("/api/engagements/eng_a/report?format=pdf")
+    finally:
+        (outdir / "report.json").rmdir()
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert "Report render failed" in detail and "previous report" in detail, detail
+    assert r.content[:5] != b"%PDF-", "a failed render served a report body"
+    assert (outdir / "report.md").read_text() == md
+    # no temp file survived the failed atomic write
+    assert sorted(p.name for p in outdir.iterdir()) == ["report.md", "report.sarif"]
+    ok = client.get("/api/engagements/eng_a/report?format=pdf")
+    assert ok.status_code == 200 and ok.content[:5] == b"%PDF-"
 
 
 def test_remediation_route_updates_and_board_groups(client, pair):

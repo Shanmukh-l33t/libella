@@ -494,7 +494,12 @@ def create_api(app: App) -> FastAPI:
     def report(eid: str, format: str = "json"):
         if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
             raise HTTPException(404)
-        res = render_report(app.db, app.evidence, eid)
+        try:
+            res = render_report(app.db, app.evidence, eid)
+        except Exception as exc:  # an unwritable output path must read as a report problem
+            raise HTTPException(500, f"Report render failed: {type(exc).__name__}: {exc}. "
+                                     "The previous report on disk is unchanged; fix the report "
+                                     "output path, then regenerate.")
         p = Path(res["outdir"])
         if format == "md":
             return FileResponse(p / "report.md", media_type="text/markdown")

@@ -12,6 +12,16 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+/** Error bodies carry the actionable reason; a bare status hides it. */
+async function failure(res: Response): Promise<ApiError> {
+  let msg = `${res.status} ${res.statusText}`;
+  try {
+    const j = await res.json();
+    if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+  } catch { /* non-JSON error body */ }
+  return new ApiError(res.status, msg);
+}
+
 export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { Authorization: `Bearer ${getToken()}`, ...(init.headers as Record<string, string>) };
   if (init.body) headers["Content-Type"] = "application/json";
@@ -21,14 +31,7 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
     window.dispatchEvent(new Event("libella:unauthorized"));
     throw new ApiError(401, "invalid token");
   }
-  if (!res.ok) {
-    let msg = `${res.status} ${res.statusText}`;
-    try {
-      const j = await res.json();
-      if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-    } catch { /* non-JSON error body */ }
-    throw new ApiError(res.status, msg);
-  }
+  if (!res.ok) throw await failure(res);
   const ct = res.headers.get("content-type") || "";
   return (ct.includes("application/json") ? await res.json() : await res.text()) as T;
 }
@@ -49,7 +52,7 @@ export type ReportFormat = "md" | "sarif" | "pdf" | "dojo" | "html" | "docx" | "
 export async function downloadReport(eid: string, format: ReportFormat) {
   const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}`;
   const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
-  if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  if (!res.ok) throw await failure(res);
   const href = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = href;
