@@ -1,8 +1,8 @@
 """Multi-level tool readiness: installed -> compatible -> functional -> assessment-ready.
 
 Every level is proven with a real local executable, so the test never needs the
-real scanner: a shell script stands in for it. One test exercises real nmap and
-httpx against the loopback fixture and skips when the box has neither.
+real scanner: a shell script stands in for it. One optional smoke test
+exercises real nmap against the loopback fixture.
 """
 import stat
 
@@ -281,15 +281,25 @@ def test_deep_readiness_route_runs_one_tool_and_404s_unknown_tool(tmp_path, monk
         assert res.json()["status"] == "functional"
 
 
-def test_real_nmap_and_httpx_reach_assessment_ready_against_the_fixture():
+def test_python_httpx_is_not_assessment_ready(tmp_path, monkeypatch):
+    # CI can have the Python HTTP client's CLI without the ProjectDiscovery binary.
+    _script(tmp_path, "httpx", 'echo "Usage: httpx [OPTIONS] URL" >&2\nexit 2')
+    monkeypatch.setenv("LIBELLA_TOOL_PATH", str(tmp_path))
+    diagnostics.clear_cache()
+    try:
+        row = readiness.check(_spec("httpx", name="httpx"), force=True)
+    finally:
+        diagnostics.clear_cache()
+    assert row["status"] == "installed", row
+    assert row["version"] is None
+
+
+def test_real_nmap_reaches_assessment_ready_against_the_fixture():
     from libella.tools import resolve_binary
 
-    ready = [name for name in ("nmap", "httpx") if resolve_binary(name)]
-    if not ready:
-        pytest.skip("neither nmap nor httpx is installed on this box")
+    path = resolve_binary("nmap")
+    if not path:
+        pytest.skip("nmap is not installed")
 
-    rows = {name: readiness.check(_spec(resolve_binary(name), name=name), force=True)
-            for name in ready}
-
-    for name, row in rows.items():
-        assert row["status"] == "assessment_ready", (name, row)
+    row = readiness.check(_spec(path, name="nmap"), force=True)
+    assert row["status"] == "assessment_ready", row
