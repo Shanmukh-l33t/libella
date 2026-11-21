@@ -17,6 +17,7 @@ from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
 from .llm import LLM, LLMError
+from .policy import DEFAULT_PROFILE, permits
 from .scope import Scope
 from .tools import Registry
 from .tools.http_probe import HttpProbe
@@ -164,6 +165,21 @@ class AgentRunner:
         self.scope = scope
         self.eng = engagement_id
         self.checks = WebChecks(probe, engagement_id, scope)
+        row = db.one("SELECT profile FROM engagements WHERE id=?", (engagement_id,))
+        self.profile = (row or {}).get("profile") or DEFAULT_PROFILE
+
+    # ---- policy ----
+
+    def _refused(self, unit: str) -> dict | None:
+        """One gate for every agent action that touches the target."""
+        if permits(unit, self.profile):
+            return None
+        self.db.emit(self.eng, "degradation",
+                     {"code": "policy_restriction", "unit": unit,
+                      "detail": f"agent {unit} needs a higher assessment profile than "
+                                f"{self.profile!r}: policy restriction"})
+        return {"error": f"policy restriction: {unit} is not permitted by the "
+                         f"{self.profile!r} profile"}
 
     # ---- gated writers ----
 
@@ -215,6 +231,10 @@ class AgentRunner:
     def _exec_action(self, action, args, run_id, intent_id, seq, produced):
         if action == "http_request":
             url = args.get("url", "")
+            method = (args.get("method") or "GET").upper()
+            refused = self._refused("http_write") if method not in ("GET", "HEAD") else None
+            if refused:
+                return refused
             r = self.probe.request(self.eng, self.scope, url, method=args.get("method", "GET"),
                                    headers=args.get("headers"), body=args.get("body"),
                                    tool="agent_http")
@@ -228,6 +248,9 @@ class AgentRunner:
                     "error": r.get("error")}
         if action == "run_baseline":
             url = args.get("url", "").rstrip("/")
+            refused = self._refused("run_baseline")
+            if refused:
+                return refused
             if not self.scope.check_url(url).allowed:
                 return {"error": "out of scope"}
             c = self.checks
@@ -309,6 +332,9 @@ class AgentRunner:
             method = CHECK_METHODS.get(name)
             if not method:
                 return {"error": f"unknown check {name}"}
+            refused = self._refused(method)
+            if refused:
+                return refused
             url = args.get("url", "")
             fn = getattr(self.checks, method)
             try:
@@ -342,6 +368,9 @@ class AgentRunner:
                 spec = self.registry.get(tool)
             except KeyError:
                 return {"error": f"unknown tool {tool}"}
+            refused = self._refused(tool)
+            if refused:
+                return refused
             params = args.get("params", {})
             target = params.get("target") or params.get("url") or params.get("domain") or ""
             r = self.runner.run(spec, params, self.scope, self.eng, intent_id, target)
@@ -422,6 +451,9 @@ class AgentRunner:
             role = args.get("role")
             if role not in CHARTERS:
                 return {"error": f"unknown role {role}"}
+            refused = self._refused(role)
+            if refused:
+                return refused
             target = args.get("target", "")
             if target:
                 d = self.scope.check_url(target) if "://" in target else self.scope.check_host_port(target, 0)

@@ -37,8 +37,9 @@ engagement authorization object before it executes.
 
 ## Verified results (real execution, not claims)
 
-PairLab benchmark (labs/pairlab): a vulnerable/hardened twin app with 13
-seeded vulnerability classes and machine-readable ground truth.
+PairLab benchmark (labs/pairlab): a vulnerable/hardened twin app with 16
+seeded vulnerability classes (PL-01..PL-16, 6 negative controls) and
+machine-readable ground truth.
 
 | Mode | Seeded vulns detected + independently validated | False positives | Duration |
 |---|---|---|---|
@@ -122,9 +123,10 @@ Availability is probed at startup and shown in Settings.
 
 ## Configure a model (optional, for LLM planning)
 
-Settings > LLM provider: any OpenAI-compatible endpoint (base URL, API key,
-model). Per-role model selection and fallback are supported. Token and cost
-accounting is recorded per engagement. Deterministic mode needs no model.
+Open **Settings → AI provider**. Use **Test connection** to validate the
+model and key before saving. See [provider setup](docs/provider-connection.md)
+for custom endpoints and what the check proves. Per-role model selection and
+fallback are optional; deterministic mode needs no model.
 
 ## Architecture
 
@@ -133,7 +135,7 @@ evidence store + static React UI. Supervisor planner emits leased worker
 intents (fencing tokens, expiry sweep, bounded retries). Workers execute
 typed tool adapters and deterministic checks. An independent verifier
 replays proof requests. Reports render deterministically from typed state
-(Markdown, JSON, SARIF) with secret redaction.
+(Markdown, JSON, SARIF, PDF, HTML, DOCX, XLSX, CSV) with secret redaction.
 
 Read ARCHITECTURE.md for the decision record and THREAT_MODEL.md for the
 security model and known limits.
@@ -142,8 +144,13 @@ security model and known limits.
 
 - Fail-closed scope: empty scope is rejected at creation.
 - Metadata/link-local ranges blocked unless explicitly targeted.
-- Per-engagement rate, concurrency, duration, and cost budgets.
-- Profiles: passive, safe_active, advanced_validation (explicit opt-in).
+- The planner checks authorized time windows at start, resume and between intents.
+  The built-in HTTP probe and finding/traffic replays also refuse outside the window.
+  A closed-window report is partial. Create a new engagement with a new authorized
+  window rather than reopening the old run. These checks do not preempt every
+  in-flight request, browser action or external process at the deadline.
+- Profiles: passive, production_safe, safe_active, advanced_validation — enforced in
+  planning and at execution; skipped work is reported as a coverage limitation.
 - Emergency stop: cancel propagates to intents and subprocesses.
 - Localhost-only bind by default; token auth on every API route.
 - Credentials redacted from logs, evidence views, and reports.
@@ -160,11 +167,34 @@ replay; web (16 classes), OpenAPI API (5), GraphQL (7), TLS, source/supply-chain
 (6 + OSV), AWS cloud posture (moto-verified), container scanning, technology-
 specific modules (WordPress/PHP/Java/ColdFusion/Node/IIS/Apache/Nginx), ZAP
 adapter, plugin/MCP extension framework; deep investigation graph + cross-run
-memory + drift; independent verification + retest; PDF/MD/JSON/SARIF reports +
-remediation tracking + historical comparison; premium operational UI (Command
-Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph).
-448 tests; two independent adversarial audits (35 defects fixed). CI/issue-tracker
-hooks and scheduled retest are planned, not claimed. See CAPABILITY_MATRIX.md.
+memory + drift; independent verification + retest; PDF/HTML/DOCX/XLSX/CSV/MD/JSON/SARIF
+reports + remediation tracking + historical comparison; premium operational UI (Command
+Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph,
+read-only Validation workspace, WSTG coverage review).
+779 tests passed, 1 skipped (branch `defensive-readiness`, v0.5.0 in development).
+The PairLab benchmark gate, run separately on the same commit, is 16/16 seeds with
+0 false positives. Browser acceptance journeys (beginner run to Done and PDF,
+tool readiness, target credentials, execution controls, report recovery) live in
+benchmarks/acceptance_beginner.py and benchmarks/check_*_ui.py; the real-site
+journey is benchmarks/acceptance_keyreed.py (opt-in via LIBELLA_TARGET).
+
+Hardening from a real external assessment (keyreed.com, a Vercel-hosted static site):
+
+- a WAF/CDN challenge (Vercel, Cloudflare, captcha, WAF checkpoints) is classified as
+  an interstitial, never as the application: no finding is raised from it, the check
+  reads inconclusive, the reason is recorded, and a browser read of the same page is
+  used before giving up. Verification and retest replay over the transport that
+  captured the proof (`via: browser`), so a challenged replay can neither confirm nor
+  dismiss a finding.
+- scanners report real progress: nuclei `-stats` JSON is parsed per interval into
+  `scan_progress` events (percent, requests, matches, rps, templates) and shown in the
+  engagement view; a scan that stops early records `scan_partial` with its percentage.
+- a URL target authorizes its own port for host tools: an undeclared port set is
+  refused, and the infra scan declares exactly the authorized ports.
+- report kinds: technical, executive, coverage, evidence appendix (chain metadata) and
+  GitLab DAST 15.0.0 JSON, discoverable through `/api/engagements/{id}/report/kinds` Two independent adversarial audits (35 defects fixed).
+CI/issue-tracker hooks and scheduled retest are planned, not claimed. See
+CAPABILITY_MATRIX.md.
 
 ## License
 

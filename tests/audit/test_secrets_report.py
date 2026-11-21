@@ -53,6 +53,7 @@ def test_markdown_injection_via_endpoint_and_name(app, mk_eng, lab):
     assert "\n## Pwned" not in md
     headings = [ln for ln in md.splitlines() if ln.startswith("## ")]
     assert set(headings) <= {"## Summary", "## Scope", "## Findings", "## Method",
+                             "## WSTG 4.2 coverage",
                              "## Coverage limitations (read before trusting 'no findings')"}
 
 

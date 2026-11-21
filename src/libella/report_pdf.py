@@ -3,6 +3,8 @@
 Rendering is presentation-only: every string is redacted through report.redact()
 before it reaches the page, and platypus paginates long content automatically.
 """
+import os
+import tempfile
 import time
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -81,7 +83,8 @@ def _risk_table(findings, st):
         data.append([_p(sev.upper(), ParagraphStyle("sv", parent=st["cell"],
                                                     textColor=SEV_COLOR[sev])),
                      _p(n, st["cell"]), _p(f"{100 * n / total:.0f}%", st["cell"])])
-    data.append([_p("<b>Total</b>", st["cell"]), _p(f"<b>{len(findings)}</b>", st["cell"]),
+    # constant markup, not report content: build the Paragraph directly so _p does not escape it
+    data.append([Paragraph("<b>Total</b>", st["cell"]), Paragraph(f"<b>{len(findings)}</b>", st["cell"]),
                  _p("100%" if findings else "0%", st["cell"])])
     t = Table(data, colWidths=[50 * mm, 40 * mm, 40 * mm])
     t.setStyle(TableStyle([
@@ -162,6 +165,10 @@ def render_pdf(report_json: dict, out_path: str | Path) -> Path:
     """Write a redacted PDF for a report.json dict; returns the written path."""
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Build beside the target and replace, so a concurrent GET never serves a
+    # partially written PDF.
+    fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=str(out.parent))
+    os.close(fd)
     st = _styles()
     eng = report_json.get("engagement") or {}
     summary = report_json.get("summary") or {}
@@ -170,7 +177,7 @@ def render_pdf(report_json: dict, out_path: str | Path) -> Path:
     scope = report_json.get("scope") or {}
     generated = report_json.get("generated_at")
 
-    doc = BaseDocTemplate(str(out), pagesize=A4, title=f"Libella report {eng.get('id', '')}",
+    doc = BaseDocTemplate(tmp, pagesize=A4, title=f"Libella report {eng.get('id', '')}",
                           author="Libella", leftMargin=18 * mm, rightMargin=18 * mm,
                           topMargin=18 * mm, bottomMargin=20 * mm)
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")
@@ -244,5 +251,11 @@ def render_pdf(report_json: dict, out_path: str | Path) -> Path:
                    "finding. Every tool call is scope-checked before execution and audited; "
                    "evidence is content-addressed and hash-chained. All report text passes a "
                    "redaction pass for credentials, tokens and personal data.", st["body"]))
-    doc.build(flow)
+    try:
+        doc.build(flow)
+        os.replace(tmp, out)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     return out

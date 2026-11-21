@@ -7,6 +7,17 @@ import type { Asset, Engagement, Event, Finding, Intent, ToolCall } from "../../
 import { useApi } from "../../lib/hooks";
 import { SEV_COLOR, SEV_ORDER, fmtTime, title } from "../../lib/format";
 import { Badge, Card, EmptyState, ErrorNote, Skeleton, Stat, cx } from "../../components/ui";
+import TargetCredentials from "../../components/TargetCredentials";
+
+const DEGRADATION_TITLE: Record<string, string> = {
+  target_mitigated: "The target answered with a bot/WAF challenge",
+  scan_partial: "The scanner stopped before finishing",
+  policy_restriction: "Not permitted by this assessment profile",
+  intent_blocked: "A step could not be completed",
+  post_run_error: "Post-run work reported an error",
+  verify_failed: "Verification could not run",
+  tls_unreachable: "TLS endpoint unreachable",
+};
 
 const STATE_ORDER = ["suspected", "observed", "validated", "reported", "remediated", "retested_fixed", "retested_persists", "ruled_out"];
 
@@ -73,6 +84,12 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
     () => events.filter((ev) => ev.kind === "degradation" || ev.kind === "engagement_failed").slice(0, 5),
     [events],
   );
+  // Real progress, straight from the scanner's own stats line (nuclei -stats JSON).
+  const scan = useMemo(() => {
+    const ev = events.find((e) => e.kind === "scan_progress");
+    return (ev?.payload || null) as { tool?: string; percent?: number; requests?: number;
+      matched?: number; rps?: number; templates?: number; url?: string } | null;
+  }, [events]);
   const loading = assets.loading || findings.loading || intents.loading || calls.loading;
   const errors = [assets.error, findings.error, intents.error, calls.error].filter(Boolean) as string[];
 
@@ -80,18 +97,38 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
     <div className="space-y-4">
       {eng.status !== "done" && eng.status !== "draft" && (
         <div className={cx("rounded border px-4 py-2.5 text-xs",
-          ["failed", "budget_exhausted", "cancelled"].includes(eng.status)
+          ["failed", "budget_exhausted", "cancelled", "window_closed"].includes(eng.status)
             ? "border-[#FEDF89] bg-[#FFFAEB] text-[#B54708]"
             : "border-line bg-canvas text-ink-500")}>
           Status is <span className="font-medium">{title(eng.status)}</span>
           {eng.status_detail && !["running", "paused"].includes(eng.status) ? ` — ${eng.status_detail}` : ""}. Results below are partial; the report records coverage limits.
+          {eng.status === "window_closed" && " Create a new engagement with an authorized window to continue."}
+        </div>
+      )}
+      {scan && (
+        <div className="rounded border border-line bg-canvas px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+            <span className="font-medium text-ink-900">
+              {eng.status === "running" ? "Scanning" : "Last scan"} ·{" "}
+              {scan.tool === "nuclei" ? "template scan" : title(scan.tool || "scan")}: {scan.percent}% of {scan.templates} templates
+              {eng.status !== "running" && scan.percent !== undefined && scan.percent < 100 ? " (stopped early)" : ""}
+            </span>
+            <span className="tabular-nums text-ink-500">
+              {scan.requests} requests · {scan.matched} matched · {scan.rps} req/s{scan.url ? ` · ${scan.url}` : ""}
+            </span>
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-ink-100" title="Reported by the scanner itself">
+            <div className="h-full rounded-full bg-ink-900 transition-all duration-500" style={{ width: `${Math.min(100, scan.percent || 0)}%` }} />
+          </div>
         </div>
       )}
       {degradations.map((d) => (
         <div key={d.seq} className="flex gap-2 rounded border border-[#FEDF89] bg-[#FFFAEB] px-4 py-3 text-sm">
           <AlertTriangle size={15} className="mt-0.5 shrink-0 text-[#B54708]" />
           <div>
-            <div className="font-medium text-ink-900">{d.payload?.code || d.kind}</div>
+            <div className="font-medium text-ink-900">{DEGRADATION_TITLE[d.payload?.code] || title(d.payload?.code || d.kind)}
+              {d.payload?.code && <span className="ml-1.5 font-mono text-2xs text-ink-500">{d.payload.code}</span>}
+            </div>
             <div className="text-ink-700">{d.payload?.detail || d.payload?.error || "Coverage reduced."}</div>
           </div>
         </div>
@@ -185,6 +222,8 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
               </div>
             )}
           </Card>
+
+          <TargetCredentials eid={eid} eng={eng} />
         </div>
 
         <Card title="Activity" description="Live event stream, newest first." padded={false}

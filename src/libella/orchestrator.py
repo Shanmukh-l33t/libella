@@ -10,25 +10,51 @@ to the frontier. Budgets, pause, cancel and degradation are enforced here,
 not in prompts.
 """
 import json
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 
+from .assessment_window import window_state
 from .checks import WebChecks
 from .crawl import Crawler
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
 from .llm import LLM, LLMError
+from .policy import DEFAULT_PROFILE, permits
 from .scope import Scope
 from .tools import Registry
-from .tools.adapters import PARSERS
+from .tools.adapters import NMAP_MAX_RATE, NUCLEI_MAX_RATE, PARSERS
 from .tools.http_probe import HttpProbe
 from .tools.runner import ToolRunner
 from .verifier import Verifier
 
 LEASE_S = 120
+MODES = ("deterministic", "llm", "agent")
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
          "code_audit", "api_audit", "container_scan", "graphql_audit"}
+
+
+class ConcurrencyGate:
+    """Bounded admission shared by intent execution (scope.max_concurrency is a ceiling)."""
+
+    def __init__(self, limit: int):
+        self.limit = max(1, int(limit))
+        self._sem = threading.BoundedSemaphore(self.limit)
+
+    @contextmanager
+    def slot(self):
+        self._sem.acquire()
+        try:
+            yield
+        finally:
+            self._sem.release()
+
+
+def _declared_rate(scope: Scope, ceiling: int) -> int:
+    """Pass the declared rate, clamped to the tool's own conservative ceiling."""
+    return max(1, min(ceiling, int(scope.rate_limit_rps)))
 
 
 class Orchestrator:
@@ -43,6 +69,12 @@ class Orchestrator:
         self.registry = registry
         self.runner = runner
         self.llm = llm
+        # one limiter per engagement, shared with the probe, so HTTP requests and
+        # external tool launches together honor scope.rate_limit_rps
+        self.runner.limiter = probe._limiter
+        # a serial loop still runs one intent at a time; the gate is the ceiling
+        # max_concurrency imposes on any concurrent executor (tools, workers).
+        self.gate = ConcurrencyGate(1)
 
     # ---- engagement control ----
 
@@ -50,17 +82,29 @@ class Orchestrator:
         eng = self.db.one("SELECT * FROM engagements WHERE id=?", (engagement_id,))
         if eng is None:
             raise KeyError(engagement_id)
+        self._check_mode(mode)
         scope = Scope(json.loads(eng["scope_json"]))
+        if not self._window_allows(engagement_id, eng):
+            return
+        self.gate = self._gate_for(scope)
         self.db.execute("UPDATE engagements SET status='running', started_at=? WHERE id=?",
                         (time.time(), engagement_id))
         self.db.emit(engagement_id, "engagement_started", {"mode": mode})
-        if mode == "agent" and self.llm:
+        if mode == "agent":
             self._plan_agent(engagement_id, scope, eng)
         else:
             self._plan_deterministic(engagement_id, scope, eng)
-            if mode == "llm" and self.llm:
+            if mode == "llm":
                 self._plan_llm(engagement_id, scope, eng)
         self._run_loop(engagement_id, scope, eng, mode)
+
+    def _check_mode(self, mode: str):
+        """Refuse a run that cannot be what it claims (no silent deterministic fallback)."""
+        if mode not in MODES:
+            raise ValueError(f"unknown mode {mode!r}; expected one of {', '.join(MODES)}")
+        if mode in ("llm", "agent") and self.llm is None:
+            raise ValueError(f"mode {mode!r} requires a configured LLM provider; configure one "
+                             "in Settings or start in deterministic mode")
 
     def cancel(self, engagement_id: str):
         self.db.execute("UPDATE engagements SET status='cancelled', finished_at=? WHERE id=?",
@@ -75,19 +119,61 @@ class Orchestrator:
 
     def resume(self, engagement_id: str, mode: str = "deterministic"):
         eng = self.db.one("SELECT * FROM engagements WHERE id=?", (engagement_id,))
+        self._check_mode(mode)
         scope = Scope(json.loads(eng["scope_json"]))
+        if not self._window_allows(engagement_id, eng):
+            return
+        self.gate = self._gate_for(scope)
         self.db.execute("UPDATE engagements SET status='running' WHERE id=?", (engagement_id,))
-        self.db.emit(engagement_id, "engagement_resumed", {})
+        self.db.emit(engagement_id, "engagement_resumed", {"mode": mode})
         self._run_loop(engagement_id, scope, eng, mode)
+
+    def _window_allows(self, engagement_id: str, eng: dict) -> bool:
+        """Refuse to start/resume outside the authorized window; malformed fails closed."""
+        try:
+            ok, detail = window_state(eng)
+        except ValueError as e:
+            ok, detail = False, f"invalid assessment window: {e}"
+        if ok:
+            return True
+        self.db.execute(
+            "UPDATE engagements SET status='failed', status_detail=?, finished_at=? WHERE id=?",
+            (detail, time.time(), engagement_id))
+        self.db.emit(engagement_id, "engagement_refused", {"reason": detail})
+        return False
+
+    def _gate_for(self, scope: Scope) -> ConcurrencyGate:
+        return ConcurrencyGate(scope.max_concurrency)
+
+    # ---- policy ----
+
+    def _profile(self, engagement_id: str) -> str:
+        row = self.db.one("SELECT profile FROM engagements WHERE id=?", (engagement_id,))
+        return (row or {}).get("profile") or DEFAULT_PROFILE
+
+    def _policy_skip(self, engagement_id: str, unit: str, profile: str,
+                     intent_id: str | None = None):
+        """Skipped work is never silent: it lands in the report's limitations."""
+        payload = {"code": "policy_restriction", "unit": unit,
+                   "detail": f"{unit} needs a higher assessment profile than "
+                             f"{profile!r}: policy restriction"}
+        if intent_id:
+            payload["intent_id"] = intent_id
+        self.db.emit(engagement_id, "degradation", payload)
 
     # ---- planning ----
 
     def _add_intent(self, engagement_id, role, objective, depends=None, informed=None, assets=None):
+        profile = self._profile(engagement_id)
+        if not permits(role, profile):
+            self._policy_skip(engagement_id, role, profile)
+            return None
         iid = new_id("i")
         self.db.execute(
             "INSERT INTO intents(id, engagement_id, role, objective, status, depends_on_json, "
             "informed_by_json, asset_ids_json, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (iid, engagement_id, role, objective, "open", json.dumps(depends or []),
+            (iid, engagement_id, role, objective, "open",
+             json.dumps([d for d in (depends or []) if d]),
              json.dumps(informed or []), json.dumps(assets or []), time.time()),
         )
         self.db.emit(engagement_id, "intent_created", {"intent_id": iid, "role": role,
@@ -213,8 +299,13 @@ class Orchestrator:
                     planned.append(self._add_intent(engagement_id, role, obj[:500]))
             except LLMError as e:
                 self.db.emit(engagement_id, "degradation", {"code": "agent_planner_failed", "detail": str(e)})
+        planned = [i for i in planned if i]
         if not planned:
-            # fallback: deterministic plan provides the specialist intents
+            # fallback: deterministic plan provides the specialist intents, visibly
+            self.db.emit(engagement_id, "degradation",
+                         {"code": "agent_plan_fallback",
+                          "detail": "no specialist intents were planned; fell back to the "
+                                    "deterministic pipeline"})
             self._plan_deterministic(engagement_id, scope, eng)
             return
         verify_id = self._add_intent(engagement_id, "verify",
@@ -241,8 +332,16 @@ class Orchestrator:
         max_plan_rounds = int(budgets.get("max_plan_rounds", 3))
         plan_rounds = 0
         while True:
-            status = self.db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,))["status"]
-            if status in ("cancelled", "paused", "done", "failed"):
+            status = self.db.one("SELECT status FROM engagements WHERE id=?",
+                                 (engagement_id,))["status"]
+            if status in ("cancelled", "paused", "done", "failed", "window_closed"):
+                return
+            try:
+                may_run, window_detail = window_state(eng)
+            except ValueError as e:
+                may_run, window_detail = False, f"invalid assessment window: {e}"
+            if not may_run:
+                self._finish(engagement_id, "window_closed", window_detail)
                 return
             if time.time() > deadline:
                 self._finish(engagement_id, "budget_exhausted", "max_duration_s reached")
@@ -263,8 +362,17 @@ class Orchestrator:
                     self._finish(engagement_id, "done", "all intents resolved")
                     return
             try:
-                self._execute(engagement_id, scope, eng, intent, mode)
-                if self._complete(intent, "done"):
+                with self.gate.slot():
+                    status, result = self._execute(engagement_id, scope, eng, intent, mode)
+                if self._paused(engagement_id):
+                    # a pause interrupts in-flight work: re-open the intent so resume
+                    # redoes it instead of recording a partial step as done
+                    self.db.execute(
+                        "UPDATE intents SET status='open', claim_token=NULL, finished_at=NULL, "
+                        "result_json=NULL WHERE id=? AND claim_token=?",
+                        (intent["id"], intent.get("claim_token")))
+                    return
+                if self._complete(intent, status, result) and status == "done":
                     self.db.emit(engagement_id, "intent_done", {"intent_id": intent["id"]})
             except Exception as e:
                 if self._complete(intent, "blocked", {"error": str(e)}):
@@ -309,6 +417,10 @@ class Orchestrator:
                 return it
         return None
 
+    def _paused(self, engagement_id: str) -> bool:
+        row = self.db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,))
+        return bool(row) and row["status"] == "paused"
+
     def _sweep_leases(self, engagement_id: str):
         self.db.execute(
             "UPDATE intents SET status='open', claim_token=NULL WHERE engagement_id=? "
@@ -319,15 +431,21 @@ class Orchestrator:
         self.db.execute("UPDATE engagements SET status=?, finished_at=?, status_detail=? WHERE id=?",
                         (status, time.time(), detail, engagement_id))
         self.db.emit(engagement_id, "engagement_finished", {"status": status, "detail": detail})
-        if status in ("done", "budget_exhausted"):
+        if status in ("done", "budget_exhausted", "window_closed"):
             # independent verification + report always run at termination, so findings
             # are validated and reported even if the investigation budget capped early.
+            # A closed window forbids further target traffic: report only, no replays.
             try:
                 eng = self.db.one("SELECT scope_json FROM engagements WHERE id=?", (engagement_id,))
                 scope = Scope(json.loads(eng["scope_json"]))
                 cands = self.db.query(
                     "SELECT id FROM findings WHERE engagement_id=? AND state IN ('suspected','observed')",
                     (engagement_id,))
+                if status == "window_closed" and cands:
+                    self.db.emit(engagement_id, "degradation", {
+                        "code": "verification_skipped_window_closed",
+                        "detail": f"{len(cands)} candidate(s) left unverified: the authorized window closed"})
+                    cands = []
                 for f in cands:
                     try:
                         self.verifier.verify(engagement_id, scope, f["id"])
@@ -344,9 +462,15 @@ class Orchestrator:
     # ---- intent execution ----
 
     def _execute(self, engagement_id: str, scope: Scope, eng: dict, intent: dict,
-                 mode: str = "deterministic"):
+                 mode: str = "deterministic") -> tuple[str, dict]:
+        """Run one intent; return (intent status, result) so the caller records it honestly."""
         role = intent["role"]
         obj = intent["objective"]
+        profile = eng.get("profile") or DEFAULT_PROFILE
+        if not permits(role, profile):
+            # defense in depth: a pre-existing or model-proposed intent is not authority
+            self._policy_skip(engagement_id, role, profile, intent["id"])
+            return "exhausted", {"skipped": "policy_restriction", "profile": profile}
         self.db.emit(engagement_id, "intent_running", {"intent_id": intent["id"], "role": role})
         # agent mode: genuine specialist investigation via the autonomous runtime.
         # verification and reporting stay deterministic/independent in every mode.
@@ -355,8 +479,16 @@ class Orchestrator:
             if role in CHARTERS:
                 ar = AgentRunner(self.db, self.evidence, self.pipeline, self.probe,
                                  self.registry, self.runner, self.llm, scope, engagement_id)
-                ar.run(intent, role)
-                return
+                res = ar.run(intent, role)
+                result = {"agent_run": res["run_id"], "exit_reason": res["exit_reason"]}
+                if res["status"] != "completed":
+                    # a run that did not finish its investigation is not a pass
+                    self.db.emit(engagement_id, "degradation",
+                                 {"code": "agent_run_failed", "intent_id": intent["id"],
+                                  "detail": f"{role} run ended {res['exit_reason']}: "
+                                            f"{res.get('summary') or ''}"[:500]})
+                    return "blocked", result
+                return "done", result
         if role == "recon":
             self._do_recon(engagement_id, scope, obj, intent["id"])
         elif role == "crawl":
@@ -382,6 +514,7 @@ class Orchestrator:
             render_report(self.db, self.evidence, engagement_id)
         else:
             raise ValueError(f"unknown role {role}")
+        return "done", {}
 
     def _upsert_asset(self, engagement_id, kind, key, value=None, parent=None, by="recon"):
         existing = self.db.one("SELECT id FROM assets WHERE engagement_id=? AND kind=? AND key=?",
@@ -500,11 +633,24 @@ class Orchestrator:
                          {"intent_id": intent_id, "url": base})
             return
         checks = WebChecks(self.probe, engagement_id, scope)
+        profile = eng.get("profile") or DEFAULT_PROFILE
+        skipped: list[str] = []
+
+        def allow(unit: str) -> bool:
+            if permits(unit, profile):
+                return True
+            if unit not in skipped:
+                skipped.append(unit)
+            return False
+
         candidates = []
-        candidates += checks.security_headers(url)
-        candidates += checks.cors(url)
-        candidates += checks.sensitive_paths(url)
-        signals = checks.version_signals(url)
+        if allow("security_headers"):
+            candidates += checks.security_headers(url)
+        if allow("cors"):
+            candidates += checks.cors(url)
+        if allow("sensitive_paths"):
+            candidates += checks.sensitive_paths(url)
+        signals = checks.version_signals(url) if allow("version_signals") else []
         for s in signals:
             self.pipeline.record_observation(engagement_id, intent_id, "version_signal",
                                              f"{s['header']}: {s['value']} (not a finding)", s["evidence_id"])
@@ -523,33 +669,41 @@ class Orchestrator:
                 if ("/rest/" in ep or "/api/" in ep) and not ep.endswith((".js", ".css", ".ico")):
                     for guess in ("q", "id"):
                         gbase = ep
-                        candidates += checks.reflected_xss(gbase, guess)
-                        candidates += checks.sqli(gbase, guess)
+                        if allow("reflected_xss"):
+                            candidates += checks.reflected_xss(gbase, guess)
+                        if allow("sqli"):
+                            candidates += checks.sqli(gbase, guess)
                 continue
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(ep).query)
             base = ep.split("?")[0]
             for p in params:
-                candidates += checks.reflected_xss(base, p)
-                candidates += checks.sqli(base, p)
-                candidates += checks.ssti(base, p)
-                candidates += checks.path_traversal(base, p)
-                candidates += checks.open_redirect(base, p)
-        # login cookie check via forms
+                if allow("reflected_xss"):
+                    candidates += checks.reflected_xss(base, p)
+                if allow("sqli"):
+                    candidates += checks.sqli(base, p)
+                if allow("ssti"):
+                    candidates += checks.ssti(base, p)
+                if allow("path_traversal"):
+                    candidates += checks.path_traversal(base, p)
+                if allow("open_redirect"):
+                    candidates += checks.open_redirect(base, p)
+        # login cookie check via forms (posting credentials needs an active profile)
         auth = json.loads(eng["auth_json"])
-        for ident in auth.get("identities", []):
-            lu = ident.get("login_url")
-            if lu and scope.check_url(lu).allowed:
-                body = f"{ident.get('username_field','username')}={ident['username']}&{ident.get('password_field','password')}={ident['password']}"
-                candidates += checks.cookie_flags(lu, method="POST", body=body,
-                                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
+        if allow("auth_bypass"):
+            for ident in auth.get("identities", []):
+                lu = ident.get("login_url")
+                if lu and scope.check_url(lu).allowed:
+                    body = f"{ident.get('username_field','username')}={ident['username']}&{ident.get('password_field','password')}={ident['password']}"
+                    candidates += checks.cookie_flags(lu, method="POST", body=body,
+                                                      headers={"Content-Type": "application/x-www-form-urlencoded"})
         # operator-supplied lab/test hints (explicit, in-scope only)
         hints = auth.get("test_hints", {})
-        if "ssrf" in hints:
+        if "ssrf" in hints and allow("ssrf"):
             h = hints["ssrf"]
             if scope.check_url(h["internal_url"]).allowed:
                 candidates += checks.ssrf(h["url"], h["param"], h["internal_url"], h["marker"])
-        if "sqli_union" in hints:
+        if "sqli_union" in hints and allow("sqli_union"):
             h = hints["sqli_union"]
             candidates += checks.sqli_union(h["url"], h["param"], h["payload"], h["marker"])
         # parameter mining on common endpoint patterns
@@ -565,21 +719,26 @@ class Orchestrator:
                 continue
             pbase = full.split("?")[0]
             for p in parse_qs(urlparse(full).query):
-                candidates += checks.reflected_xss(pbase, p)
-                candidates += checks.sqli(pbase, p)
-                candidates += checks.ssti(pbase, p)
-                candidates += checks.path_traversal(pbase, p)
-                candidates += checks.open_redirect(pbase, p)
+                if allow("reflected_xss"):
+                    candidates += checks.reflected_xss(pbase, p)
+                if allow("sqli"):
+                    candidates += checks.sqli(pbase, p)
+                if allow("ssti"):
+                    candidates += checks.ssti(pbase, p)
+                if allow("path_traversal"):
+                    candidates += checks.path_traversal(pbase, p)
+                if allow("open_redirect"):
+                    candidates += checks.open_redirect(pbase, p)
         for ap in COMMON_API_PATHS:
-            if scope.check_url(base + ap).allowed:
+            if allow("cors") and scope.check_url(base + ap).allowed:
                 candidates += checks.cors(base + ap)
-        if scope.check_url(base + "/upload").allowed:
+        if allow("file_upload") and scope.check_url(base + "/upload").allowed:
             candidates += checks.file_upload(base + "/upload", base)
         # authenticated checks: login each identity, test auth bypass + IDOR
         import httpx
         for ident in auth.get("identities", []):
             lu = ident.get("login_url")
-            if not lu or not scope.check_url(lu).allowed:
+            if not allow("auth_bypass") or not lu or not scope.check_url(lu).allowed:
                 continue
             uf, pf = ident.get("username_field", "username"), ident.get("password_field", "password")
             candidates += checks.auth_bypass(lu, uf, pf)
@@ -601,17 +760,52 @@ class Orchestrator:
                 client.close()
         for cand in candidates:
             self.pipeline.submit_candidate(engagement_id, cand, intent_id)
+        if skipped:
+            self._policy_skip(engagement_id, ", ".join(skipped), profile, intent_id)
+        if checks.mitigated:
+            # A challenge page is a non-answer: say so once, as a limitation, not a finding.
+            kinds = sorted({m.split(": ", 1)[-1] for m in checks.mitigated})
+            self.db.emit(engagement_id, "degradation", {
+                "code": "target_mitigated", "intent_id": intent_id,
+                # which checks were answered by an interstitial, so coverage can say so
+                "units": sorted({m.split(": ", 1)[0] for m in checks.mitigated}),
+                "detail": f"{len(checks.mitigated)} request(s) to {url} were answered by a bot/WAF "
+                          f"challenge ({', '.join(kinds)}). Those checks are inconclusive, not "
+                          f"findings; supply a browser session or allow-list the assessment "
+                          f"client to assess the application itself."})
         self.db.emit(engagement_id, "checks_complete",
-                     {"intent_id": intent_id, "candidates": len(candidates)})
+                     {"intent_id": intent_id, "candidates": len(candidates),
+                      "mitigated": len(checks.mitigated)})
 
     def _do_nuclei(self, engagement_id, scope, obj, intent_id):
         url = self._target_from_obj(obj)
         if not url:
             return
         spec = self.registry.get("nuclei")
+        progress: dict = {}
+
+        def on_progress(line: str) -> None:
+            sample = PARSERS["nuclei_stats"](line)
+            if not sample or sample["percent"] is None:
+                return
+            progress.update(sample)
+            self.db.emit(engagement_id, "scan_progress",
+                         {"tool": "nuclei", "intent_id": intent_id, "url": url, **sample})
+
         r = self.runner.run(spec, {"target": url, "severity": "medium,high,critical",
-                                   "rate_limit": int(scope.rate_limit_rps * 5)},
-                            scope, engagement_id, intent_id, url, "web")
+                                   "rate_limit": _declared_rate(scope, NUCLEI_MAX_RATE)},
+                            scope, engagement_id, intent_id, url, "web",
+                            on_progress=on_progress)
+        if progress.get("percent") is not None and progress["percent"] < 100:
+            # say what was NOT scanned, in the engine's own numbers
+            why = ("the scan hit its time limit" if r.get("error") and "stopped" not in str(r.get("error"))
+                   else str(r.get("error") or "the scan ended early"))
+            self.db.emit(engagement_id, "degradation", {
+                "code": "scan_partial", "intent_id": intent_id, "units": ["nuclei"],
+                "detail": f"nuclei covered {progress['percent']}% of its templates "
+                          f"({progress.get('requests')} requests, {progress.get('matched')} matches) "
+                          f"before it stopped: {why}. Results below that point are untested, "
+                          f"not clean."})
         if not r.get("ok"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",
                                              f"nuclei: {r.get('error')}", r.get("artifact_id"))
@@ -642,8 +836,15 @@ class Orchestrator:
             audit_tls(host, pu.port or 443, self.db, self.evidence, self.pipeline,
                       scope, engagement_id, intent_id)
         spec = self.registry.get("nmap")
-        r = self.runner.run(spec, {"target": host, "top_ports": 100, "service_detect": True},
-                            scope, engagement_id, intent_id, host, "infra")
+        params = {"target": host, "service_detect": True,
+                  "rate_limit": _declared_rate(scope, NMAP_MAX_RATE)}
+        authorized = scope.authorized_ports(host)
+        if authorized:
+            # a URL target authorizes its own port only: never a top-100 sweep
+            params["ports"] = ",".join(str(p) for p in authorized)
+        else:
+            params["top_ports"] = 100
+        r = self.runner.run(spec, params, scope, engagement_id, intent_id, host, "infra")
         if not r.get("ok"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",
                                              f"nmap: {r.get('error')}", r.get("artifact_id"))

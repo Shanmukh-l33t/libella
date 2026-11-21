@@ -45,6 +45,17 @@ export interface ToolInfo {
   name: string; description: string; category: string; read_only: boolean; destructive: boolean;
   available: boolean; parameters?: { type?: string; properties?: Record<string, unknown>; required?: string[] };
 }
+/**
+ * How far a tool was actually proven: installed -> compatible -> functional ->
+ * assessment_ready, or `degraded` when it runs with a known limitation.
+ */
+export interface ToolReadiness {
+  name: string; status: string; level: string;
+  version: string | null; minimum: string | null;
+  degraded: boolean; limitations: string[]; detail: string; checked_at?: number;
+}
+export interface ReadinessLevel { name: string; meaning: string }
+export interface ToolReadinessReport { tools: ToolReadiness[]; levels: ReadinessLevel[]; checked_at: number }
 
 export type GraphNodeType =
   | "asset" | "endpoint" | "auth_context" | "intent" | "agent_run"

@@ -11,6 +11,8 @@ import os
 from collections import deque
 from urllib.parse import urldefrag, urlparse
 
+from .assessment_window import stored_stop_refusal
+
 SHOT_CAP = 5      # screenshots are evidence, not a video; five key pages is plenty
 IDLE_MS = 3000    # bounded network-idle wait: polling SPAs (socket.io) never go idle
 LINK_CAP = 200
@@ -96,6 +98,10 @@ class BrowserCrawler:
             self._refuse(url, d.reason)
         return d.allowed
 
+    def _stopped(self) -> str | None:
+        """A pause, cancel or closed window stops the crawl: chromium is egress too."""
+        return stored_stop_refusal(self.db, self.eng)
+
     def _same_origin(self, url: str, netloc: str) -> bool:
         p = urlparse(url)
         return p.scheme in ("http", "https") and p.netloc == netloc
@@ -124,6 +130,10 @@ class BrowserCrawler:
         seen: set[str] = set()
         queue = deque([start])
         while queue and len(self.pages) < self.max_pages:
+            stop = self._stopped()
+            if stop:
+                self.degraded.append(f"stopped: {stop}")
+                return
             url = _clean(queue.popleft())
             if url in seen or not self._same_origin(url, netloc):
                 continue
@@ -152,6 +162,8 @@ class BrowserCrawler:
                 req = route.request
                 if urlparse(req.url).scheme not in ("http", "https"):
                     return route.continue_()  # data:/blob: never leaves the browser
+                if self._stopped():
+                    return route.abort()
                 if not self._allowed(req.url):
                     return route.abort()
                 if req.resource_type in ("xhr", "fetch"):

@@ -30,7 +30,7 @@ class LLM:
         self.base_url = (config.get("base_url") or "https://api.openai.com/v1").rstrip("/")
         self.api_key = config.get("api_key") or ""
         self.models = config.get("models", {})
-        self.default_model = config.get("default_model", "gpt-4o-mini")
+        self.default_model = config.get("default_model") or "gpt-4o-mini"
         self.fallback = config.get("fallback", [])
         self.pricing = {**DEFAULT_PRICING, **config.get("pricing", {})}
         self.timeout = config.get("timeout_s", 120)
@@ -39,10 +39,9 @@ class LLM:
         return self.models.get(role, self.default_model)
 
     def _price(self, model: str) -> tuple[float, float]:
-        for k, v in self.pricing.items():
-            if k != "default" and k in model:
-                return tuple(v)
-        return tuple(self.pricing["default"])
+        # longest match wins, so "gpt-4o-mini" is not priced as "gpt-4o"
+        keys = [k for k in self.pricing if k != "default" and k in model]
+        return tuple(self.pricing[max(keys, key=len)] if keys else self.pricing["default"])
 
     def complete(self, role: str, system: str, user: str, engagement_id: str | None = None,
                  json_schema: dict | None = None, temperature: float = 0.1) -> dict:
@@ -73,13 +72,16 @@ class LLM:
             raise LLMError(f"provider {resp.status_code}: {resp.text[:200]}")
         if resp.status_code != 200:
             raise LLMError(f"provider {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
-        choice = data.get("choices", [{}])[0]
-        msg = choice.get("message", {})
-        content = msg.get("content") or ""
+        try:
+            data = resp.json()
+            choice = data["choices"][0]
+            msg = choice["message"]
+            content = msg.get("content") or ""
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+            raise LLMError("provider returned an unexpected response shape") from e
         if choice.get("finish_reason") == "content_filter" or msg.get("refusal"):
             raise LLMError("provider refusal")
-        usage = data.get("usage", {})
+        usage = data.get("usage") or {}
         it, ot = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
         pin, pout = self._price(model)
         cost = (it * pin + ot * pout) / 1_000_000

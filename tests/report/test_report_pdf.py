@@ -32,6 +32,8 @@ def test_pdf_is_valid_and_has_key_sections(tmp_path, report_json_path):
     for section in ("executive summary", "risk summary", "coverage limitations", "methodology",
                     "sql injection in parameter", "debug endpoint"):
         assert section in low, f"missing section: {section}"
+    # the risk table's Total row is house markup and must render bold, not as literal tags
+    assert "<b>" not in text and "Total" in text
 
 
 def test_pdf_redacts_secrets(tmp_path, report_json_path):

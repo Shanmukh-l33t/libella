@@ -12,6 +12,16 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+/** Error bodies carry the actionable reason; a bare status hides it. */
+async function failure(res: Response): Promise<ApiError> {
+  let msg = `${res.status} ${res.statusText}`;
+  try {
+    const j = await res.json();
+    if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+  } catch { /* non-JSON error body */ }
+  return new ApiError(res.status, msg);
+}
+
 export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { Authorization: `Bearer ${getToken()}`, ...(init.headers as Record<string, string>) };
   if (init.body) headers["Content-Type"] = "application/json";
@@ -21,14 +31,7 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
     window.dispatchEvent(new Event("libella:unauthorized"));
     throw new ApiError(401, "invalid token");
   }
-  if (!res.ok) {
-    let msg = `${res.status} ${res.statusText}`;
-    try {
-      const j = await res.json();
-      if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-    } catch { /* non-JSON error body */ }
-    throw new ApiError(res.status, msg);
-  }
+  if (!res.ok) throw await failure(res);
   const ct = res.headers.get("content-type") || "";
   return (ct.includes("application/json") ? await res.json() : await res.text()) as T;
 }
@@ -45,14 +48,17 @@ export const mintTicket = (eid: string) =>
   post<{ ticket: string }>("/api/ticket", { engagement_id: eid }).then((r) => r.ticket);
 
 /** Downloads use fetch so the bearer header travels instead of a token in the URL. */
-export async function downloadReport(eid: string, format: "md" | "sarif" | "pdf" | "dojo") {
-  const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}`;
+export type ReportFormat = "md" | "sarif" | "pdf" | "dojo" | "html" | "docx" | "xlsx" | "csv";
+export type ReportKind = "technical" | "executive" | "coverage" | "evidence" | "gitlab";
+export async function downloadReport(eid: string, format: ReportFormat, kind: ReportKind = "technical") {
+  const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}&kind=${kind}`;
   const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
-  if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  if (!res.ok) throw await failure(res);
   const href = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = href;
-  a.download = format === "dojo" ? `libella-${eid}-defectdojo.json` : `${eid}.${format}`;
+  const base = kind === "technical" ? `${eid}.${format}` : `libella-${eid}-${kind}.${format}`;
+  a.download = format === "dojo" ? `libella-${eid}-defectdojo.json` : base;
   a.click();
   URL.revokeObjectURL(href);
 }

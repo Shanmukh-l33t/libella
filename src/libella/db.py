@@ -10,7 +10,10 @@ from .secrets import SecretBox, is_encrypted
 
 # Columns holding live session material: ciphertext at rest, plaintext through
 # DB.query()/one(). Writers must pass values through DB.seal().
-SECRET_COLUMNS = {"engagements": ("auth_json",), "auth_contexts": ("cookies_json",)}
+# exchanges: captured request/response headers carry live Cookie/Authorization
+# and Set-Cookie values, so the whole JSON column is sealed (not just a value).
+SECRET_COLUMNS = {"engagements": ("auth_json",), "auth_contexts": ("cookies_json",),
+                  "exchanges": ("req_headers_json", "resp_headers_json")}
 _SECRET_FIELDS = frozenset(c for cols in SECRET_COLUMNS.values() for c in cols)
 
 SCHEMA = """
@@ -112,6 +115,11 @@ CREATE TABLE IF NOT EXISTS memory_facts(
 CREATE TABLE IF NOT EXISTS asset_changes(
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, asset_key TEXT NOT NULL,
   change_kind TEXT NOT NULL, old_json TEXT, new_json TEXT, detected_at REAL
+);
+CREATE TABLE IF NOT EXISTS coverage_entries(
+  engagement_id TEXT NOT NULL, test_id TEXT NOT NULL, status TEXT NOT NULL,
+  note TEXT, evidence_id TEXT, updated_at REAL,
+  PRIMARY KEY(engagement_id, test_id)
 );
 CREATE INDEX IF NOT EXISTS idx_hyp_eng ON hypotheses(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_steps_eng ON investigation_steps(engagement_id, intent_id);

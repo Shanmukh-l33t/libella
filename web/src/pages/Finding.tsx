@@ -4,10 +4,11 @@ import { ArrowLeft, CheckCircle2, ChevronRight, RotateCcw, ShieldQuestion, XCirc
 import { get, post } from "../api";
 import type { ChainStatus, Event as AuditEvent, Exchange, Finding as F } from "../types";
 import { useApi } from "../lib/hooks";
-import { fmtDuration, fmtTime, severityTone, stateTone, title } from "../lib/format";
+import { fmtDuration, fmtTime, severityTone, title } from "../lib/format";
 import {
   Badge, Button, Card, CodeBlock, EmptyState, ErrorNote, Field, Input, Modal, Select, Skeleton, Table, Textarea, cx, useToast,
 } from "../components/ui";
+import { EvidenceRefs, FindingCase, StatusBadge } from "../components/validation";
 
 export default function Finding() {
   const { id = "" } = useParams();
@@ -79,7 +80,7 @@ export default function Finding() {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={severityTone(f.severity)}>{f.severity}</Badge>
-            <Badge tone={stateTone(f.state)} dot>{title(f.state)}</Badge>
+            <StatusBadge finding={f} />
             <span className="text-xs capitalize text-ink-500" title="Confidence">{f.confidence} confidence</span>
             {f.cvss !== null && f.cvss !== undefined && <span className="text-xs text-ink-500">CVSS {f.cvss}</span>}
           </div>
@@ -118,17 +119,23 @@ export default function Finding() {
 
       <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
         <div className="space-y-4">
+          <Card title="Detection vs verification" description="Detection is what a check saw. Verification is an independent replay reproducing it. Neither demonstrates what an attacker would gain.">
+            <FindingCase finding={f} />
+          </Card>
           <Card title="Description">
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-700">{f.description || "No description recorded."}</p>
           </Card>
-          <Card title="Impact">
+          <Card title="Impact (predicted)" description="Written by the check that raised this. No consequence has been demonstrated and no exploitability score is recorded.">
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-700">{f.impact || "No impact statement recorded."}</p>
           </Card>
           <Card title="Remediation">
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-700">{f.remediation || "No remediation guidance recorded."}</p>
           </Card>
 
-          <Card title={`Evidence (${f.exchanges?.length || 0} exchanges)`} description="Redacted at rest by the API. Expand an exchange to read the captured request and response." padded={false}>
+          <Card title={`Evidence (${(f.evidence_ids || []).length} objects)`} description="Redacted at rest by the API. Each object is listed with the request that produced it; expand an exchange to read it." padded={false}>
+            {(f.evidence_ids || []).length > 0 && (
+              <div className="border-b border-line p-4"><EvidenceRefs finding={f} /></div>
+            )}
             {!(f.exchanges || []).length ? (
               <EmptyState title="No exchanges bound" description="This finding has no captured HTTP exchange. Without one it cannot be promoted to validated." />
             ) : (
