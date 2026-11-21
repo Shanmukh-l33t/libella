@@ -7,12 +7,22 @@ the verbatim quote against the fresh response. Fail-closed on any doubt.
 import json
 import re
 import time
+from urllib.parse import urlparse
 
 from .assessment_window import stored_window_refusal
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
 from .tools.http_probe import HttpProbe
+
+# Interstitials that answer with a status the engine did not expect. A block page
+# is not remediation, so a class change must not read as fixed through one.
+BLOCK_SIGNATURES = (
+    "just a moment", "attention required", "access denied", "request blocked",
+    "request unsuccessful", "the requested url was rejected",
+    "web application firewall", "incapsula incident id", "sucuri website firewall",
+)
+BLOCK_HEADERS = ("cf-ray", "cf-mitigated", "x-sucuri-id", "x-iinfo")
 
 HEADER_NAME_MAP = {
     "CSP": "content-security-policy",
@@ -25,6 +35,19 @@ HEADER_NAME_MAP = {
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _looks_blocked(r: dict) -> str | None:
+    """Name the block-page signal in this response, if there is one."""
+    lower_headers = {k.lower() for k in r.get("headers", {})}
+    for h in BLOCK_HEADERS:
+        if h in lower_headers:
+            return f"header {h}"
+    low = (r.get("body") or "")[:8192].lower()
+    for sig in BLOCK_SIGNATURES:
+        if sig in low:
+            return f"signature '{sig}'"
+    return None
 
 
 class Verifier:
@@ -101,7 +124,6 @@ class Verifier:
                     attempt: int) -> dict:
         """Independent re-verification for TLS findings: re-scan, compare facts."""
         from .tls_audit import recheck_tls_fact
-        from urllib.parse import urlparse
         u = urlparse(pr["url"])
         host, port = u.hostname, u.port or 443
         if not host:
@@ -206,7 +228,6 @@ class Verifier:
         pr = spec["proof_request"]
         if pr.get("method") == "TLS":
             from .tls_audit import recheck_tls_fact
-            from urllib.parse import urlparse
             u = urlparse(pr["url"])
             host, port = u.hostname, u.port or 443
             if not host:
@@ -231,14 +252,22 @@ class Verifier:
                     pass
             self.db.emit(engagement_id, "retest", {"finding_id": finding_id, "verdict": verdict})
             return {"verdict": verdict, "detail": detail, "finding_id": finding_id}
-        r = self.probe.request(engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
-                               headers=pr.get("headers"), body=pr.get("body"),
-                               tool="retest", follow_redirects=False,
-                               category=self._replay_category(scope))
+        category = self._replay_category(scope)
+
+        def replay() -> dict:
+            return self.probe.request(engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
+                                      headers=pr.get("headers"), body=pr.get("body"),
+                                      tool="retest", follow_redirects=False, category=category)
+
+        r = replay()
         if not r.get("ok"):
             verdict, detail = "inconclusive", f"request failed: {r.get('error')}"
         else:
             verdict, detail = self._retest_verdict(spec, r)
+            if verdict == "class_changed":
+                # a status the proof never saw is not a fix by itself: corroborate
+                verdict, detail = self._corroborate_fixed(
+                    engagement_id, scope, category, spec, pr, r, detail, replay)
         rid = new_id("rt")
         self.db.execute(
             "INSERT INTO retests(id, finding_id, exchange_id, verdict, detail, created_at) "
@@ -263,9 +292,88 @@ class Verifier:
         location = {k.lower(): v for k, v in r["headers"].items()}.get("location", "")
         if 300 <= status < 400 and re.search(r"(?i)(login|signin|sign-in|auth|sso)", location):
             return "inconclusive", f"redirected to authentication ({location}): {detail}"
-        want = spec.get("proof_status")
+        want = self._prior_status(spec)
         if want is None:
             return "inconclusive", "original proof status unknown; cannot tell remediation from a changed response"
-        if status // 100 != int(want) // 100:
-            return "inconclusive", f"status class changed {want} -> {status}: {detail}"
-        return "fixed", detail
+        if status // 100 != want // 100:
+            # not a verdict yet: a class change needs corroboration in retest()
+            return "class_changed", f"status class changed {want} -> {status}: {detail}"
+        return "fixed", f"fixed (input rejected): {detail}"
+
+    @staticmethod
+    def _prior_status(spec: dict) -> int | None:
+        """Status the proof was recorded at, or None when it is unknown/unreadable."""
+        want = spec.get("proof_status")
+        if not isinstance(want, (int, str)):
+            return None
+        try:
+            return int(want)
+        except ValueError:
+            return None
+
+    def _corroborate_fixed(self, engagement_id, scope, category, spec, pr, first,
+                           quote_detail, replay) -> tuple[str, str]:
+        """A removed route (200 -> 404) is a fix only if the target is up and it repeats.
+
+        Signals, all through the same scope-checked transport: the response is not a
+        block page; a second replay agrees; a known-good same-origin URL still answers
+        as it did during the engagement. Anything missing is inconclusive.
+        """
+        prior, status = self._prior_status(spec), first["status"]
+        if prior is None:  # _changed_class never routes here without one
+            return "inconclusive", "original proof status unknown; cannot tell remediation from a changed response"
+        changed = f"status class changed {prior} -> {status}"
+        blocked = _looks_blocked(first)
+        if blocked:
+            return "inconclusive", f"{changed} but the response looks like a block page ({blocked}); {quote_detail}"
+        again = replay()
+        if not again.get("ok"):
+            return "inconclusive", f"{changed}; the repeat replay failed: {again.get('error')}"
+        reproduced, again_detail = self._compare(spec.get("quote", ""), spec.get("quote_in", "body"), again)
+        if reproduced:
+            return "persists", f"quote still reproduced on the repeat replay: {again_detail}"
+        if again["status"] != status:
+            return "inconclusive", f"replays disagree ({status} then {again['status']}): no stable result"
+        picked = self._pick_control(engagement_id, scope, category, pr["url"])
+        if picked is None:
+            return "inconclusive", (f"{changed} but no in-scope control URL from this engagement "
+                                    f"can show the target is still up")
+        control_url, control_prior = picked
+        c = self.probe.request(engagement_id, scope, control_url, tool="retest_control",
+                               follow_redirects=False, category=category)
+        if not c.get("ok"):
+            return "inconclusive", f"{changed} but the target looks down: control {control_url} failed ({c.get('error')})"
+        if control_prior is not None and c["status"] // 100 != control_prior // 100:
+            return "inconclusive", (f"{changed} but the target is unhealthy: control {control_url} "
+                                    f"was {control_prior}, now {c['status']}")
+        if control_prior is None and c["status"] // 100 != 2:
+            return "inconclusive", (f"{changed} but control {control_url} answered {c['status']} "
+                                    f"instead of 2xx: target may be degraded")
+        return "fixed", (f"fixed (route removed): quote absent; {prior} -> {status} on 2 replays; "
+                         f"control {control_url} still {c['status']}; no block page; "
+                         f"evidence {c['evidence_id']}, {first['evidence_id']}, {again['evidence_id']}")
+
+    def _pick_control(self, engagement_id, scope, category, proof_url) -> tuple[str, int | None] | None:
+        """A same-origin URL this engagement already saw answer 2xx, else the root."""
+        u = urlparse(proof_url)
+        if not u.scheme or not u.netloc:
+            return None
+        origin = f"{u.scheme}://{u.netloc}".lower()
+        seen = {proof_url.split("?")[0]}
+        for row in self.db.query(
+                "SELECT url, status FROM exchanges WHERE engagement_id=? "
+                "AND status BETWEEN 200 AND 299 ORDER BY created_at DESC LIMIT 500",
+                (engagement_id,)):
+            url = row["url"]
+            if url.split("?")[0] in seen:
+                continue
+            seen.add(url.split("?")[0])
+            p = urlparse(url)
+            if f"{p.scheme}://{p.netloc}".lower() != origin:
+                continue
+            if scope.check_url(url, category).allowed:
+                return url, row["status"]
+        root = f"{u.scheme}://{u.netloc}/"
+        if root not in seen and scope.check_url(root, category).allowed:
+            return root, None  # no prior status recorded: only a 2xx proves it is up
+        return None
