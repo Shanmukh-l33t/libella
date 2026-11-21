@@ -104,6 +104,45 @@ def _csv_escape(s: str) -> str:
     return s
 
 
+def _coverage_md(md: list, c: dict) -> None:
+    """One standard's ledger: totals, per-chapter table, and what was never tested."""
+    cs = c["summary"]
+    fw = c["framework"]
+    level = f" Level {cs['level']}" if cs.get("level") else ""
+    name = str(fw["id"]).removeprefix("OWASP-")  # "WSTG 4.2", "ASVS 5.0.0 Level 2"
+    md.append(f"\n## {_md(name)} {_md(fw['version'])}{level} coverage\n")
+    md.append("Derived from what this engagement executed, not from what was planned. "
+              "A requirement that is not tested is not a pass, and a check that covers only "
+              "part of a requirement is reported as partial evidence.\n")
+    if cs.get("excluded_by_level"):
+        md.append(f"- {cs['total']} of {cs['catalog']} requirements apply at the selected level "
+                  f"({cs['excluded_by_level']} higher-level requirements excluded)")
+    md.append(f"- Applicable: {cs['applicable']} of {cs['total']} | "
+              f"supported by a Libella check: {cs['supported']} | attempted: {cs['attempted']} | "
+              f"completed: {cs['completed']} (partial evidence: {cs.get('partial', 0)}) | "
+              f"with findings: {cs['with_findings']}")
+    md.append(f"- Skipped by profile or dependency: {cs['skipped']} | manual review required: "
+              f"{cs['manual_required']} | not tested: {cs['not_tested']}\n")
+    md.append("| Chapter | requirements | completed | findings | skipped | manual | untested |")
+    md.append("|---|---|---|---|---|---|---|")
+    for cat in c["categories"]:
+        k = cat["counts"]
+        done = sum(k.get(x, 0) for x in coverage.COMPLETED)
+        md.append(f"| {_md(cat['id'])} {_md(cat['name'])} | {cat['tests']} | {done} | "
+                  f"{k['finding_unverified'] + k['finding_verified']} | "
+                  f"{k['skipped_policy'] + k['skipped_dependency']} | "
+                  f"{k['requires_manual']} | {cat['tests'] - done} |")
+    untested = {}
+    for t in c["not_tested"]:
+        untested.setdefault(t["id"].rsplit("-" if t["id"].startswith("WSTG") else ".", 1)[0],
+                            []).append(t["id"])
+    if untested:
+        md.append("\n### Not tested\n")
+        for prefix in sorted(untested):
+            md.append(f"- {prefix} ({len(untested[prefix])}): {', '.join(untested[prefix])}")
+    md.append("")
+
+
 def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
                   outdir: str | Path | None = None) -> dict:
     eng = db.one("SELECT * FROM engagements WHERE id=?", (engagement_id,))
@@ -173,16 +212,24 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
     }
     # Methodology coverage is part of the report, not an appendix: an untested
     # category must never read as clean.
-    cov = coverage.workspace(db, engagement_id)
-    report["coverage"] = {
-        "framework": cov["framework"], "summary": cov["summary"],
-        "categories": [{"id": c["id"], "name": c["name"], "tests": len(c["tests"]),
-                        "counts": c["counts"]} for c in cov["categories"]],
-        "not_tested": [{"id": t["id"], "title": t["title"], "status": t["status"]}
-                       for c in cov["categories"] for t in c["tests"]
-                       if t["automatic"]["status"] not in coverage.COMPLETED
-                       and t["status"] != "covered"],
-    }
+    def _ledger(cov):
+        return {
+            "framework": cov["framework"], "summary": cov["summary"],
+            "categories": [{"id": c["id"], "name": c["name"], "tests": len(c["tests"]),
+                            "counts": c["counts"]} for c in cov["categories"]],
+            "not_tested": [{"id": t["id"], "title": t["title"], "status": t["status"]}
+                           for c in cov["categories"] for t in c["tests"]
+                           if t["automatic"]["status"] not in coverage.COMPLETED
+                           and t["status"] != "covered"],
+        }
+    report["coverage"] = _ledger(coverage.workspace(db, engagement_id))
+    # every standard the engagement selected is accounted for in the report itself
+    try:
+        selected = json.loads(eng.get("standards_json") or "{}")
+    except ValueError:
+        selected = {}
+    report["standards"] = [_ledger(coverage.workspace(db, engagement_id, fid))
+                           for fid in selected if fid != coverage.DEFAULT]
     for f in findings:
         vs = [v for v in verifications if v["finding_id"] == f["id"]]
         report["findings"].append({
@@ -227,33 +274,8 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
                       f"{r['iterations']} iterations, exit `{_md(r['exit_reason'])}`")
     if eng["status"] not in ("done",):
         md.append(f"\n> Assessment ended with status `{eng['status']}`. Results may be incomplete.\n")
-    c = report["coverage"]
-    cs = c["summary"]
-    md.append("\n## WSTG 4.2 coverage\n")
-    md.append("Derived from what this engagement executed, not from what was planned. "
-              "A test that is not tested is not a pass.\n")
-    md.append(f"- Applicable: {cs['applicable']} of {cs['total']} ({_md(c['framework']['version'])}) | "
-              f"supported by a Libella check: {cs['supported']} | attempted: {cs['attempted']} | "
-              f"completed: {cs['completed']} | with findings: {cs['with_findings']}")
-    md.append(f"- Skipped by profile or dependency: {cs['skipped']} | manual review required: "
-              f"{cs['manual_required']} | not tested: {cs['not_tested']}\n")
-    md.append("| Category | tests | completed | findings | skipped | manual | untested |")
-    md.append("|---|---|---|---|---|---|---|")
-    for cat in c["categories"]:
-        k = cat["counts"]
-        done = k["completed_no_issue"] + k["finding_unverified"] + k["finding_verified"]
-        md.append(f"| {_md(cat['id'])} {_md(cat['name'])} | {cat['tests']} | {done} | "
-                  f"{k['finding_unverified'] + k['finding_verified']} | "
-                  f"{k['skipped_policy'] + k['skipped_dependency']} | "
-                  f"{k['requires_manual']} | {cat['tests'] - done} |")
-    untested = {}
-    for t in c["not_tested"]:
-        untested.setdefault(t["id"].rsplit("-", 1)[0], []).append(t["id"])
-    if untested:
-        md.append("\n### Not tested\n")
-        for prefix in sorted(untested):
-            md.append(f"- {prefix} ({len(untested[prefix])}): {', '.join(untested[prefix])}")
-    md.append("")
+    for c in [report["coverage"], *report["standards"]]:
+        _coverage_md(md, c)
     md.append("\n## Findings\n")
     if not findings:
         md.append("No findings recorded. Check coverage limitations above before interpreting this as secure.\n")

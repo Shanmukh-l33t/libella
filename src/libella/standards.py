@@ -32,7 +32,7 @@ def _rows(rows) -> dict:
     out: list = []
     for r in rows:
         if "union" in r:
-            ids, cwe, strength = [], {}, {}
+            ids, cwe, strength, match = [], {}, {}, {}
             for unit in r["union"]:
                 src = next((o for o in out if o["unit"] == unit), None)
                 if src is None:
@@ -42,7 +42,9 @@ def _rows(rows) -> dict:
                         ids.append(rid)
                     cwe[rid] = tuple(dict.fromkeys(cwe.get(rid, ()) + tuple(src["cwe"].get(rid, ()))))
                     strength[rid] = src["strength"].get(rid) or "direct"
+                    match[rid] = tuple(dict.fromkeys(match.get(rid, ()) + src["match"].get(rid, ())))
             row = {"unit": r["unit"], "ids": tuple(ids), "cwe": cwe, "strength": strength,
+                   "match": match,
                    "union_of": tuple(r["union"])}
         else:
             spec = r.get("requirements") or {}
@@ -52,6 +54,7 @@ def _rows(rows) -> dict:
             row = {"unit": r["unit"], "ids": ids,
                    "cwe": {rid: tuple(v.get("cwe") or ()) for rid, v in spec.items()},
                    "strength": {rid: v.get("strength") or "direct" for rid, v in spec.items()},
+                   "match": {rid: tuple(v.get("match") or ()) for rid, v in spec.items()},
                    "union_of": tuple(r.get("union_of") or ())}
         row.update({"why": r.get("why") or r.get("note") or "",
                     "exchanges": tuple(r.get("exchanges") or ()),
@@ -215,12 +218,32 @@ def unit_row(fid: str, unit: str):
     return spec(fid)["units"].get(unit)
 
 
-def findings_for(fid: str, rid: str, findings) -> list:
-    """Findings whose CWE is one the mapped checks emit for this requirement."""
+def findings_for(fid: str, rid: str, findings, produced_by=None) -> list:
+    """Findings that are evidence against this requirement.
+
+    A finding counts only when (a) its CWE is one a mapped check emits for this
+    requirement, (b) when its producing unit is known, that unit is one mapped to
+    the requirement (a CWE-200 from a path probe is not GraphQL introspection
+    evidence), and (c) when the mapping names a `match` for the requirement, the
+    finding title names it (a missing-CSP finding is not a missing-HSTS one).
+    `produced_by` maps finding id -> set of units recovered from its evidence.
+    """
     s = spec(fid)
-    units = [u for u in s["by_requirement"].get(rid, ()) if not s["units"][u]["union_of"]]
+    mapped = s["by_requirement"].get(rid, ())
+    units = [u for u in mapped if not s["units"][u]["union_of"]]
     cwes = {c for u in units for c in (s["units"][u]["cwe"].get(rid) or ())}
-    return [f for f in findings if f["cwe"] in cwes]
+    matches = {m.lower() for u in units for m in (s["units"][u]["match"].get(rid) or ())}
+    out = []
+    for f in findings:
+        if f["cwe"] not in cwes:
+            continue
+        origin = (produced_by or {}).get(f["id"])
+        if origin and not origin & set(mapped):
+            continue
+        if matches and not any(m in (f.get("title") or "").lower() for m in matches):
+            continue
+        out.append(f)
+    return out
 
 
 def framework(fid: str) -> dict:

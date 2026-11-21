@@ -250,3 +250,62 @@ def test_a_recorded_asvs_review_survives_the_wstg_ledger(app, client):
     rows = app.db.query(
         "SELECT test_id, framework FROM coverage_entries WHERE engagement_id='eng_s'")
     assert rows == [{"test_id": "V3.4.1", "framework": "asvs"}]
+
+
+def _finding_from(app, fid, cwe, title, tool, state="validated"):
+    """A finding bound to evidence captured by a named check, as the pipeline writes it."""
+    ev = f"ev_{fid}"
+    app.db.execute(
+        "INSERT INTO evidence(id, engagement_id, sha256, kind, path, bytes, created_at, "
+        "prev_hash, chain_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+        (ev, "eng_s", "x" * 64, "http", "blob/" + ev, 1, time.time(), "p", "c"))
+    app.db.execute(
+        "INSERT INTO exchanges(id, engagement_id, evidence_id, method, url, status, tool, "
+        "created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (f"ex_{fid}", "eng_s", ev, "GET", "http://127.0.0.1:8801/", 200, tool, time.time()))
+    app.db.execute(
+        "INSERT INTO findings(id, engagement_id, title, cwe, severity, confidence, state, "
+        "evidence_ids_json, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (fid, "eng_s", title, cwe, "high", "high", state, json.dumps([ev]), time.time(),
+         time.time()))
+
+
+def test_a_finding_only_fails_requirements_its_own_check_maps_to(app):
+    # CWE-200 is emitted by both the path probe and the GraphQL audit; a debug
+    # endpoint found by the path probe is not GraphQL introspection evidence
+    _finding_from(app, "f_debug", "CWE-200", "Debug endpoint exposes configuration",
+                  "path_probe")
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    assert item(ws, "V13.4.5")["automatic"]["status"] == "finding_verified"
+    assert item(ws, "V4.3.2")["automatic"]["status"] not in (
+        "finding_verified", "finding_unverified")
+
+
+def test_a_header_finding_only_fails_the_headers_it_names(app):
+    _finding_from(app, "f_hdr", "CWE-693", "Missing security headers (CSP, Referrer-Policy)",
+                  "headers_check")
+    ws = coverage.workspace(app.db, "eng_s", "asvs")
+    assert item(ws, "V3.4.3")["automatic"]["status"] == "finding_verified"  # CSP
+    assert item(ws, "V3.4.5")["automatic"]["status"] == "finding_verified"  # Referrer-Policy
+    hsts = item(ws, "V3.4.1")  # HSTS was present: the check ran and found nothing
+    assert hsts["automatic"]["status"] == "completed_no_issue"
+    assert item(ws, "V3.4.4")["automatic"]["status"] == "completed_no_issue"
+
+
+def test_report_carries_every_selected_standard_and_real_chapter_counts(tmp_path):
+    from libella.report import render_report
+    from libella.report_kinds import coverage_md
+    app = _app(tmp_path, level=2)
+    _finding_from(app, "f_hdr", "CWE-693", "Missing security headers (HSTS)", "headers_check")
+    out = render_report(app.db, app.evidence, "eng_s", tmp_path / "rep")
+    doc = json.loads((Path(out["outdir"]) / "report.json").read_text())
+    md = (Path(out["outdir"]) / "report.md").read_text()
+    asvs = next(s for s in doc["standards"] if s["framework"]["id"] == "ASVS")
+    assert asvs["summary"]["total"] == 253 and asvs["summary"]["level"] == 2
+    assert asvs["summary"]["with_findings"] >= 1
+    assert "5.0.0 Level 2 coverage" in md and "WSTG" in md
+    # the by-chapter table must count what ran, not read keys that never exist
+    view = coverage_md(doc)
+    row = next(line for line in view.splitlines() if line.startswith("| Configuration and"))
+    assert row.split("|")[3].strip() != "0"
+    assert "ASVS" in view or "Application Security Verification Standard" in view

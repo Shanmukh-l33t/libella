@@ -1,278 +1,694 @@
 {
  "framework": "ASVS",
  "version": "5.0.0",
- "note": "Hand-authored evidence mapping from Libella's executed units to ASVS 5.0.0 requirements. Strength: direct = the check exercises the property the requirement states; partial = it exercises part of it; indirect = it records a related observation only. A requirement listed here is NOT claimed as verified by a passing run.",
- "applies_to": ["web", "api"],
+ "note": "Hand-authored evidence mapping from Libella's executed units to ASVS 5.0.0 requirements. Strength: direct = the check exercises the property the requirement states; partial = it exercises part of it; indirect = it records a related observation only. A requirement listed here is NOT claimed as verified by a passing run. `match` narrows a multi-control finding to the requirement whose control its title names.",
+ "applies_to": [
+  "web",
+  "api"
+ ],
  "rows": [
   {
    "unit": "security_headers",
-   "exchanges": ["headers_check"],
+   "exchanges": [
+    "headers_check"
+   ],
    "why": "reads the response headers of the application and reports which security headers are absent",
    "requirements": {
-    "V3.4.1": {"strength": "direct", "cwe": ["CWE-693"]},
-    "V3.4.3": {"strength": "partial", "cwe": ["CWE-693"]},
-    "V3.4.4": {"strength": "direct", "cwe": ["CWE-693"]},
-    "V3.4.5": {"strength": "direct", "cwe": ["CWE-693"]},
-    "V3.4.6": {"strength": "partial", "cwe": ["CWE-693"]}
+    "V3.4.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-693"
+     ],
+     "match": [
+      "HSTS",
+      "Strict-Transport-Security"
+     ]
+    },
+    "V3.4.3": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-693"
+     ],
+     "match": [
+      "CSP",
+      "Content-Security-Policy"
+     ]
+    },
+    "V3.4.4": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-693"
+     ],
+     "match": [
+      "X-Content-Type-Options"
+     ]
+    },
+    "V3.4.5": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-693"
+     ],
+     "match": [
+      "Referrer-Policy"
+     ]
+    },
+    "V3.4.6": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-693"
+     ],
+     "match": [
+      "CSP",
+      "Content-Security-Policy",
+      "frame-ancestors"
+     ]
+    }
    }
   },
   {
    "unit": "cookie_flags",
-   "exchanges": ["cookie_check"],
+   "exchanges": [
+    "cookie_check"
+   ],
    "why": "reads Set-Cookie on a response and reports session cookies set without Secure, HttpOnly or SameSite",
    "requirements": {
-    "V3.3.1": {"strength": "direct", "cwe": ["CWE-614"]},
-    "V3.3.2": {"strength": "direct", "cwe": ["CWE-614"]},
-    "V3.3.4": {"strength": "direct", "cwe": ["CWE-614"]}
+    "V3.3.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-614"
+     ],
+     "match": [
+      "Secure"
+     ]
+    },
+    "V3.3.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-614"
+     ],
+     "match": [
+      "SameSite"
+     ]
+    },
+    "V3.3.4": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-614"
+     ],
+     "match": [
+      "HttpOnly"
+     ]
+    }
    }
   },
   {
    "unit": "cors",
-   "exchanges": ["cors_check"],
+   "exchanges": [
+    "cors_check"
+   ],
    "why": "sends a foreign Origin header and reads Access-Control-Allow-Origin/Credentials back",
    "requirements": {
-    "V3.4.2": {"strength": "direct", "cwe": ["CWE-942"]},
-    "V3.5.1": {"strength": "partial", "cwe": ["CWE-942"]},
-    "V3.5.2": {"strength": "partial", "cwe": ["CWE-942"]}
+    "V3.4.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-942"
+     ]
+    },
+    "V3.5.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-942"
+     ]
+    },
+    "V3.5.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-942"
+     ]
+    }
    }
   },
   {
    "unit": "sensitive_paths",
-   "exchanges": ["path_probe"],
+   "exchanges": [
+    "path_probe"
+   ],
    "why": "probes .env/.git/backup files, /actuator, /server-status and /debug for reachable source, debug and monitoring surfaces",
    "requirements": {
-    "V13.4.1": {"strength": "direct", "cwe": ["CWE-200"]},
-    "V13.4.2": {"strength": "partial", "cwe": ["CWE-200"]},
-    "V13.4.5": {"strength": "direct", "cwe": ["CWE-200"]}
+    "V13.4.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-200"
+     ]
+    },
+    "V13.4.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ]
+    },
+    "V13.4.5": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-200"
+     ]
+    }
    }
   },
   {
    "unit": "open_redirect",
-   "exchanges": ["redirect_check"],
+   "exchanges": [
+    "redirect_check"
+   ],
    "why": "supplies an off-site URL in a parameter and follows the Location header",
    "requirements": {
-    "V3.7.2": {"strength": "direct", "cwe": ["CWE-601"]}
+    "V3.7.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-601"
+     ]
+    }
    }
   },
   {
    "unit": "reflected_xss",
-   "exchanges": ["xss_check"],
+   "exchanges": [
+    "xss_check"
+   ],
    "why": "injects a script canary into one parameter and checks whether it is returned unescaped",
    "requirements": {
-    "V1.1.2": {"strength": "partial", "cwe": ["CWE-79"]},
-    "V1.2.1": {"strength": "partial", "cwe": ["CWE-79"]}
+    "V1.1.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-79"
+     ]
+    },
+    "V1.2.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-79"
+     ]
+    }
    }
   },
   {
    "unit": "sqli",
-   "exchanges": ["sqli_check"],
+   "exchanges": [
+    "sqli_check"
+   ],
    "why": "error-based injection probe on one parameter of one endpoint",
    "requirements": {
-    "V1.2.4": {"strength": "direct", "cwe": ["CWE-89"]}
+    "V1.2.4": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-89"
+     ]
+    }
    }
   },
   {
    "unit": "sqli_union",
-   "exchanges": ["sqli_union_check"],
+   "exchanges": [
+    "sqli_union_check"
+   ],
    "why": "UNION data-extraction proof on an operator-declared parameter",
    "requirements": {
-    "V1.2.4": {"strength": "direct", "cwe": ["CWE-89"]}
+    "V1.2.4": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-89"
+     ]
+    }
    }
   },
   {
    "unit": "ssti",
-   "exchanges": ["ssti_check", "ssti_confirm"],
+   "exchanges": [
+    "ssti_check",
+    "ssti_confirm"
+   ],
    "why": "two arithmetic template payloads must both evaluate in the response",
    "requirements": {
-    "V1.3.2": {"strength": "partial", "cwe": ["CWE-1336"]},
-    "V1.3.7": {"strength": "direct", "cwe": ["CWE-1336"]}
+    "V1.3.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-1336"
+     ]
+    },
+    "V1.3.7": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-1336"
+     ]
+    }
    }
   },
   {
    "unit": "path_traversal",
-   "exchanges": ["traversal_check"],
+   "exchanges": [
+    "traversal_check"
+   ],
    "why": "sends a traversal payload in one parameter and requires target file content in the response",
    "requirements": {
-    "V5.3.2": {"strength": "partial", "cwe": ["CWE-22"]}
+    "V5.3.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-22"
+     ]
+    }
    }
   },
   {
    "unit": "auth_bypass",
-   "exchanges": ["auth_bypass_check"],
+   "exchanges": [
+    "auth_bypass_check"
+   ],
    "why": "SQL injection payload against the configured login form; a bypass is an injection defect at the authentication handler",
    "requirements": {
-    "V1.2.4": {"strength": "partial", "cwe": ["CWE-89"]}
+    "V1.2.4": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-89"
+     ]
+    }
    }
   },
   {
    "unit": "file_upload",
-   "exchanges": ["upload_check", "upload_reach"],
+   "exchanges": [
+    "upload_check",
+    "upload_reach"
+   ],
    "why": "uploads a script file type and fetches it back to see whether the server stored and served it",
    "requirements": {
-    "V5.2.2": {"strength": "direct", "cwe": ["CWE-434"]},
-    "V5.3.1": {"strength": "direct", "cwe": ["CWE-434"]}
+    "V5.2.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-434"
+     ]
+    },
+    "V5.3.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-434"
+     ]
+    }
    }
   },
   {
    "unit": "ssrf",
-   "exchanges": ["ssrf_check"],
+   "exchanges": [
+    "ssrf_check"
+   ],
    "why": "operator-declared internal URL must be fetched by the application and its marker returned",
    "requirements": {
-    "V1.3.6": {"strength": "direct", "cwe": ["CWE-918"]}
+    "V1.3.6": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-918"
+     ]
+    }
    }
   },
   {
    "unit": "idor",
-   "exchanges": ["idor_check"],
+   "exchanges": [
+    "idor_check"
+   ],
    "why": "authenticated read of another identity's object by id, compared with the expected denial",
    "requirements": {
-    "V8.2.2": {"strength": "direct", "cwe": ["CWE-639"]},
-    "V8.4.1": {"strength": "partial", "cwe": ["CWE-639"]}
+    "V8.2.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-639"
+     ]
+    },
+    "V8.4.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-639"
+     ]
+    }
    }
   },
   {
    "unit": "web_checks",
-   "union": ["security_headers", "cookie_flags", "cors", "sensitive_paths", "open_redirect",
-             "reflected_xss", "sqli", "sqli_union", "ssti", "path_traversal", "auth_bypass",
-             "file_upload", "ssrf", "idor"],
+   "union": [
+    "security_headers",
+    "cookie_flags",
+    "cors",
+    "sensitive_paths",
+    "open_redirect",
+    "reflected_xss",
+    "sqli",
+    "sqli_union",
+    "ssti",
+    "path_traversal",
+    "auth_bypass",
+    "file_upload",
+    "ssrf",
+    "idor"
+   ],
    "why": "the intent role that runs every WebChecks method above"
   },
   {
    "unit": "web",
    "note": "agent web role drives the same WebChecks methods",
-   "union": ["web_checks"]
+   "union": [
+    "web_checks"
+   ]
   },
   {
    "unit": "recon",
-   "exchanges": ["recon_probe"],
+   "exchanges": [
+    "recon_probe"
+   ],
    "why": "records the server header and technology banner of the response",
    "requirements": {
-    "V13.4.6": {"strength": "indirect", "cwe": []}
+    "V13.4.6": {
+     "strength": "indirect",
+     "cwe": []
+    }
    }
   },
   {
    "unit": "httpx",
    "why": "ProjectDiscovery httpx fingerprint: server header, title, technology tags",
    "requirements": {
-    "V13.4.6": {"strength": "indirect", "cwe": []}
+    "V13.4.6": {
+     "strength": "indirect",
+     "cwe": []
+    }
    }
   },
   {
    "unit": "version_signals",
-   "exchanges": ["fingerprint"],
+   "exchanges": [
+    "fingerprint"
+   ],
    "why": "reads version-bearing response headers as an observation, not a control test",
    "requirements": {
-    "V13.4.6": {"strength": "indirect", "cwe": []}
+    "V13.4.6": {
+     "strength": "indirect",
+     "cwe": []
+    }
    }
   },
   {
    "unit": "nuclei",
    "why": "template-dependent: only the exposed-file, debug and misconfiguration families are relevant, and only when those templates ran",
    "requirements": {
-    "V13.4.2": {"strength": "partial", "cwe": ["CWE-200"]},
-    "V13.4.5": {"strength": "partial", "cwe": ["CWE-200"]}
+    "V13.4.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ]
+    },
+    "V13.4.5": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ]
+    }
    }
   },
   {
    "unit": "ffuf",
    "why": "wordlist discovery of unreferenced files and admin paths",
    "requirements": {
-    "V13.4.1": {"strength": "partial", "cwe": ["CWE-200"]},
-    "V13.4.3": {"strength": "partial", "cwe": ["CWE-200"]},
-    "V13.4.5": {"strength": "partial", "cwe": ["CWE-200"]}
+    "V13.4.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ]
+    },
+    "V13.4.3": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ]
+    },
+    "V13.4.5": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ]
+    }
    }
   },
   {
    "unit": "zap_baseline",
    "why": "passive ZAP rules cover header, cookie and disclosure checks only",
    "requirements": {
-    "V3.3.1": {"strength": "partial", "cwe": ["CWE-614"]},
-    "V3.3.4": {"strength": "partial", "cwe": ["CWE-614"]},
-    "V3.4.3": {"strength": "partial", "cwe": ["CWE-693"]},
-    "V3.4.4": {"strength": "direct", "cwe": ["CWE-693"]}
+    "V3.3.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-614"
+     ]
+    },
+    "V3.3.4": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-614"
+     ]
+    },
+    "V3.4.3": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-693"
+     ]
+    },
+    "V3.4.4": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-693"
+     ]
+    }
    }
   },
   {
    "unit": "tls_audit",
    "why": "reads the negotiated protocol, cipher suite and certificate of the endpoint",
    "requirements": {
-    "V12.1.1": {"strength": "direct", "cwe": ["CWE-326"]},
-    "V12.1.2": {"strength": "direct", "cwe": ["CWE-327"]},
-    "V12.2.2": {"strength": "direct", "cwe": ["CWE-298"]}
+    "V12.1.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-326"
+     ]
+    },
+    "V12.1.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-327"
+     ]
+    },
+    "V12.2.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-298"
+     ]
+    }
    }
   },
   {
    "unit": "infra_scan",
-   "tools": ["nmap"],
-   "alias_evidence": ["tls_audit"],
+   "tools": [
+    "nmap"
+   ],
+   "alias_evidence": [
+    "tls_audit"
+   ],
    "why": "the infra intent runs tls_audit; nmap adds port/service context but tests no ASVS requirement",
    "requirements": {
-    "V12.1.1": {"strength": "direct", "cwe": ["CWE-326"]},
-    "V12.1.2": {"strength": "direct", "cwe": ["CWE-327"]},
-    "V12.2.2": {"strength": "direct", "cwe": ["CWE-298"]}
+    "V12.1.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-326"
+     ]
+    },
+    "V12.1.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-327"
+     ]
+    },
+    "V12.2.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-298"
+     ]
+    }
    }
   },
   {
    "unit": "infra",
    "why": "agent infra role runs the TLS audit and host scans",
    "requirements": {
-    "V12.1.1": {"strength": "direct", "cwe": ["CWE-326"]},
-    "V12.1.2": {"strength": "direct", "cwe": ["CWE-327"]},
-    "V12.2.2": {"strength": "direct", "cwe": ["CWE-298"]}
+    "V12.1.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-326"
+     ]
+    },
+    "V12.1.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-327"
+     ]
+    },
+    "V12.2.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-298"
+     ]
+    }
    }
   },
   {
    "unit": "api_audit",
-   "exchanges": ["api_check", "api_login"],
+   "exchanges": [
+    "api_check",
+    "api_login"
+   ],
    "why": "OpenAPI-driven object-level, function-level and mass-assignment probes across the declared roles",
    "requirements": {
-    "V8.2.1": {"strength": "direct", "cwe": ["CWE-285"]},
-    "V8.2.2": {"strength": "direct", "cwe": ["CWE-639"]},
-    "V15.3.3": {"strength": "direct", "cwe": ["CWE-915"]}
+    "V8.2.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-285"
+     ]
+    },
+    "V8.2.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-639"
+     ]
+    },
+    "V15.3.3": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-915"
+     ]
+    }
    }
   },
   {
    "unit": "api",
    "note": "agent api role drives the same api_audit probes",
-   "union": ["api_audit"]
+   "union": [
+    "api_audit"
+   ]
   },
   {
    "unit": "authz",
    "why": "agent authz role attempts authentication and object/function authorization bypasses",
    "requirements": {
-    "V8.2.1": {"strength": "partial", "cwe": ["CWE-285"]},
-    "V8.2.2": {"strength": "direct", "cwe": ["CWE-639"]},
-    "V15.3.3": {"strength": "partial", "cwe": ["CWE-915"]}
+    "V8.2.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-285"
+     ]
+    },
+    "V8.2.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-639"
+     ]
+    },
+    "V15.3.3": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-915"
+     ]
+    }
    }
   },
   {
    "unit": "graphql_audit",
-   "exchanges": ["graphql_check", "graphql_login"],
+   "exchanges": [
+    "graphql_check",
+    "graphql_login"
+   ],
    "why": "introspection, per-role object/function authorization queries and injection probes",
    "requirements": {
-    "V1.2.4": {"strength": "partial", "cwe": ["CWE-89"]},
-    "V4.3.1": {"strength": "partial", "cwe": ["CWE-770"]},
-    "V4.3.2": {"strength": "direct", "cwe": ["CWE-200"]},
-    "V8.2.2": {"strength": "direct", "cwe": ["CWE-639"]}
+    "V1.2.4": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-89"
+     ]
+    },
+    "V4.3.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-770"
+     ]
+    },
+    "V4.3.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-200"
+     ]
+    },
+    "V8.2.2": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-639"
+     ]
+    }
    }
   },
   {
    "unit": "code_audit",
    "why": "static review of the supplied source: semgrep rules, repository secrets, dependency and image CVEs",
    "requirements": {
-    "V1.2.5": {"strength": "partial", "cwe": ["CWE-78"]},
-    "V1.3.2": {"strength": "partial", "cwe": ["CWE-94"]},
-    "V1.5.2": {"strength": "partial", "cwe": ["CWE-502"]},
-    "V13.3.1": {"strength": "partial", "cwe": ["CWE-798"]},
-    "V13.4.2": {"strength": "partial", "cwe": ["CWE-489"]},
-    "V15.2.1": {"strength": "partial", "cwe": ["CWE-1104"]}
+    "V1.2.5": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-78"
+     ]
+    },
+    "V1.3.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-94"
+     ]
+    },
+    "V1.5.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-502"
+     ]
+    },
+    "V13.3.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-798"
+     ]
+    },
+    "V13.4.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-489"
+     ]
+    },
+    "V15.2.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-1104"
+     ]
+    }
    }
   },
   {
    "unit": "container_scan",
    "why": "image component CVEs, mapped to the component-remediation requirement only",
    "requirements": {
-    "V15.2.1": {"strength": "partial", "cwe": ["CWE-1104"]}
+    "V15.2.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-1104"
+     ]
+    }
    }
   }
  ],

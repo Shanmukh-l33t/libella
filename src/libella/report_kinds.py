@@ -138,9 +138,12 @@ def coverage_md(report: dict) -> str:
         lines += ["", "## By category", "", "| Category | Applicable | Completed | Findings |",
                   "|---|---|---|---|"]
         for c in cats:
-            got = c.get("counts") or {}
+            got = c.get("counts") or {}  # keyed by automatic status, not by summary measure
+            done = sum(got.get(x, 0) for x in ("completed_no_issue", "partial_evidence",
+                                               "finding_unverified", "finding_verified"))
+            hits = got.get("finding_unverified", 0) + got.get("finding_verified", 0)
             lines.append(f"| {c.get('name') or c.get('id')} | {c.get('tests', 0)} | "
-                         f"{got.get('completed', 0)} | {got.get('with_findings', 0)} |")
+                         f"{done} | {hits} |")
     not_tested = cov.get("not_tested") or []
     if not_tested:
         lines += ["", "## Not tested", ""]
@@ -149,6 +152,17 @@ def coverage_md(report: dict) -> str:
                 lines.append(f"- {t.get('id')}: {t.get('status')} ({t.get('reason') or ''})")
             else:
                 lines.append(f"- {t}")
+    for std in report.get("standards") or []:
+        ss = std.get("summary") or {}
+        sfw = std.get("framework") or {}
+        level = f" Level {ss['level']}" if ss.get("level") else ""
+        lines += ["", f"## {sfw.get('title') or sfw.get('id')} {sfw.get('version', '')}{level}", "",
+                  "| Measure | Count |", "|---|---|"]
+        for key in ("total", "catalog", "excluded_by_level", "applicable", "supported",
+                    "attempted", "completed", "partial", "with_findings", "manual_required",
+                    "skipped", "not_tested"):
+            if key in ss:
+                lines.append(f"| {key.replace('_', ' ')} | {ss[key]} |")
     lines += ["", "_A completed automated check is not a manual assessment. Read the limitations "
                   "with this table._", ""]
     return "\n".join(lines)

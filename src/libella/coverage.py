@@ -106,6 +106,34 @@ def _unit_slots(db: DB, engagement_id: str, spec: dict) -> dict:
     return slots
 
 
+def _provenance(db: DB, engagement_id: str, spec: dict, findings) -> dict:
+    """finding id -> the units whose captured evidence the finding cites.
+
+    Recovered from the evidence a finding binds (exchange or tool artifact), so a
+    requirement only counts findings its own checks produced. A finding whose
+    evidence maps to no known unit (an agent's own request) keeps an empty set and
+    is matched by CWE alone.
+    """
+    unit_of: dict = {}
+    for r in db.query("SELECT evidence_id, tool FROM exchanges WHERE engagement_id=? "
+                      "AND evidence_id IS NOT NULL", (engagement_id,)):
+        unit = spec["external_unit"].get(r["tool"])
+        if unit:
+            unit_of.setdefault(r["evidence_id"], set()).add(unit)
+    for r in db.query("SELECT artifact_id, tool FROM tool_calls WHERE engagement_id=? "
+                      "AND artifact_id IS NOT NULL", (engagement_id,)):
+        if r["tool"] in spec["units"]:
+            unit_of.setdefault(r["artifact_id"], set()).add(r["tool"])
+    out = {}
+    for f in findings:
+        try:
+            ids = json.loads(f.get("evidence_ids_json") or "[]")
+        except ValueError:
+            ids = []
+        out[f["id"]] = set().union(*(unit_of.get(e, set()) for e in ids)) if ids else set()
+    return out
+
+
 def _merge(slots: dict, names) -> dict:
     out = {"calls": [], "exchanges": [], "intents": [], "denied": [], "missing": [], "blocked": []}
     for name in names:
@@ -163,7 +191,8 @@ def _strength(spec: dict, rid: str, units) -> str:
     return min(strengths, key=lambda s: order.get(s, 1)) if strengths else "partial"
 
 
-def _derive(spec: dict, rid: str, slots: dict, findings, profile: str, categories) -> tuple:
+def _derive(spec: dict, rid: str, slots: dict, findings, profile: str, categories,
+            produced_by=None) -> tuple:
     """Automatic status + evidence pointers for one requirement, from recorded execution."""
     every = spec["by_requirement"].get(rid, ())
     # per-method rows are precise; a role row (which runs all of them) only speaks
@@ -186,7 +215,7 @@ def _derive(spec: dict, rid: str, slots: dict, findings, profile: str, categorie
         row = spec["units"][unit]
         names = (unit, *row.get("tools", ()), *row.get("alias_evidence", ()))
         states[unit] = _unit_state(_merge(slots, names))
-    hits = standards.findings_for(spec["id"], rid, findings)
+    hits = standards.findings_for(spec["id"], rid, findings, produced_by)
     pointers = _pointers(slots, units, hits, spec)
     if hits:
         verified = [f for f in hits if f["state"] in CONFIRMED_STATES]
@@ -234,8 +263,9 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT) -> dict:
     level = level_for(db, engagement_id, framework)
     in_scope = set(standards.requirements(framework, level))
     slots = _unit_slots(db, engagement_id, spec)
-    findings = db.query("SELECT id, cwe, state FROM findings WHERE engagement_id=?",
-                        (engagement_id,))
+    findings = db.query("SELECT id, cwe, state, title, evidence_ids_json FROM findings "
+                        "WHERE engagement_id=?", (engagement_id,))
+    produced_by = _provenance(db, engagement_id, spec, findings)
     recorded = {r["test_id"]: r for r in db.query(
         "SELECT * FROM coverage_entries WHERE engagement_id=? AND framework=?",
         (engagement_id, framework))}
@@ -250,7 +280,8 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT) -> dict:
             if rid not in in_scope:
                 continue
             req = spec["requirements"][rid]
-            auto, pointers = _derive(spec, rid, slots, findings, profile, scope_categories)
+            auto, pointers = _derive(spec, rid, slots, findings, profile, scope_categories,
+                                     produced_by)
             row = recorded.get(rid) or {}
             review = row["status"] if row.get("status") in STATUSES else None
             entry = {"status": review, "note": row.get("note"),

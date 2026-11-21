@@ -111,13 +111,27 @@ def main() -> int:
         if not wstg_hits:
             failures.append(f"{rid} cites {ex} but no WSTG test cites the same exchange")
 
-    doc = render_report(app.db, app.evidence, eid)
-    (out / "report.json").write_text(json.dumps(doc, indent=1, default=str))
-    reopened = json.loads((out / "report.json").read_text())
+    rendered = render_report(app.db, app.evidence, eid, out / "report")
+    reopened = json.loads((Path(rendered["outdir"]) / "report.json").read_text())
+    md = (Path(rendered["outdir"]) / "report.md").read_text()
     if not reopened.get("coverage"):
         failures.append("report has no coverage section")
     elif reopened["coverage"].get("summary", {}).get("total") != wstg["summary"]["total"]:
-        failures.append("report coverage total disagrees with the ledger")
+        failures.append("report WSTG coverage total disagrees with the ledger")
+    asvs_doc = next((s for s in reopened.get("standards") or []
+                     if s["framework"]["id"] == "ASVS"), None)
+    if not asvs_doc:
+        failures.append("report does not carry the selected ASVS ledger")
+    elif asvs_doc["summary"] != json.loads(json.dumps(summary, default=str)):
+        failures.append("report ASVS summary disagrees with the ledger")
+    if "5.0.0 Level 2 coverage" not in md:
+        failures.append("report.md has no ASVS Level 2 coverage section")
+    # attribution: a finding only fails requirements its own check maps to
+    produced = {f["id"]: f for f in app.pipeline.list(eid)}
+    for rid, t in executed.items():
+        for fid in t["evidence"]["findings"]:
+            if rid == "V4.3.2" and "graphql" not in (produced[fid]["title"] or "").lower():
+                failures.append(f"V4.3.2 (GraphQL) cites non-GraphQL finding {fid}")
     (out / "standards_asvs.json").write_text(json.dumps(asvs, indent=1, default=str))
     (out / "standards_wstg.json").write_text(json.dumps(wstg, indent=1, default=str))
 
