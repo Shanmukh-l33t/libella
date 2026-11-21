@@ -81,6 +81,26 @@ CREATE TABLE IF NOT EXISTS retests(
   detail TEXT, created_at REAL
 );
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+-- runtime-created specialist agents: registered, policy-checked, auditable
+CREATE TABLE IF NOT EXISTS specialists(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, slug TEXT NOT NULL,
+  parent_run_id TEXT, objective TEXT, charter_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'registered', created_at REAL, updated_at REAL,
+  history_json TEXT NOT NULL DEFAULT '[]',
+  UNIQUE(engagement_id, slug)
+);
+-- authoritative engagement spend: reservations are taken atomically before a
+-- model call and reconciled to the actual cost after it
+CREATE TABLE IF NOT EXISTS budget_ledger(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, run_id TEXT, kind TEXT NOT NULL,
+  amount_usd REAL NOT NULL, state TEXT NOT NULL, created_at REAL, settled_at REAL
+);
+-- analyst corrections of finding -> requirement attribution; append-only history
+CREATE TABLE IF NOT EXISTS requirement_links(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, engagement_id TEXT NOT NULL,
+  framework TEXT NOT NULL, requirement_id TEXT NOT NULL, finding_id TEXT NOT NULL,
+  action TEXT NOT NULL, note TEXT NOT NULL, actor TEXT, created_at REAL
+);
 CREATE TABLE IF NOT EXISTS hypotheses(
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, asset_id TEXT, intent_id TEXT,
   kind TEXT, statement TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
@@ -167,7 +187,11 @@ class DB:
         additions = {
             "findings": [("remediation_notes", "TEXT"), ("owner", "TEXT"),
                          ("fix_commit", "TEXT"), ("remediated_at", "REAL"),
-                         ("due_at", "TEXT"), ("remediation_state", "TEXT DEFAULT 'open'")],
+                         ("due_at", "TEXT"), ("remediation_state", "TEXT DEFAULT 'open'"),
+                         # structured control ids the producing check asserted, and
+                         # where they came from (check | migrated | analyst)
+                         ("controls_json", "TEXT NOT NULL DEFAULT '[]'"),
+                         ("controls_source", "TEXT")],
             "exchanges": [("replay_of", "TEXT"), ("tags_json", "TEXT DEFAULT '[]'")],
             "engagements": [("standards_json", "TEXT NOT NULL DEFAULT '{}'")],
             "coverage_entries": [("framework", "TEXT NOT NULL DEFAULT 'wstg'")],
