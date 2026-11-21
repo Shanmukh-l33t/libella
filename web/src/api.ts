@@ -49,14 +49,16 @@ export const mintTicket = (eid: string) =>
 
 /** Downloads use fetch so the bearer header travels instead of a token in the URL. */
 export type ReportFormat = "md" | "sarif" | "pdf" | "dojo" | "html" | "docx" | "xlsx" | "csv";
-export async function downloadReport(eid: string, format: ReportFormat) {
-  const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}`;
+export type ReportKind = "technical" | "executive" | "coverage" | "evidence" | "gitlab";
+export async function downloadReport(eid: string, format: ReportFormat, kind: ReportKind = "technical") {
+  const path = `/api/engagements/${encodeURIComponent(eid)}/report?format=${format}&kind=${kind}`;
   const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
   if (!res.ok) throw await failure(res);
   const href = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = href;
-  a.download = format === "dojo" ? `libella-${eid}-defectdojo.json` : `${eid}.${format}`;
+  const base = kind === "technical" ? `${eid}.${format}` : `libella-${eid}-${kind}.${format}`;
+  a.download = format === "dojo" ? `libella-${eid}-defectdojo.json` : base;
   a.click();
   URL.revokeObjectURL(href);
 }

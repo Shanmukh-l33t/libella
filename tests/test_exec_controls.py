@@ -500,3 +500,29 @@ def test_production_safe_plan_skips_active_work(app, lab):
     assert {"recon", "crawl", "web_checks", "verify", "report"} <= roles
     assert "nuclei_scan" not in roles and "infra_scan" not in roles
     assert {d["unit"] for d in _degradations(app, eid)} >= {"nuclei_scan", "infra_scan"}
+
+
+# --- a URL target authorizes its own port, so infra scans declare exactly it ----
+
+def test_infra_scan_declares_the_authorized_port_instead_of_a_top_ports_sweep(app, lab, monkeypatch):
+    from libella.orchestrator import Orchestrator
+
+    orch = app.orchestrator()
+    assert isinstance(orch, Orchestrator)
+    seen = {}
+    real_run = orch.runner.run
+
+    def capture(spec, params, *a, **k):
+        seen[spec.name] = dict(params)
+        return {"ok": False, "error": "stopped after capture"}
+
+    monkeypatch.setattr(orch.runner, "run", capture)
+    port = int(lab.rsplit(":", 1)[1])
+    scope = Scope({"targets": [{"kind": "url", "value": lab}],
+                   "categories": ["recon", "web", "infra"], "rate_limit_rps": 50})
+    try:
+        orch._do_infra("eng_ports", scope, f"TLS and service audit {lab}", None)
+    finally:
+        monkeypatch.setattr(orch.runner, "run", real_run)
+    assert seen["nmap"]["ports"] == str(port), seen
+    assert "top_ports" not in seen["nmap"], seen

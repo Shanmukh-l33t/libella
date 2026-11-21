@@ -762,17 +762,50 @@ class Orchestrator:
             self.pipeline.submit_candidate(engagement_id, cand, intent_id)
         if skipped:
             self._policy_skip(engagement_id, ", ".join(skipped), profile, intent_id)
+        if checks.mitigated:
+            # A challenge page is a non-answer: say so once, as a limitation, not a finding.
+            kinds = sorted({m.split(": ", 1)[-1] for m in checks.mitigated})
+            self.db.emit(engagement_id, "degradation", {
+                "code": "target_mitigated", "intent_id": intent_id,
+                # which checks were answered by an interstitial, so coverage can say so
+                "units": sorted({m.split(": ", 1)[0] for m in checks.mitigated}),
+                "detail": f"{len(checks.mitigated)} request(s) to {url} were answered by a bot/WAF "
+                          f"challenge ({', '.join(kinds)}). Those checks are inconclusive, not "
+                          f"findings; supply a browser session or allow-list the assessment "
+                          f"client to assess the application itself."})
         self.db.emit(engagement_id, "checks_complete",
-                     {"intent_id": intent_id, "candidates": len(candidates)})
+                     {"intent_id": intent_id, "candidates": len(candidates),
+                      "mitigated": len(checks.mitigated)})
 
     def _do_nuclei(self, engagement_id, scope, obj, intent_id):
         url = self._target_from_obj(obj)
         if not url:
             return
         spec = self.registry.get("nuclei")
+        progress: dict = {}
+
+        def on_progress(line: str) -> None:
+            sample = PARSERS["nuclei_stats"](line)
+            if not sample or sample["percent"] is None:
+                return
+            progress.update(sample)
+            self.db.emit(engagement_id, "scan_progress",
+                         {"tool": "nuclei", "intent_id": intent_id, "url": url, **sample})
+
         r = self.runner.run(spec, {"target": url, "severity": "medium,high,critical",
                                    "rate_limit": _declared_rate(scope, NUCLEI_MAX_RATE)},
-                            scope, engagement_id, intent_id, url, "web")
+                            scope, engagement_id, intent_id, url, "web",
+                            on_progress=on_progress)
+        if progress.get("percent") is not None and progress["percent"] < 100:
+            # say what was NOT scanned, in the engine's own numbers
+            why = ("the scan hit its time limit" if r.get("error") and "stopped" not in str(r.get("error"))
+                   else str(r.get("error") or "the scan ended early"))
+            self.db.emit(engagement_id, "degradation", {
+                "code": "scan_partial", "intent_id": intent_id, "units": ["nuclei"],
+                "detail": f"nuclei covered {progress['percent']}% of its templates "
+                          f"({progress.get('requests')} requests, {progress.get('matched')} matches) "
+                          f"before it stopped: {why}. Results below that point are untested, "
+                          f"not clean."})
         if not r.get("ok"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",
                                              f"nuclei: {r.get('error')}", r.get("artifact_id"))
@@ -803,9 +836,15 @@ class Orchestrator:
             audit_tls(host, pu.port or 443, self.db, self.evidence, self.pipeline,
                       scope, engagement_id, intent_id)
         spec = self.registry.get("nmap")
-        r = self.runner.run(spec, {"target": host, "top_ports": 100, "service_detect": True,
-                                   "rate_limit": _declared_rate(scope, NMAP_MAX_RATE)},
-                            scope, engagement_id, intent_id, host, "infra")
+        params = {"target": host, "service_detect": True,
+                  "rate_limit": _declared_rate(scope, NMAP_MAX_RATE)}
+        authorized = scope.authorized_ports(host)
+        if authorized:
+            # a URL target authorizes its own port only: never a top-100 sweep
+            params["ports"] = ",".join(str(p) for p in authorized)
+        else:
+            params["top_ports"] = 100
+        r = self.runner.run(spec, params, scope, engagement_id, intent_id, host, "infra")
         if not r.get("ok"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",
                                              f"nmap: {r.get('error')}", r.get("artifact_id"))

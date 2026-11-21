@@ -17,10 +17,12 @@ from .auth_browser import STEP_ACTIONS, AuthBrowser
 from .browser_crawl import browser_available
 from .db import DB, new_id
 from .evidence import EvidenceStore
+from .report import _write_atomic
 from .findings import FindingPipeline
 from .llm import LLM
 from .orchestrator import MODES, Orchestrator
 from . import __version__, mcp_client  # plugin/MCP extension framework
+
 from .plugins import PluginHost
 from .policy import DEFAULT_PROFILE, PROFILES
 from .provider_diagnostic import normalize_base, diagnostic_result, same_base, test_connection
@@ -32,6 +34,27 @@ from .tools.adapters import ALL_ADAPTERS
 from .tools.http_probe import HttpProbe
 from .tools.runner import ToolRunner
 from .verifier import Verifier
+
+# Report kinds are declared here so the API can reject an unsupported request before
+# rendering anything, and the UI can discover what this build actually offers.
+REPORT_KINDS = [
+    {"id": "technical", "title": "Technical penetration-test report",
+     "description": "Every observation with evidence, verification history, coverage and limitations.",
+     "formats": ["json", "md", "pdf", "html", "docx", "xlsx", "csv", "sarif", "dojo"]},
+    {"id": "executive", "title": "Executive security summary",
+     "description": "Risk, verified findings and what was not tested, for a non-technical reader.",
+     "formats": ["md", "html", "pdf"]},
+    {"id": "coverage", "title": "Methodology and coverage report",
+     "description": "WSTG test status with the reason each test was not completed.",
+     "formats": ["md", "html", "pdf"]},
+    {"id": "evidence", "title": "Evidence appendix",
+     "description": "Hash-chain ledger of every captured artifact (metadata only, no bodies).",
+     "formats": ["csv", "md", "html", "pdf"]},
+    {"id": "gitlab", "title": "GitLab DAST report",
+     "description": "GitLab DAST 15.0.0 JSON built from independently verified findings.",
+     "formats": ["json"]},
+]
+REPORT_KINDS_BY_ID = {k["id"]: k for k in REPORT_KINDS}
 
 
 class SPAStaticFiles(StaticFiles):
@@ -115,6 +138,14 @@ class App:
         try:
             orch.start(engagement_id, mode)
         except Exception as e:
+            # a finished run must keep its truthful terminal status: an error while the
+            # run was already done (e.g. rendering) is a limitation, not a failed run
+            row = self.db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,)) or {}
+            if row.get("status") in ("done", "budget_exhausted", "cancelled", "window_closed"):
+                self.db.emit(engagement_id, "degradation", {
+                    "code": "post_run_error",
+                    "detail": f"the run finished as {row['status']} but post-run work raised: {e}"})
+                return
             self.db.execute("UPDATE engagements SET status='failed', status_detail=?, finished_at=? WHERE id=?",
                             (str(e), time.time(), engagement_id))
             self.db.emit(engagement_id, "engagement_failed", {"error": str(e)})
@@ -490,10 +521,25 @@ def create_api(app: App) -> FastAPI:
             ex["blob"] = blob
         return ex
 
-    @api.get("/api/engagements/{eid}/report", dependencies=[Depends(auth)])
-    def report(eid: str, format: str = "json"):
+    @api.get("/api/engagements/{eid}/report/kinds", dependencies=[Depends(auth)])
+    def report_kinds(eid: str):
+        """What can be generated for this engagement, and in which formats."""
         if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
             raise HTTPException(404)
+        return {"kinds": REPORT_KINDS}
+
+    @api.get("/api/engagements/{eid}/report", dependencies=[Depends(auth)])
+    def report(eid: str, format: str = "json", kind: str = "technical"):
+        if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
+            raise HTTPException(404)
+        if kind not in REPORT_KINDS_BY_ID:
+            raise HTTPException(400, f"unknown report kind {kind!r}; expected one of "
+                                     f"{', '.join(REPORT_KINDS_BY_ID)}")
+        if format not in REPORT_KINDS_BY_ID[kind]["formats"]:
+            raise HTTPException(400, f"kind {kind!r} supports "
+                                     f"{', '.join(REPORT_KINDS_BY_ID[kind]['formats'])}, not {format!r}")
+        if kind != "technical":
+            return _focused_report(eid, kind, format)
         try:
             res = render_report(app.db, app.evidence, eid)
         except Exception as exc:  # an unwritable output path must read as a report problem
@@ -530,6 +576,45 @@ def create_api(app: App) -> FastAPI:
             return FileResponse(path, filename=f"{eid}.xlsx",
                                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         return json.loads((p / "report.json").read_text())
+
+    def _focused_report(eid: str, kind: str, format: str):
+        """Executive, coverage, evidence-ledger and GitLab views of the same report."""
+        from . import report_kinds
+
+        res = render_report(app.db, app.evidence, eid)  # one source of truth, rendered first
+        doc = json.loads((Path(res["outdir"]) / "report.json").read_text())
+        if kind == "gitlab":
+            return JSONResponse(report_kinds.gitlab_json(doc), headers={
+                "Content-Disposition": f'attachment; filename="libella-{eid}-gitlab-dast.json"'})
+        if kind == "evidence":
+            csv_text = report_kinds.evidence_csv(app.db, eid)
+            if format == "csv":
+                out = Path(res["outdir"]) / "evidence.csv"
+                _write_atomic(out, csv_text)
+                return FileResponse(out, media_type="text/csv",
+                                    filename=f"libella-{eid}-evidence.csv")
+            md = ("# Evidence appendix (chain metadata)\n\n"
+                  "This appendix lists the evidence ledger, not raw captured content: id, kind, "
+                  "SHA-256 and chain hash, in insertion order. Bodies and headers stay redacted "
+                  "in the platform and are never exported here.\n\n```csv\n"
+                  + csv_text.strip() + "\n```\n")
+        elif kind == "executive":
+            md = report_kinds.executive_md(doc)
+        else:
+            md = report_kinds.coverage_md(doc)
+        title = {"executive": "Executive security summary", "coverage": "Methodology and coverage",
+                 "evidence": "Evidence appendix"}[kind]
+        if format == "md":
+            out = Path(res["outdir"]) / f"{kind}.md"
+            _write_atomic(out, md)
+            return FileResponse(out, media_type="text/markdown",
+                                filename=f"libella-{eid}-{kind}.md")
+        html = report_kinds.html_doc(f"{title} — {title}", report_kinds.md_to_html(md))
+        if format == "html":
+            return HTMLResponse(html)
+        from .tools.browser_fetch import render_pdf
+        pdf = render_pdf(html, Path(res["outdir"]) / f"{kind}.pdf")
+        return FileResponse(pdf, media_type="application/pdf", filename=f"libella-{eid}-{kind}.pdf")
 
     # ---------------- remediation tracking + historical comparison (WS-Report) ----
     @api.post("/api/findings/{fid}/remediation", dependencies=[Depends(auth)])

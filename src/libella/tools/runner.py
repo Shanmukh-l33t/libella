@@ -46,6 +46,7 @@ class ToolRunner:
         intent_id: str | None,
         target: str,
         category: str | None = None,
+        on_progress=None,
     ) -> dict:
         """Execute a typed tool call. Returns structured result + audit refs."""
         call_id = new_id("tc")
@@ -68,10 +69,11 @@ class ToolRunner:
         dest = clean.get(spec.target_param) or target
         if _is_host(dest):
             ports = _declared_ports(spec, clean)
-            if ports is None and spec.port_param and scope.allowed_ports:
-                # an undeclared/ranged port set cannot be confined to allowed_ports
+            authorized = scope.authorized_ports(dest) if spec.port_param else None
+            if ports is None and spec.port_param and authorized:
+                # an undeclared/ranged port set cannot be confined to the authorized ports
                 decision = Decision(False, f"port set not declared; cannot confine to "
-                                           f"allowed_ports {sorted(scope.allowed_ports)}")
+                                           f"the authorized ports {authorized}")
             else:
                 decision = scope.check_host_port(dest, None, cat)
                 for p in ports or ():
@@ -116,7 +118,8 @@ class ToolRunner:
         stdout, stderr, exit_code, timed_out, truncated = _run_capped(
             argv, rundir, {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(rundir),
                            "LANG": "C.UTF-8", "NO_COLOR": "1"}, spec.timeout_s,
-            should_stop=lambda: self._stop_reason(engagement_id) is not None)
+            should_stop=lambda: self._stop_reason(engagement_id) is not None,
+            on_line=on_progress)
         stopped_by = None if timed_out else self._stop_reason(engagement_id)
         cancelled = stopped_by is not None
 
@@ -174,7 +177,8 @@ class ToolRunner:
         })
 
 
-def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float, should_stop=None):
+def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float, should_stop=None,
+                on_line=None):
     """Run argv and stream both pipes into bounded buffers.
 
     Output is capped while capturing, not after: a chatty tool must not be
@@ -187,7 +191,8 @@ def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float, should_st
     out, err = bytearray(), bytearray()
     truncated = [False]
 
-    def drain(pipe, buf):
+    def drain(pipe, buf, emit=None):
+        pending = b""
         try:
             while True:
                 chunk = pipe.read(65536)
@@ -197,11 +202,20 @@ def _run_capped(argv: list[str], cwd: Path, env: dict, timeout: float, should_st
                     buf += chunk[:MAX_OUTPUT - len(buf)]
                 if len(chunk) and len(buf) >= MAX_OUTPUT:
                     truncated[0] = True
+                if emit is not None:
+                    pending += chunk
+                    *lines, pending = pending.split(b"\n")
+                    pending = pending[-4096:]  # a line longer than this is not progress
+                    for line in lines[-40:]:   # bound work per chunk on a chatty tool
+                        try:
+                            emit(line.decode(errors="replace"))
+                        except Exception:
+                            pass  # a progress consumer must never kill the scan
         except (OSError, ValueError):
             return  # pipe closed by timeout/cancel kill
 
     readers = [threading.Thread(target=drain, args=(proc.stdout, out), daemon=True),
-               threading.Thread(target=drain, args=(proc.stderr, err), daemon=True)]
+               threading.Thread(target=drain, args=(proc.stderr, err, on_line), daemon=True)]
     for t in readers:
         t.start()
     timed_out = False

@@ -276,6 +276,28 @@ class Scope:
             return Decision(False, f"{host} not in engagement scope", resolved_ips=ips)
         return Decision(True, "in scope", resolved_ips=ips, matched_target=matched)
 
+    def authorized_ports(self, host: str) -> list[int] | None:
+        """Ports a host tool may dial on this host, when the scope enumerates them.
+
+        An explicit allowed_ports always wins. Otherwise url targets for this host
+        authorize their own ports only, so a "top 100 ports" sweep is not authorized.
+        None means the scope places no port restriction on this host.
+        """
+        if self.allowed_ports:
+            return sorted(self.allowed_ports)
+        h = host.lower().rstrip(".")
+        ports = set()
+        for t in self.targets:
+            if t["kind"] != "url":
+                continue
+            try:
+                _, uh, up, _ = parse_origin(t["value"])
+            except ValueError:
+                continue
+            if uh == h:
+                ports.add(up)
+        return sorted(ports) or None
+
     def check_host_port(self, host: str, port: int | None, category: str = "infra") -> Decision:
         """For non-HTTP tools (nmap etc). Returns resolved IPs to pass to the tool.
 

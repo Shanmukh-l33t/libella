@@ -2,18 +2,27 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Download, FileText, RefreshCw } from "lucide-react";
 import type { Engagement, Report } from "../../types";
-import { downloadReport, type ReportFormat } from "../../api";
+import { downloadReport, type ReportFormat, type ReportKind } from "../../api";
 import { useApi } from "../../lib/hooks";
 import { fmtTime, money, severityTone, stateTone, title } from "../../lib/format";
-import { Badge, Button, Card, EmptyState, ErrorNote, Skeleton, Stat, Table } from "../../components/ui";
+import { Badge, Button, Card, EmptyState, ErrorNote, Select, Skeleton, Stat, Table } from "../../components/ui";
+
+const FORMAT_LABEL: Record<string, string> = {
+  pdf: "PDF", html: "HTML", md: "Markdown", docx: "Word", xlsx: "Excel",
+  csv: "CSV", json: "JSON", sarif: "SARIF", dojo: "DefectDojo",
+};
 
 export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engagement; live: number }) {
   const navigate = useNavigate();
   const { data, error, loading, reload } = useApi<Report>(`/api/engagements/${eid}/report?format=json&live=${live}`);
   const [dlError, setDlError] = useState<string | null>(null);
+  const kinds = useApi<{ kinds: { id: ReportKind; title: string; description: string; formats: string[] }[] }>(
+    `/api/engagements/${eid}/report/kinds`);
+  const [kind, setKind] = useState<ReportKind>("technical");
+  const formats = kinds.data?.kinds.find((k) => k.id === kind)?.formats || [];
   const download = (format: ReportFormat) => {
     setDlError(null);
-    downloadReport(eid, format).catch((e) => setDlError(e instanceof Error ? e.message : String(e)));
+    downloadReport(eid, format, kind).catch((e) => setDlError(e instanceof Error ? e.message : String(e)));
   };
 
   // Keep the last good report and the controls on screen: a failed re-render must
@@ -39,17 +48,18 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
             status <span className="text-ink-700">{title(data.engagement.status)}</span>
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" icon={<RefreshCw size={13} />} onClick={reload} loading={loading}>Regenerate</Button>
-          <Button size="sm" icon={<Download size={13} />} title="Renders the same report.json through the PDF exporter"
-            onClick={() => download("pdf")}>PDF</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("html")}>HTML</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("docx")}>Word</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("xlsx")}>Excel</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("csv")}>CSV</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("md")}>Markdown</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("sarif")}>SARIF</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("dojo")}>DefectDojo</Button>
+          <Select aria-label="Report type" className="w-auto" value={kind}
+            onChange={(e) => setKind(e.target.value as ReportKind)}>
+            {(kinds.data?.kinds || [{ id: "technical" as ReportKind, title: "Technical report", description: "", formats: [] }])
+              .map((k) => <option key={k.id} value={k.id}>{k.title}</option>)}
+          </Select>
+          {formats.map((f) => (
+            <Button key={f} size="sm" icon={<Download size={13} />} onClick={() => download(f as ReportFormat)}>
+              {FORMAT_LABEL[f] || f.toUpperCase()}
+            </Button>
+          ))}
         </div>
       </div>
 

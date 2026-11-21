@@ -22,7 +22,7 @@ export function useApi<T>(path: string | null) {
 export const EVENT_KINDS = [
   "engagement_created", "engagement_started", "intent_created", "intent_running", "intent_done",
   "asset_discovered", "finding_new", "finding_state", "finding_dedup", "verification", "retest",
-  "tool_call", "scope_refusal", "degradation", "checks_complete", "report_rendered",
+  "tool_call", "scope_refusal", "degradation", "checks_complete", "scan_progress", "report_rendered",
   "engagement_finished", "engagement_paused", "engagement_resumed", "engagement_cancelled",
   "engagement_failed", "compile_reject",
 ];

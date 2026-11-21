@@ -70,3 +70,48 @@ def test_new_routes_require_token(app, pair):
     anon = TestClient(create_api(app))
     assert anon.get("/api/engagements/eng_a/remediation-board").status_code == 401
     assert anon.get("/api/compare", params={"a": "eng_a", "b": "eng_b"}).status_code == 401
+
+
+def test_report_kinds_are_discoverable_and_validated(client, pair):
+    kinds = client.get("/api/engagements/eng_a/report/kinds")
+    assert kinds.status_code == 200
+    ids = {k["id"] for k in kinds.json()["kinds"]}
+    assert ids == {"technical", "executive", "coverage", "evidence", "gitlab"}
+    for k in kinds.json()["kinds"]:
+        assert k["formats"] and k["title"] and k["description"]
+    assert client.get("/api/engagements/eng_a/report?kind=nope").status_code == 400
+    bad = client.get("/api/engagements/eng_a/report?kind=executive&format=docx")
+    assert bad.status_code == 400 and "executive" in bad.json()["detail"]
+
+
+def test_executive_and_coverage_documents_render(client, pair):
+    ex = client.get("/api/engagements/eng_a/report?kind=executive&format=md")
+    assert ex.status_code == 200
+    body = ex.text
+    assert "Executive security summary" in body and "Limitations of this assessment" in body
+    cov = client.get("/api/engagements/eng_a/report?kind=coverage&format=md")
+    assert cov.status_code == 200
+    assert "Methodology and coverage" in cov.text
+    assert "{'id'" not in cov.text, "the framework object leaked into the document"
+    html = client.get("/api/engagements/eng_a/report?kind=executive&format=html")
+    assert html.status_code == 200 and "<h1>" in html.text
+
+
+def test_evidence_appendix_is_metadata_only(client, pair):
+    r = client.get("/api/engagements/eng_a/report?kind=evidence&format=csv")
+    assert r.status_code == 200
+    lines = r.text.strip().splitlines()
+    assert lines[0].startswith("evidence_id,kind,sha256,bytes,created_at_utc,chain_hash")
+    assert len(lines) > 1 and lines[1].startswith("ev_")
+
+
+def test_gitlab_export_is_schema_shaped(client, pair):
+    r = client.get("/api/engagements/eng_a/report?kind=gitlab&format=json")
+    assert r.status_code == 200
+    doc = r.json()
+    assert doc["version"] == "15.0.0" and doc["scan"]["type"] == "dast"
+    assert isinstance(doc["vulnerabilities"], list)
+    for v in doc["vulnerabilities"]:
+        for key in ("id", "name", "severity", "scanner", "location", "identifiers"):
+            assert key in v, (key, v)
+        assert v["severity"] in {"Critical", "High", "Medium", "Low", "Info", "Unknown"}

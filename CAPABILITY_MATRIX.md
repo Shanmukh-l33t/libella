@@ -72,7 +72,7 @@ Research: research/analysis-*.md, inventory-*.md, REA_LOG.md (provable REA invoc
   17 findings independently replay-validated, 0 missed, $0.17, 526s, clean
   convergence (web/api/authz completed), 2 hypotheses, evidence chain intact.
 - Deterministic mode: 16/16, 0 FP hardened (baseline).
-- Full suite: 752 passed, 1 skipped (ZAP live), lint clean, counted on branch
+- Full suite: 779 passed, 1 skipped (ZAP live), lint clean, counted on branch
   `defensive-readiness` at the commit that adds this line (v0.5.0, not tagged).
   PairLab gate re-run on the same code: 16/16 vuln, 0 FP hardened, evidence chains intact.
 - Browser journeys executed on that code: A beginner (wizard, real PairLab scan to

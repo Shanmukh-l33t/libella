@@ -171,11 +171,28 @@ memory + drift; independent verification + retest; PDF/HTML/DOCX/XLSX/CSV/MD/JSO
 reports + remediation tracking + historical comparison; premium operational UI (Command
 Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph,
 read-only Validation workspace, WSTG coverage review).
-752 tests passed, 1 skipped (branch `defensive-readiness`, v0.5.0 in development).
+779 tests passed, 1 skipped (branch `defensive-readiness`, v0.5.0 in development).
 The PairLab benchmark gate, run separately on the same commit, is 16/16 seeds with
 0 false positives. Browser acceptance journeys (beginner run to Done and PDF,
 tool readiness, target credentials, execution controls, report recovery) live in
-benchmarks/acceptance_beginner.py and benchmarks/check_*_ui.py. Two independent adversarial audits (35 defects fixed).
+benchmarks/acceptance_beginner.py and benchmarks/check_*_ui.py; the real-site
+journey is benchmarks/acceptance_keyreed.py (opt-in via LIBELLA_TARGET).
+
+Hardening from a real external assessment (keyreed.com, a Vercel-hosted static site):
+
+- a WAF/CDN challenge (Vercel, Cloudflare, captcha, WAF checkpoints) is classified as
+  an interstitial, never as the application: no finding is raised from it, the check
+  reads inconclusive, the reason is recorded, and a browser read of the same page is
+  used before giving up. Verification and retest replay over the transport that
+  captured the proof (`via: browser`), so a challenged replay can neither confirm nor
+  dismiss a finding.
+- scanners report real progress: nuclei `-stats` JSON is parsed per interval into
+  `scan_progress` events (percent, requests, matches, rps, templates) and shown in the
+  engagement view; a scan that stops early records `scan_partial` with its percentage.
+- a URL target authorizes its own port for host tools: an undeclared port set is
+  refused, and the infra scan declares exactly the authorized ports.
+- report kinds: technical, executive, coverage, evidence appendix (chain metadata) and
+  GitLab DAST 15.0.0 JSON, discoverable through `/api/engagements/{id}/report/kinds` Two independent adversarial audits (35 defects fixed).
 CI/issue-tracker hooks and scheduled retest are planned, not claimed. See
 CAPABILITY_MATRIX.md.
 

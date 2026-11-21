@@ -97,14 +97,15 @@ class Verifier:
                                 "inconclusive", "malformed proof request")
         if pr.get("method") == "TLS":
             return self._verify_tls(engagement_id, scope, f, spec, pr, attempt)
-        r = self.probe.request(
-            engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
-            headers=pr.get("headers"), body=pr.get("body"), tool="verifier_replay",
-            follow_redirects=False, category=self._replay_category(scope),
-        )
+        r = self._replay(engagement_id, scope, pr, "verifier_replay")
         if not r.get("ok"):
             return self._record(finding_id, attempt, "replay", None,
                                 "inconclusive", f"replay request failed: {r.get('error')}")
+        if r.get("mitigated"):
+            # a challenge page proves nothing about the finding either way
+            return self._record(finding_id, attempt, "replay", r["exchange_id"], "inconclusive",
+                                f"replay was answered by a {r['mitigated']} challenge, not the "
+                                f"application: verification is inconclusive")
         quote = spec.get("quote") or ""
         quote_in = spec.get("quote_in", "body")
         reproduced, detail = self._compare(quote, quote_in, r)
@@ -119,6 +120,18 @@ class Verifier:
             pass  # verdict is recorded; the state machine may not allow the move
         return {"verdict": verdict, "detail": detail, "replay_exchange_id": r["exchange_id"],
                 "finding_id": finding_id, "state": "validated" if reproduced else f["state"]}
+
+    def _replay(self, engagement_id: str, scope, pr: dict, tool: str) -> dict:
+        """Replay a proof over the transport that captured it (browser when challenged)."""
+        category = self._replay_category(scope)
+        if pr.get("via") == "browser":
+            return self.probe.browser_request(engagement_id, scope, pr["url"],
+                                              category=category, tool=tool)
+        return self.probe.request(
+            engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
+            headers=pr.get("headers"), body=pr.get("body"), tool=tool,
+            follow_redirects=False, category=category,
+        )
 
     def _verify_tls(self, engagement_id: str, scope, f: dict, spec: dict, pr: dict,
                     attempt: int) -> dict:
@@ -255,12 +268,14 @@ class Verifier:
         category = self._replay_category(scope)
 
         def replay() -> dict:
-            return self.probe.request(engagement_id, scope, pr["url"], method=pr.get("method", "GET"),
-                                      headers=pr.get("headers"), body=pr.get("body"),
-                                      tool="retest", follow_redirects=False, category=category)
+            return self._replay(engagement_id, scope, pr, "retest")
 
         r = replay()
-        if not r.get("ok"):
+        if r.get("mitigated"):
+            verdict, detail = ("inconclusive",
+                               f"retest was answered by a {r['mitigated']} challenge, not the "
+                               f"application: a fix cannot be claimed from it")
+        elif not r.get("ok"):
             verdict, detail = "inconclusive", f"request failed: {r.get('error')}"
         else:
             verdict, detail = self._retest_verdict(spec, r)

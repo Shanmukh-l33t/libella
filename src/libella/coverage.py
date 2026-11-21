@@ -148,10 +148,12 @@ DEPENDENCY_CODES = {"missing_tool", "tool_unavailable", "image_not_local"}
 NOTE_MAX = 2000
 
 # Unit outcome -> the status the ledger shows. Ordered by what wins a merge.
-_PREF = (("completed", "completed_no_issue"), ("inconclusive", "inconclusive"),
+_PREF = (("blocked_target", "inconclusive"), ("completed", "completed_no_issue"),
+         ("inconclusive", "inconclusive"),
          ("failed", "failed"), ("skipped_policy", "skipped_policy"),
          ("skipped_dependency", "skipped_dependency"), ("attempted", "attempted"))
-_VERB = {"completed": "executed, no finding recorded",
+_VERB = {"blocked_target": "the target answered with a challenge or the scan stopped early: not assessed",
+         "completed": "executed, no finding recorded",
          "inconclusive": "ran partially (timeout/cancel), never completed",
          "failed": "failed",
          "skipped_policy": "refused by the engagement profile",
@@ -168,7 +170,7 @@ def _engagement(db: DB, engagement_id: str):
 
 def _slot(slots: dict, name: str) -> dict:
     return slots.setdefault(name, {"calls": [], "exchanges": [], "intents": [],
-                                   "denied": [], "missing": []})
+                                   "denied": [], "missing": [], "blocked": []})
 
 
 def _unit_slots(db: DB, engagement_id: str) -> dict:
@@ -182,9 +184,11 @@ def _unit_slots(db: DB, engagement_id: str) -> dict:
         unit = mapping.EXCHANGE_UNIT.get(r["tool"])
         if unit:
             _slot(slots, unit)["exchanges"].append(r["id"])
+    roles = {}
     for r in db.query("SELECT id, role, status FROM intents WHERE engagement_id=?",
                       (engagement_id,)):
         _slot(slots, r["role"])["intents"].append(r)
+        roles[r["id"]] = r["role"]
     for e in db.query("SELECT seq, payload_json FROM events WHERE engagement_id=? "
                       "AND kind='degradation'", (engagement_id,)):
         payload = json.loads(e["payload_json"])
@@ -194,6 +198,15 @@ def _unit_slots(db: DB, engagement_id: str) -> dict:
             for unit in str(payload.get("unit") or "").split(","):
                 if unit.strip():
                     _slot(slots, unit.strip())["denied"].append(e["seq"])
+        elif code in ("target_mitigated", "scan_partial"):
+            # the unit ran but could not read the application: never count it as assessed.
+            # The payload names the tools involved; map them to the units they prove.
+            named = [u for u in (payload.get("units") or []) if isinstance(u, str)]
+            units = {mapping.EXCHANGE_UNIT.get(u, u) for u in named}
+            if not units:  # older record without unit names: the role is still honest
+                units = {roles.get(payload.get("intent_id")) or "web_checks"}
+            for unit in units:
+                _slot(slots, unit)["blocked"].append(e["seq"])
         elif code in DEPENDENCY_CODES:
             detail = str(payload.get("detail") or "").lower()
             for unit, row in mapping.CHECKS.items():
@@ -203,7 +216,7 @@ def _unit_slots(db: DB, engagement_id: str) -> dict:
 
 
 def _merge(slots: dict, names) -> dict:
-    out = {"calls": [], "exchanges": [], "intents": [], "denied": [], "missing": []}
+    out = {"calls": [], "exchanges": [], "intents": [], "denied": [], "missing": [], "blocked": []}
     for name in names:
         for key, value in slots.get(name, {}).items():
             out[key] += value
@@ -212,11 +225,17 @@ def _merge(slots: dict, names) -> dict:
 
 def _unit_state(s: dict):
     """What one unit's recorded evidence supports. `missing`/timeout beat a bare exit 0."""
-    if s["denied"]:
+    missing = bool(s["missing"]) or any((c["error"] or "").startswith("missing_tool")
+                                        for c in s["calls"])
+    refused = any(str(c["scope_decision"] or "").startswith("refused") for c in s["calls"])
+    if s["denied"] or (refused and not missing):
+        # the engagement refused the work (scope category, port, profile): not a failure
         return "skipped_policy"
+    if s["blocked"]:
+        return "blocked_target"
     if any((c["scope_decision"] or "") == "executed: ok" for c in s["calls"]) or s["exchanges"]:
         return "completed"
-    if s["missing"] or any((c["error"] or "").startswith("missing_tool") for c in s["calls"]):
+    if missing:
         return "skipped_dependency"
     if any(c["error"] in ("timeout", "cancelled") for c in s["calls"]):
         return "inconclusive"
