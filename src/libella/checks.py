@@ -106,7 +106,11 @@ class WebChecks:
         if not r.get("ok"):
             return []
         out = []
-        raw_cookies = [v for k, v in r["headers"].items() if k.lower() == "set-cookie"]
+        # every Set-Cookie the response carried, not just the last one the
+        # headers dict kept (http_probe records the full list as set-cookie-all)
+        all_jars = next((v for k, v in r["headers"].items() if k.lower() == "set-cookie-all"), "")
+        raw_cookies = ([x for x in all_jars.split("\n") if x.strip()] or
+                       [v for k, v in r["headers"].items() if k.lower() == "set-cookie"])
         for c in raw_cookies:
             low = c.lower()
             if "session" not in low and "token" not in low and "auth" not in low:

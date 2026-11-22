@@ -448,3 +448,24 @@ def test_standards_without_levels_can_be_selected_and_reach_the_report(tmp_path,
     doc = json.loads((Path(out["outdir"]) / "report.json").read_text())
     assert [s["framework"]["id"] for s in doc["standards"]] == ["ASVS", "API-Top10"]
     assert "API-Top10 2023 coverage" in (Path(out["outdir"]) / "report.md").read_text()
+
+
+def test_every_set_cookie_is_inspected_not_just_the_last(app):
+    """dict(resp.headers) keeps one Set-Cookie; the insecure second one must not vanish."""
+    from libella.checks import WebChecks
+    seen = []
+
+    class TwoCookies:
+        def request(self, *a, **kw):
+            seen.append(kw)
+            return {"ok": True, "status": 200,
+                    "headers": {"set-cookie": "sessionid=abc; Path=/",
+                                "set-cookie-all": ("csrftoken=xyz; Secure; SameSite=Lax\n"
+                                                   "sessionid=abc; Path=/")},
+                    "body": "", "evidence_id": "ev_x", "exchange_id": "ex_x", "url": "u"}
+
+    cands = WebChecks(TwoCookies(), "eng_s", None).cookie_flags("http://127.0.0.1:8801/")
+    # both cookies set on the page are judged, not only the one the dict kept
+    by_name = {c["title"].split("'")[1]: set(c["controls"]) for c in cands}
+    assert by_name == {"csrftoken": {"cookie.httponly"},
+                       "sessionid": {"cookie.httponly", "cookie.secure", "cookie.samesite"}}

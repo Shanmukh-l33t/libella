@@ -174,6 +174,14 @@ class HttpProbe:
                                 "partial": True}
                     status_code = resp.status_code
                     resp_headers = dict(resp.headers)
+                    # dict() keeps only the LAST duplicate header, which for
+                    # Set-Cookie means every cookie but one goes unchecked
+                    try:
+                        jars = resp.headers.get_list("set-cookie")
+                    except AttributeError:  # pragma: no cover - older httpx
+                        jars = []
+                    if len(jars) > 1:
+                        resp_headers["set-cookie-all"] = "\n".join(jars)
                     final_url = str(resp.url)
                     location = resp.headers.get("location")
                     exchange = self._record(
