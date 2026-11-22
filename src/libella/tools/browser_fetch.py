@@ -41,7 +41,11 @@ def fetch(url: str, timeout_s: int = TIMEOUT_S) -> dict:
 
 
 def render_pdf(html: str, out_path, timeout_s: int = 60) -> Path:
-    """Print an HTML document to PDF with the same Chromium we already ship."""
+    """Print an HTML document to PDF with the same Chromium we already ship.
+
+    Every network request is aborted: report HTML embeds captured evidence, and
+    rendering it must never fetch a remote resource an evidence blob names.
+    """
     from playwright.sync_api import sync_playwright
 
     out_path = Path(out_path)
@@ -49,7 +53,9 @@ def render_pdf(html: str, out_path, timeout_s: int = 60) -> Path:
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         try:
-            page = browser.new_page()
+            context = browser.new_context()
+            context.route("**/*", lambda route: route.abort())  # no egress from a render
+            page = context.new_page()
             page.set_content(html, wait_until="domcontentloaded", timeout=timeout_s * 1000)
             page.pdf(path=str(tmp), format="A4", print_background=True,
                      margin={"top": "18mm", "bottom": "18mm", "left": "16mm", "right": "16mm"})

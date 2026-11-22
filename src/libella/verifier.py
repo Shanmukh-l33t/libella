@@ -142,9 +142,12 @@ class Verifier:
         if not host:
             return self._record(f["id"], attempt, "tls_recheck", None,
                                 "inconclusive", "malformed tls proof url")
-        ok, detail = recheck_tls_fact(host, port, spec.get("quote", ""), scope)
+        ok, detail = recheck_tls_fact(host, port, spec.get("quote", ""), scope, self.db, engagement_id)
         if ok is None:  # refused before any dial, or the scan could not judge
-            self._refusal_event(engagement_id, f"tls://{host}:{port}", detail)
+            if not detail.startswith("refused"):
+                # Egress already audited a policy refusal as egress_denied + scope_refusal
+                if not detail.startswith("refused"):
+                    self._refusal_event(engagement_id, f"tls://{host}:{port}", detail)
             return self._record(f["id"], attempt, "tls_recheck", None, "inconclusive", detail)
         verdict = "reproduced" if ok else "not_reproduced"
         self._record(f["id"], attempt, "tls_recheck", None, verdict, detail)
@@ -246,7 +249,7 @@ class Verifier:
             if not host:
                 return {"verdict": "inconclusive", "detail": "malformed tls proof url",
                         "finding_id": finding_id}
-            ok, detail = recheck_tls_fact(host, port, spec.get("quote", ""), scope)
+            ok, detail = recheck_tls_fact(host, port, spec.get("quote", ""), scope, self.db, engagement_id)
             if ok is None:
                 self._refusal_event(engagement_id, f"tls://{host}:{port}", detail)
                 verdict = "inconclusive"

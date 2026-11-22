@@ -133,7 +133,7 @@ def test_tls_recheck_never_dials_out_of_scope(platform, monkeypatch):
     db, ev, pipe, ver = platform
     dialled = []
 
-    def boom(host, port):
+    def boom(host, port, ip=None):
         dialled.append((host, port))
         raise AssertionError("dialled an out-of-scope host")
 
