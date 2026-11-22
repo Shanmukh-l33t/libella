@@ -225,7 +225,18 @@ class Scope:
         base = ppath.rstrip("/")
         return not base or upath == base or upath.startswith(base + "/")
 
-    def check_url(self, url: str, category: str = "web") -> Decision:
+    def ip_in_targets(self, ips: list[str]) -> str | None:
+        """The ip/cidr target (if any) that covers one of these resolved addresses.
+
+        Lets a dial-time check ask "did the operator authorize this address, or
+        only a name that now resolves to it?" without re-resolving.
+        """
+        for t in self.targets:
+            if t["kind"] in ("ip", "cidr") and any(self._ip_matches_target(ip, t) for ip in ips):
+                return t["value"]
+        return None
+
+    def check_url(self, url: str, category: str = "web", ips: list[str] | None = None) -> Decision:
         if category not in self.categories:
             return Decision(False, f"category '{category}' not permitted by engagement")
         if not isinstance(url, str):
@@ -248,13 +259,14 @@ class Scope:
             if ex["kind"] in ("domain",) and self._domain_matches(host, ex):
                 return Decision(False, f"excluded domain {ex['value']}")
         # resolve and check IPs
-        try:
-            literal = ipaddress.ip_address(host)
-            ips = [str(literal)]
-        except ValueError:
-            ips = self._cached_resolve(host)
-            if not ips:
-                return Decision(False, f"DNS resolution failed for {host}")
+        if ips is None:
+            try:
+                literal = ipaddress.ip_address(host)
+                ips = [str(literal)]
+            except ValueError:
+                ips = self._cached_resolve(host)
+                if not ips:
+                    return Decision(False, f"DNS resolution failed for {host}")
         for ex in self.exclusions:
             if ex["kind"] in ("ip", "cidr"):
                 for ip in ips:
@@ -298,23 +310,26 @@ class Scope:
                 ports.add(up)
         return sorted(ports) or None
 
-    def check_host_port(self, host: str, port: int | None, category: str = "infra") -> Decision:
+    def check_host_port(self, host: str, port: int | None, category: str = "infra",
+                        ips: list[str] | None = None) -> Decision:
         """For non-HTTP tools (nmap etc). Returns resolved IPs to pass to the tool.
 
         port None means the caller asserts no port (a passive or port-less tool);
         it authorizes the host only and never satisfies allowed_ports for a dial.
+        ips pins the resolution the caller is about to dial; None resolves here.
         """
         if category not in self.categories:
             return Decision(False, f"category '{category}' not permitted")
         if port is not None and self.allowed_ports and port not in self.allowed_ports:
             return Decision(False, f"port {port} not in allowed_ports")
-        try:
-            literal = ipaddress.ip_address(host)
-            ips = [str(literal)]
-        except ValueError:
-            ips = self._cached_resolve(host)
-            if not ips:
-                return Decision(False, f"DNS resolution failed for {host}")
+        if ips is None:
+            try:
+                literal = ipaddress.ip_address(host)
+                ips = [str(literal)]
+            except ValueError:
+                ips = self._cached_resolve(host)
+                if not ips:
+                    return Decision(False, f"DNS resolution failed for {host}")
         for ex in self.exclusions:
             if ex["kind"] in ("ip", "cidr") and any(self._ip_matches_target(ip, ex) for ip in ips):
                 return Decision(False, f"excluded ip/cidr {ex['value']}")

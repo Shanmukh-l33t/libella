@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from .browser_crawl import IDLE_MS, BrowserCrawler
 from .db import new_id
+from .egress import open_browser_context
 
 STEP_ACTIONS = {"navigate", "click", "fill", "submit", "extract", "assert"}
 WORKFLOW_SHOT_CAP = 10  # one screenshot per step is evidence; ten is plenty for a flow
@@ -38,19 +39,6 @@ def _json(value, default):
         return default
 
 
-class _CtxBrowser:
-    """browser.new_page() shim onto one persistent context, so cookies persist."""
-
-    def __init__(self, ctx):
-        self.ctx = ctx
-
-    def new_page(self):
-        return self.ctx.new_page()
-
-    def close(self):
-        self.ctx.browser.close()
-
-
 class AuthBrowser(BrowserCrawler):
     """BrowserCrawler with one sticky session (cookies) instead of a fresh context."""
 
@@ -62,19 +50,17 @@ class AuthBrowser(BrowserCrawler):
 
     # -- lifecycle ---------------------------------------------------------
     def __enter__(self):
-        super().__enter__()
-        try:
-            self._ctx = self._browser.new_context(ignore_https_errors=True)
-            # context-level route: page.route() does not cover popups a target may
-            # open, and a popup inherits this context's cookies
-            self._ctx.route("**/*", self._guard)
-            if self._session_cookies:
-                self._ctx.add_cookies(self._session_cookies)
-            self._browser = _CtxBrowser(self._ctx)
-        except BaseException:
-            self._close()
-            raise
+        super().__enter__()   # launches chromium and opens the policy-gated context
+        if self._session_cookies:
+            self._ctx.add_cookies(self._session_cookies)
         return self
+
+    def _new_context(self):
+        """Sticky context: the policy route covers popups, which inherit its cookies."""
+        ctx = open_browser_context(self._browser, self.egress, on_request=self._on_request)
+        if self._session_cookies:
+            ctx.add_cookies(self._session_cookies)
+        return ctx
 
     def _ensure(self):
         if self._ctx is None:
@@ -87,17 +73,6 @@ class AuthBrowser(BrowserCrawler):
         if self._ctx is not None and cookies:
             self._ctx.add_cookies(cookies)
         return cookies
-
-    # -- request guard (scope) --------------------------------------------
-    def _guard(self, route):
-        req = route.request
-        if urlparse(req.url).scheme not in ("http", "https"):
-            return route.continue_()  # data:/blob: never leaves the browser
-        if not self._allowed(req.url):
-            return route.abort()
-        if req.resource_type in ("xhr", "fetch"):
-            self._note_api(req.method, req.url, self._page_url)
-        return route.continue_()
 
     @staticmethod
     def _matches(page, assertion) -> bool:
@@ -138,7 +113,6 @@ class AuthBrowser(BrowserCrawler):
             return {"id": None, "status": "failed", "reason": "login_url out of scope",
                     "cookie_count": 0}
         page = self._ctx.new_page()
-        page.route("**/*", self._guard)
         shot, reason, ok = None, None, False
         self._page_url = login_url
         try:
@@ -187,7 +161,6 @@ class AuthBrowser(BrowserCrawler):
                     "reason": "check url out of scope"}
         self.use(auth_context)
         page = self._ctx.new_page()
-        page.route("**/*", self._guard)
         shot, ok, reason = None, False, None
         try:
             self._page_url = url
@@ -300,7 +273,6 @@ class AuthBrowser(BrowserCrawler):
         self._ensure()
         self.shots = []  # per-run screenshot budget
         page = self._ctx.new_page()
-        page.route("**/*", self._guard)
         net: list[dict] = []
         page.on("response", lambda r: len(net) < NET_CAP and net.append(
             {"method": r.request.method, "url": r.url, "status": r.status}))
@@ -323,10 +295,8 @@ class AuthBrowser(BrowserCrawler):
     def _as_identity(self, ident: dict, target, login_url, selectors, assertion) -> dict:
         expected = ident.get("expected", "deny")
         out = {"username": ident.get("username"), "expected": expected}
-        ctx = self._ctx.browser.new_context(ignore_https_errors=True)
-        ctx.route("**/*", self._guard)  # popups included, same as the main context
+        ctx = open_browser_context(self._ctx.browser, self.egress, on_request=self._on_request)
         page = ctx.new_page()
-        page.route("**/*", self._guard)
         try:
             page.set_default_timeout(self.timeout_ms)
             if login_url:

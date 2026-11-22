@@ -4,14 +4,18 @@ The static crawler (crawl.py) only sees the server-rendered shell. Angular /
 React apps build their links and fire their API calls in JavaScript, so the
 runtime side is where the interesting surface lives. This module drives
 Chromium through Playwright with the same scope discipline as the HTTP probe:
-every navigation and every captured request is scope-checked before it is
-followed, refusals are audited as events and never followed.
+one context-level route applies the egress policy to every request -- the
+navigation, its subresources, XHR/fetch, websockets and popups -- so a page
+cannot make the platform contact a host the engagement did not authorize.
+Third-party hosts a page references are refused and counted, never contacted.
 """
 import os
+import time
 from collections import deque
 from urllib.parse import urldefrag, urlparse
 
 from .assessment_window import stored_stop_refusal
+from .egress import Egress, open_browser_context
 
 SHOT_CAP = 5      # screenshots are evidence, not a video; five key pages is plenty
 IDLE_MS = 3000    # bounded network-idle wait: polling SPAs (socket.io) never go idle
@@ -34,19 +38,61 @@ def browser_available() -> bool:
         return False
 
 
+def fetch_scoped(url: str, egress: Egress, timeout_s: int = 30) -> dict:
+    """One page through a policy-enforcing context, for the challenged-page fallback.
+
+    Same confinement as the crawler: the landing page and everything it pulls is
+    gated per request, so this is not a way around the policy.
+    """
+    from playwright.sync_api import sync_playwright
+
+    started = time.time()
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        try:
+            ctx = open_browser_context(browser, egress)
+            try:
+                page = ctx.new_page()
+                resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+                if resp is None:
+                    raise RuntimeError("the browser opened no response")
+                return {"status": resp.status, "headers": dict(resp.headers),
+                        "body": page.content().encode(), "url": page.url,
+                        "duration_ms": round((time.time() - started) * 1000, 1)}
+            finally:
+                ctx.close()
+        finally:
+            browser.close()
+
+
+class _CtxBrowser:
+    """browser.new_page() shim onto one context, so cookies and the route persist."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def new_page(self):
+        return self.ctx.new_page()
+
+    def close(self):
+        self.ctx.browser.close()
+
+
 class BrowserCrawler:
     """Render pages in chromium, collect rendered links + XHR/fetch APIs."""
 
     def __init__(self, db, evidence, scope, engagement_id: str,
-                 max_pages: int = 25, timeout_ms: int = 15000):
+                 max_pages: int = 25, timeout_ms: int = 15000, egress: Egress | None = None):
         self.db = db
         self.evidence = evidence
         self.scope = scope
         self.eng = engagement_id
+        self.egress = egress or Egress(db, scope, engagement_id, tool="browser_crawl")
         self.max_pages = max_pages
         self.timeout_ms = timeout_ms
         self._pw = None
         self._browser = None
+        self._ctx = None
         self._reset()
 
     def _reset(self):
@@ -57,6 +103,7 @@ class BrowserCrawler:
         self.degraded: list[str] = []
         self._seen_api: set[tuple[str, str]] = set()
         self._refused: set[str] = set()
+        self._page_url = ""
 
     # -- lifecycle ---------------------------------------------------------
     def __enter__(self):
@@ -66,10 +113,21 @@ class BrowserCrawler:
         try:
             self._browser = self._pw.chromium.launch(
                 headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            self._ctx = self._new_context()
+            self._browser = _CtxBrowser(self._ctx)
         except BaseException:
             self._close()
             raise
         return self
+
+    def _new_context(self):
+        """One context per crawler; its route covers every page it opens."""
+        return open_browser_context(self._browser, self.egress,
+                                    on_request=self._on_request)
+
+    def _on_request(self, req):
+        if req.resource_type in ("xhr", "fetch"):
+            self._note_api(req.method, req.url, self._page_url)
 
     def __exit__(self, *exc):
         self._close()
@@ -85,17 +143,12 @@ class BrowserCrawler:
         self._browser = self._pw = None
 
     # -- scope -------------------------------------------------------------
-    def _refuse(self, url: str, reason: str):
-        if url in self._refused:
-            return
-        self._refused.add(url)
-        self.db.emit(self.eng, "scope_refusal",
-                     {"url": url, "reason": reason, "tool": "browser_crawl"})
-
     def _allowed(self, url: str) -> bool:
-        d = self.scope.check_url(url, "web")
-        if not d.allowed:
-            self._refuse(url, d.reason)
+        d = self.egress.gate(url)
+        if not d.allowed and url not in self._refused:
+            self._refused.add(url)
+            self.db.emit(self.eng, "scope_refusal",
+                         {"url": url, "reason": d.reason, "tool": "browser_crawl"})
         return d.allowed
 
     def _stopped(self) -> str | None:
@@ -154,23 +207,10 @@ class BrowserCrawler:
                     queue.append(link)
 
     def _render(self, url: str, netloc: str) -> dict | None:
-        page = self._browser.new_page()
+        page = self._browser.new_page()   # the context route already gates every request
         try:
             page.set_default_timeout(self.timeout_ms)
-
-            def guard(route):
-                req = route.request
-                if urlparse(req.url).scheme not in ("http", "https"):
-                    return route.continue_()  # data:/blob: never leaves the browser
-                if self._stopped():
-                    return route.abort()
-                if not self._allowed(req.url):
-                    return route.abort()
-                if req.resource_type in ("xhr", "fetch"):
-                    self._note_api(req.method, req.url, url)
-                return route.continue_()
-
-            page.route("**/*", guard)
+            self._page_url = url
             try:
                 resp = page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
             except Exception as e:
@@ -179,7 +219,6 @@ class BrowserCrawler:
             # redirect chains: the landing URL must still be our origin and in scope
             final = page.url
             if not self._same_origin(final, netloc) or not self._allowed(final):
-                self._refuse(final, "redirect left scope origin")
                 return None
             try:
                 page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, IDLE_MS))
@@ -230,7 +269,16 @@ class BrowserCrawler:
         return ev["id"]
 
     def _result(self) -> dict:
+        blocked = self.egress.summary()
+        if blocked["denied_requests"]:
+            # the page referenced hosts it was never allowed to contact: a
+            # degradation the report states, not an invisible aborted request
+            self.degraded.append(
+                f"egress_blocked_third_party: {blocked['denied_requests']} request(s) to "
+                f"{len(blocked['blocked_hosts'])} host(s) not contacted: "
+                + ", ".join(blocked["blocked_hosts"][:5]))
         return {"pages": self.pages, "api_requests": self.api_requests,
                 "endpoints": sorted(self.endpoints), "screenshots": list(self.shots),
                 "limit_hit": len(self.pages) >= self.max_pages,
+                "egress": blocked,
                 "degraded": list(self.degraded)}

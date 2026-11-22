@@ -18,12 +18,20 @@ from pathlib import Path
 
 from ..assessment_window import stored_stop_refusal
 from ..db import DB, new_id
+from ..egress import Egress, EgressProxy, proxy_env
 from ..evidence import EvidenceStore
 from ..scope import Decision, Scope
 from . import ToolSpec, resolve_binary, validate_params
 
 MAX_OUTPUT = 512 * 1024  # per stream cap
 POLL_S = 0.1  # how often a running tool re-checks its timeout / cancel flag
+
+# A tool that speaks HTTP through a proxy is confined by the per-run egress
+# proxy: every request and CONNECT is decided at dial time. Everything else is
+# listed here as unconfined rather than trusted -- a raw-socket scanner cannot
+# be proxied, so its only boundary is argv and the resolved IP it is given.
+RAW_TOOLS = {"nmap"}
+PROXY_FLAGS = {"nuclei": "-proxy", "httpx": "-http-proxy", "ffuf": "-x"}
 
 
 class ToolRunner:
@@ -115,11 +123,42 @@ class ToolRunner:
         rundir.mkdir(parents=True, exist_ok=True)
         if self.limiter is not None:
             self.limiter(engagement_id, scope.rate_limit_rps).wait()
-        stdout, stderr, exit_code, timed_out, truncated = _run_capped(
-            argv, rundir, {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(rundir),
-                           "LANG": "C.UTF-8", "NO_COLOR": "1"}, spec.timeout_s,
-            should_stop=lambda: self._stop_reason(engagement_id) is not None,
-            on_line=on_progress)
+        # Egress confinement. A subprocess given an authorized target can still
+        # dial somewhere else, so the strongest boundary this host offers is
+        # applied and the rest is recorded, never assumed.
+        egress = Egress(self.db, scope, engagement_id, tool=spec.name, category=cat)
+        env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(rundir),
+               "LANG": "C.UTF-8", "NO_COLOR": "1"}
+        proxy, level, residual = None, "proxy", None
+        if not spec.network_effect:
+            level = "third_party"
+            residual = ("passive tool: it dials third-party sources by design, so the "
+                        "engagement scope cannot be applied to those destinations")
+        elif spec.name in RAW_TOOLS:
+            level = "unconfined"
+            residual = ("raw sockets: only argv-confined to "
+                        f"{decision.resolved_ips or dest} and the authorized ports; a tool "
+                        "that ignores its arguments could dial anywhere")
+        else:
+            proxy = EgressProxy(egress)
+            env = proxy_env(env, proxy.url)
+            if spec.name in PROXY_FLAGS:
+                argv = [*argv, PROXY_FLAGS[spec.name], proxy.url]
+        try:
+            stdout, stderr, exit_code, timed_out, truncated = _run_capped(
+                argv, rundir, env, spec.timeout_s,
+                should_stop=lambda: self._stop_reason(engagement_id) is not None,
+                on_line=on_progress)
+        finally:
+            if proxy is not None:
+                proxy.close()
+        egress_info = {"level": level, "proxy": proxy.url if proxy else None,
+                       "residual": residual, **egress.summary()}
+        if level != "proxy":
+            self.db.emit(engagement_id, "egress_degradation",
+                         {"tool": spec.name, "target": dest, "level": level,
+                          "code": "egress_unconfined" if level == "unconfined" else "egress_third_party",
+                          "residual": residual})
         stopped_by = None if timed_out else self._stop_reason(engagement_id)
         cancelled = stopped_by is not None
 
@@ -148,6 +187,7 @@ class ToolRunner:
             "partial": timed_out or cancelled,
             "cancelled": cancelled,
             "stopped_by": stopped_by,
+            "egress": egress_info,
         }
         if stopped_by:
             # why it stopped, so a caller reporting r["error"] says something true
