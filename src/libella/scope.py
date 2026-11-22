@@ -208,10 +208,22 @@ class Scope:
             ts, th, tp, tpath = parse_origin(t["value"])
         except ValueError:
             return False
-        if (us, uh, up) != (ts, th, tp):
+        if us != ts or up != tp or not self._same_site(uh, th):
             return False
         base = tpath.rstrip("/")
         return not base or upath == base or upath.startswith(base + "/")
+
+    @staticmethod
+    def _same_site(a: str, b: str) -> bool:
+        """Same web site under the www/apex name, e.g. keyreed.com and www.keyreed.com.
+
+        A URL target that 301s from its apex to its www host (or the reverse) is
+        the same site the operator authorized; refusing the canonical host made a
+        real site unassessable and every follow-up hop an egress denial. Only the
+        exact `www.` prefix is equated: `wwwevil.com` is not `evil.com`.
+        """
+        a, b = a.lower().rstrip("."), b.lower().rstrip(".")
+        return a == b or a.removeprefix("www.") == b.removeprefix("www.")
 
     def _excluded_by_prefix(self, url: str, prefix: str) -> bool:
         """Path-prefix exclusion, compared on normalized path segments."""
@@ -350,8 +362,10 @@ class Scope:
                     _, uh, up, _ = parse_origin(t["value"])
                 except ValueError:
                     continue
-                if uh == host.lower().rstrip(".") and (port is None or up == port):
-                    return Decision(True, "in scope", resolved_ips=ips, matched_target=t["value"])
+                if self._same_site(uh, host) and (port is None or up == port):
+                    why = "in scope" if uh == host.lower().rstrip(".") else \
+                        f"in scope (www/apex alias of {uh})"
+                    return Decision(True, why, resolved_ips=ips, matched_target=t["value"])
         return Decision(False, f"{host} not in engagement scope", resolved_ips=ips)
 
     def check_repo(self, path: str) -> Decision:

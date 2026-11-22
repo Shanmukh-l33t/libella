@@ -111,3 +111,29 @@ def test_portless_tool_check_is_host_level_not_a_port_claim():
     assert s.check_host_port("127.0.0.1", None).allowed
     assert not s.check_host_port("127.0.0.1", 0).allowed  # 0 is a bogus port, not "any"
     assert not s.check_host_port("127.0.0.1", 22).allowed
+
+
+def test_a_url_target_authorizes_its_own_www_or_apex_alias():
+    """A site that 301s apex -> www is the SAME site the operator authorized."""
+    sc = Scope({"targets": [{"kind": "url", "value": "https://keyreed.com"}],
+                "categories": ["web"]})
+    for host in ("keyreed.com", "www.keyreed.com", "WWW.Keyreed.com"):
+        d = sc.check_host_port(host, 443, "web")
+        assert d.allowed, (host, d.reason)
+    # the alias does not widen the authorized port
+    assert not sc.check_host_port("www.keyreed.com", 8443, "web").allowed
+    assert sc.check_url("https://www.keyreed.com/about").allowed
+
+
+def test_the_alias_rule_does_not_authorize_another_domain():
+    sc = Scope({"targets": [{"kind": "url", "value": "https://keyreed.com"}],
+                "categories": ["web"]})
+    for name in ("evil.com", "wwwevil.com", "keyreed.com.evil.com", "notkeyreed.com"):
+        host = {"wwwevil.com": "wwwevil.example", "notkeyreed.com": "notkeyreed.example"}
+        d = sc.check_host_port(host.get(name, name), 443, "web", ips=["203.0.113.10"])
+        assert not d.allowed, (name, d.reason)
+    # an exclusion still wins over the alias
+    sc2 = Scope({"targets": [{"kind": "url", "value": "https://keyreed.com"}],
+                 "exclusions": [{"kind": "domain", "value": "www.keyreed.com"}],
+                 "categories": ["web"]})
+    assert not sc2.check_host_port("www.keyreed.com", 443, "web").allowed
