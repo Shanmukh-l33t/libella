@@ -1,4 +1,5 @@
 """Scope engine tests: the authorization boundary must fail closed."""
+import json
 import pytest
 from libella.scope import Scope
 
@@ -137,3 +138,40 @@ def test_the_alias_rule_does_not_authorize_another_domain():
                  "exclusions": [{"kind": "domain", "value": "www.keyreed.com"}],
                  "categories": ["web"]})
     assert not sc2.check_host_port("www.keyreed.com", 443, "web").allowed
+
+
+def test_exchange_keeps_the_authorized_hostname_not_the_pinned_ip(tmp_path):
+    """The transport dials an IP; the evidence must still name the host it was authorized by."""
+    import threading
+    import time
+    from flask import Flask
+    from werkzeug.serving import make_server
+    from libella.api import App
+    from libella.scope import Scope
+
+    flask = Flask("probe-url")
+
+    @flask.get("/")
+    def index():
+        return "<html><body>ok</body></html>"
+
+    srv = make_server("127.0.0.1", 0, flask)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    time.sleep(0.2)
+    try:
+        port = srv.server_port
+        app = App(tmp_path / "data")
+        # the rebinding guard requires the loopback ADDRESS to be authorized too
+        scope = {"targets": [{"kind": "url", "value": f"http://localhost:{port}"},
+                             {"kind": "ip", "value": "127.0.0.1"}],
+                 "categories": ["web"], "rate_limit_rps": 50}
+        app.db.execute("INSERT INTO engagements(id,name,profile,status,scope_json,created_at) "
+                       "VALUES('e','p','safe_active','draft',?,0)", (json.dumps(scope),))
+        r = app.probe.request("e", Scope(scope), f"http://localhost:{port}/", tool="probe_url")
+        assert r["ok"] and r["status"] == 200
+        assert r["url"] == f"http://localhost:{port}/", r["url"]
+        row = app.db.one("SELECT url, peer_ip FROM exchanges WHERE engagement_id='e'")
+        assert row["url"].startswith(f"http://localhost:{port}"), row["url"]
+        assert row["peer_ip"] is None or row["peer_ip"].startswith("127.0.0.1")
+    finally:
+        srv.shutdown()

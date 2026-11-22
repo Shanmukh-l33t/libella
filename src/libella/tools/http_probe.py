@@ -182,7 +182,10 @@ class HttpProbe:
                         jars = []
                     if len(jars) > 1:
                         resp_headers["set-cookie-all"] = "\n".join(jars)
-                    final_url = str(resp.url)
+                    # the record keeps the AUTHORIZED url: the transport dials the
+                    # pinned IP, so resp.url would name an address nobody authorized
+                    # (peer_ip records the address that actually answered)
+                    final_url = current
                     location = resp.headers.get("location")
                     exchange = self._record(
                         engagement_id, intent_id, tool, method, current, resp,
