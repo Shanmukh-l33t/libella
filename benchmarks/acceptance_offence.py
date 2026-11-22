@@ -91,7 +91,7 @@ def main(out: Path) -> int:
     names = [n for n, row in role_mod.USERS.items() if row[2] == "user"][:2]
     _engagement(app, "eng_role", [{"kind": "url", "value": role}, loop], ["recon", "web", "api"],
                 [{"username": n, "password": role_mod.USERS[n][1],
-                  "login_url": role + "/login"} for n in names],
+                  "login_url": role + "/api/login"} for n in names],
                 {"openapi": str(spec)})
 
     results = {}

@@ -165,10 +165,15 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
     out = {"status": "limited", "base_url": _base(auth_json, auth_json.get("identities") or []),
            "endpoints": 0, "identities": {}, "matrix": [], "candidates": [], "limitations": []}
 
-    def limit(reason: str):
+    def limit(reason: str, blocked: bool = False):
         out["limitations"].append(reason)
         pipeline.record_observation(engagement_id, intent_id, "limitation",
                                     f"role matrix: {reason}")
+        if blocked:
+            # a sweep that never authenticated proved nothing: without this the
+            # ledger would read the intent's completion as "ran, no finding"
+            db.emit(engagement_id, "degradation",
+                    {"code": "audit_blocked", "unit": "privesc_audit", "detail": reason})
 
     def submit(cand: dict):
         res = pipeline.submit_candidate(engagement_id, cand, intent_id)
@@ -181,15 +186,15 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
     identities = [i for i in (auth_json.get("identities") or [])
                   if isinstance(i, dict) and i.get("username") and i.get("password")]
     if len({i["username"] for i in identities}) < 2:
-        limit("at least two identities with different usernames are required to compare roles")
+        limit("at least two identities with different usernames are required to compare roles", blocked=True)
         return out
     eps = _endpoints(db, engagement_id, auth_json, endpoints)
     if not eps:
-        limit("no endpoints to sweep (no endpoints argument, OpenAPI or crawled assets)")
+        limit("no endpoints to sweep (no endpoints argument, OpenAPI or crawled assets)", blocked=True)
         return out
     base = out["base_url"]
     if not base:
-        limit("no base URL: no identity login_url and no base_url in auth_json")
+        limit("no base URL: no identity login_url and no base_url in auth_json", blocked=True)
         return out
 
     # ---- one login per identity, through the scoped probe; no cookie = not logged in
@@ -216,6 +221,8 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
             limit(f"identity '{user}' could not log in (status {r.get('status')}: "
                   f"{r.get('error') or 'no session cookie'})")
     if not sessions:
+        limit("no identity could log in, so no authorization comparison was possible",
+              blocked=True)
         return out
 
     hint_ids = {u: v for u, v in (hints.get("object_ids") or {}).items() if u in sessions}

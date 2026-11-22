@@ -89,6 +89,10 @@ def _unit_slots(db: DB, engagement_id: str, spec: dict) -> dict:
             for unit in str(payload.get("unit") or "").split(","):
                 if unit.strip():
                     _slot(slots, unit.strip())["denied"].append(e["seq"])
+        elif code == "audit_blocked":
+            # the audit ran but could not test: its completion is not a result
+            unit = payload.get("unit") or roles.get(payload.get("intent_id")) or "web_checks"
+            _slot(slots, unit)["blocked"].append(e["seq"])
         elif code in ("target_mitigated", "scan_partial"):
             # the unit ran but could not read the application: never count it as assessed.
             # The payload names the tools involved; map them to the units they prove.

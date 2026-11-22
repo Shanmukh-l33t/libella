@@ -107,3 +107,22 @@ def test_an_audit_role_is_policy_gated(tmp_path):
                  "injection_audit", "web_protocol_audit"):
         assert permits(role, "safe_active"), role
         assert not permits(role, "passive"), role
+
+
+def test_a_blocked_audit_is_inconclusive_not_a_pass(tmp_path):
+    """An audit that cannot authenticate proved nothing; the ledger must say so."""
+    from libella import coverage
+    app = _app(tmp_path, {"identities": [
+        {"username": "alice", "password": "x", "login_url": BASE + "/api/login"},
+        {"username": "bob", "password": "x", "login_url": BASE + "/api/login"}]})
+    orch = app.orchestrator()
+    iid = orch._add_intent("eng", "privesc_audit", "role matrix")
+    eng = app.db.one("SELECT * FROM engagements WHERE id='eng'")
+    status, _ = orch._execute("eng", Scope(json.loads(eng["scope_json"])), eng,
+                              app.db.one("SELECT * FROM intents WHERE id=?", (iid,)))
+    app.db.execute("UPDATE intents SET status=? WHERE id=?", (status, iid))  # as the run loop does
+    ws = coverage.workspace(app.db, "eng", "wstg")
+    flat = {t["id"]: t for c in ws["categories"] for t in c["tests"]}
+    status = flat["WSTG-ATHZ-02"]["automatic"]["status"]
+    assert status == "inconclusive", status
+    assert flat["WSTG-ATHZ-02"]["automatic"]["status"] != "completed_no_issue"
