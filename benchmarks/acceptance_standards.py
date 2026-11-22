@@ -52,7 +52,7 @@ def _engagement(app: App, port: int) -> str:
         "created_at, standards_json) VALUES(?,?,?,?,?,?,?,?,?)",
         ("eng_std", "Standards acceptance", "safe_active", "draft", json.dumps(scope),
          json.dumps(auth), json.dumps({"max_duration_s": 900, "max_usd": 5}), time.time(),
-         json.dumps({"asvs": {"level": 2}})))
+         json.dumps({"asvs": {"level": 2}, "api-top10": {}})))
     return "eng_std"
 
 
@@ -126,6 +126,18 @@ def main() -> int:
         failures.append("report ASVS summary disagrees with the ledger")
     if "5.0.0 Level 2 coverage" not in md:
         failures.append("report.md has no ASVS Level 2 coverage section")
+    api = coverage.workspace(app.db, eid, "api-top10", app.evidence)
+    if api["summary"]["total"] != 10:
+        failures.append(f"API Top 10 ledger has {api['summary']['total']} risks")
+    if "API-Top10 2023 coverage" not in md:
+        failures.append("report.md has no API Top 10 section")
+    for rid, t in _flat(api).items():
+        if t["automatic"]["status"] == "completed_no_issue" and t["automatic"].get("strength") != "direct":
+            failures.append(f"{rid} claims a pass from a {t['automatic'].get('strength')} check")
+    print("\n== OWASP API Security Top 10 2023 ==")
+    for rid, t in _flat(api).items():
+        print(f"  {rid:11s} {t['automatic']['status']:18s} {t['automatic'].get('strength', '-'):8s} "
+              f"{t['evidence']['findings']} :: {t['automatic']['reason'][:60]}")
     # attribution: a finding only fails requirements its own check maps to
     produced = {f["id"]: f for f in app.pipeline.list(eid)}
     rows = {r["id"]: r for r in app.db.query(

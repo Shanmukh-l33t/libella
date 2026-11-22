@@ -167,7 +167,8 @@ def available() -> list:
             continue
         catalog = _read(path)
         fw = catalog["framework"]
-        fid = fw["id"].lower()
+        # the catalog file is <id>-<version>.json; spec() resolves the same way
+        fid = path.stem.removesuffix(f"-{fw['version']}")
         try:
             s = spec(fid)
         except (KeyError, ValueError):
@@ -208,7 +209,7 @@ def manual_reason(fid: str, rid: str) -> str:
     s = spec(fid)
     if rid in s["manual_overrides"]:
         return s["manual_overrides"][rid]
-    chapter = rid.split(".")[0]
+    chapter = (s["requirements"].get(rid) or {}).get("chapter") or rid.split(".")[0]
     return s["manual"].get(chapter) or s["manual"].get(chapter.rsplit("-", 1)[0]) or "no Libella check"
 
 

@@ -388,3 +388,63 @@ def test_pipeline_persists_controls_and_migrates_legacy_rows(app):
     coverage.workspace(app.db, "eng_s", "asvs", app.evidence)
     row = app.db.one("SELECT controls_json, controls_source FROM findings WHERE id=?", (legacy,))
     assert (json.loads(row["controls_json"]), row["controls_source"]) == (["header.hsts"], "migrated")
+
+
+# ---- OWASP API Security Top 10 2023 ----------------------------------------
+
+def test_every_packaged_standard_is_listed_under_the_id_spec_resolves():
+    ids = {s["id"]: s for s in standards.available()}
+    assert set(ids) == {"wstg", "asvs", "api-top10"}
+    for fid in ids:
+        assert standards.spec(fid)["order"]
+
+
+def test_api_top10_is_the_published_2023_list():
+    fw = standards.framework("api-top10")
+    assert (fw["version"], fw["license"]) == ("2023", "CC BY-SA 4.0")
+    assert fw["upstream_sha"] == "33cea37b2ffde3e2e62f6b5d79a029a22a846633"
+    titles = [standards.requirement("api-top10", r)["title"]
+              for r in standards.requirements("api-top10")]
+    assert standards.requirements("api-top10") == [f"API{i}:2023" for i in range(1, 11)]
+    assert titles[0] == "Broken Object Level Authorization"
+    assert titles[5] == "Unrestricted Access to Sensitive Business Flows"
+    assert titles[9] == "Unsafe Consumption of APIs"
+    assert all("][" not in standards.requirement("api-top10", r)["summary"]
+               for r in standards.requirements("api-top10"))
+
+
+def test_api_top10_needs_an_api_category(app):
+    ws = coverage.workspace(app.db, "eng_s", "api-top10")  # web-only scope
+    assert ws["summary"]["applicable"] == 0
+
+
+def test_same_cwe_from_two_api_checks_lands_on_two_different_risks(tmp_path):
+    app = _app(tmp_path, categories=("web", "api"))
+    _finding_from(app, "f_expo", "CWE-200", "Excessive data exposure", "api_check")
+    _finding_from(app, "f_intro", "CWE-200", "GraphQL introspection", "graphql_check")
+    ws = coverage.workspace(app.db, "eng_s", "api-top10")
+    assert item(ws, "API3:2023")["evidence"]["findings"] == ["f_expo"]
+    assert item(ws, "API8:2023")["evidence"]["findings"] == ["f_intro"]
+    for rid in ("API6:2023", "API10:2023"):
+        assert item(ws, rid)["automatic"]["status"] == "requires_manual"
+    # an inventory-only check can never pass API9
+    _finding_from(app, "f_none", "CWE-79", "x", "crawl")
+    assert item(coverage.workspace(app.db, "eng_s", "api-top10"), "API9:2023")[
+        "automatic"]["status"] != "completed_no_issue"
+
+
+def test_standards_without_levels_can_be_selected_and_reach_the_report(tmp_path, client, app):
+    from libella.report import render_report
+    app.db.execute("UPDATE engagements SET scope_json=? WHERE id='eng_s'",
+                   (json.dumps({**WEB_SCOPE, "categories": ["web", "api"]}),))
+    r = client.put("/api/engagements/eng_s/standards",
+                   json={"asvs": {"level": 1}, "api-top10": {}})
+    assert r.status_code == 200 and r.json() == {"asvs": {"level": 1}, "api-top10": {}}
+    assert client.put("/api/engagements/eng_s/standards",
+                      json={"api-top10": {"level": 2}}).status_code == 400
+    assert client.put("/api/engagements/eng_s/standards",
+                      json={"nope": {}}).status_code == 404
+    out = render_report(app.db, app.evidence, "eng_s", tmp_path / "rep")
+    doc = json.loads((Path(out["outdir"]) / "report.json").read_text())
+    assert [s["framework"]["id"] for s in doc["standards"]] == ["ASVS", "API-Top10"]
+    assert "API-Top10 2023 coverage" in (Path(out["outdir"]) / "report.md").read_text()

@@ -546,7 +546,7 @@
     "api_check",
     "api_login"
    ],
-   "why": "OpenAPI-driven object-level, function-level and mass-assignment probes across the declared roles",
+   "why": "OpenAPI-driven object-level, function-level and mass-assignment probes across the declared roles; credential fields returned in collection responses",
    "requirements": {
     "V8.2.1": {
      "strength": "direct",
@@ -564,6 +564,12 @@
      "strength": "direct",
      "cwe": [
       "CWE-915"
+     ]
+    },
+    "V15.3.1": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-200"
      ]
     }
    }

@@ -27,12 +27,42 @@ REPO = "https://raw.githubusercontent.com/OWASP/ASVS"
 ASVS_SHA = "82fb2f41cdb623e0b11e4d9a6b97c4306c1d119c"
 OUT = pathlib.Path(__file__).resolve().parent.parent / "src/libella/standards_data/asvs-5.0.0.json"
 FLAT = "5.0/docs_en/OWASP_Application_Security_Verification_Standard_5.0.0_en.flat.json"
+# OWASP API Security Top 10 2023, from the project's own repository (CC BY-SA 4.0)
+API_REPO = "https://raw.githubusercontent.com/OWASP/API-Security"
+API_SHA = "33cea37b2ffde3e2e62f6b5d79a029a22a846633"
+API_OUT = OUT.parent / "api-top10-2023.json"
+API_INDEX = "editions/2023/en/0x11-t10.md"
 
 
 def _get(path: str) -> dict:
     req = urllib.request.Request(f"{REPO}/{ASVS_SHA}/{path}",
                                  headers={"User-Agent": "libella-standards-import"})
     return json.loads(urllib.request.urlopen(req, timeout=120).read())
+
+
+def build_api() -> dict:
+    """The ten 2023 risks with their published ids, titles and summary text."""
+    import re
+    req = urllib.request.Request(f"{API_REPO}/{API_SHA}/{API_INDEX}",
+                                 headers={"User-Agent": "libella-standards-import"})
+    text = urllib.request.urlopen(req, timeout=120).read().decode()
+    rows = re.findall(r"^\| \[(API\d+:2023) - ([^\]]+)\]\[api\d+\] \| (.+?) \|\s*$", text, re.M)
+    unlink = lambda t: re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", t)  # noqa: E731
+    reqs = [{"id": rid, "title": title.strip(), "summary": " ".join(unlink(summary).split()),
+             "chapter": "API", "chapter_title": "OWASP API Security Top 10 2023",
+             "section": None, "section_title": None, "level": None, "cwe": []}
+            for rid, title, summary in rows]
+    assert [r["id"] for r in reqs] == [f"API{i}:2023" for i in range(1, 11)], "index changed"
+    return {
+        "framework": {
+            "id": "API-Top10", "version": "2023",
+            "title": "OWASP API Security Top 10",
+            "source": "https://owasp.org/API-Security/editions/2023/en/0x11-t10/",
+            "license": "CC BY-SA 4.0", "upstream_sha": API_SHA, "retrieved": "2026-11-21",
+            "levels": [],
+        },
+        "requirements": reqs,
+    }
 
 
 def build() -> dict:
@@ -68,12 +98,18 @@ def main() -> int:
     ap.add_argument("--write", action="store_true")
     args = ap.parse_args()
     data = build()
+    api = build_api()
     text = json.dumps(data, indent=1, ensure_ascii=False) + "\n"
     if args.write:
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_text(text)
-        print(f"wrote {OUT} ({len(data['requirements'])} requirements)")
+        API_OUT.write_text(json.dumps(api, indent=1, ensure_ascii=False) + "\n")
+        print(f"wrote {OUT} ({len(data['requirements'])} requirements) and {API_OUT} "
+              f"({len(api['requirements'])} risks)")
         return 0
+    if not API_OUT.exists() or json.loads(API_OUT.read_text()) != api:
+        print("committed API Top 10 catalog differs from the pinned upstream; re-run with --write")
+        return 1
     current = json.loads(OUT.read_text()) if OUT.exists() else None
     if current != data:
         print("committed catalog differs from the pinned upstream export; re-run with --write")

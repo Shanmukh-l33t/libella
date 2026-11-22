@@ -699,19 +699,29 @@ def create_api(app: App) -> FastAPI:
 
     @api.put("/api/engagements/{eid}/standards", dependencies=[Depends(auth)])
     def set_standards(eid: str, body: dict):
-        """Select the verification level per standard. Only what policy can honour."""
+        """Select which standards this engagement is assessed against, and their level.
+
+        The body replaces the selection: {"asvs": {"level": 2}, "api-top10": {}}.
+        A standard with verification levels needs one; a standard without levels
+        must not be given one. WSTG is always reported and needs no selection.
+        """
         from .standards import levels
         if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
             raise HTTPException(404, "engagement not found")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must map standard id to its settings")
         chosen = {}
-        for framework, cfg in (body or {}).items():
-            allowed = levels(framework)
-            if not allowed:
-                raise HTTPException(400, f"{framework} has no selectable verification level")
-            level = (cfg or {}).get("level")
-            if level not in allowed:
+        for framework, cfg in body.items():
+            try:
+                allowed = levels(framework)
+            except KeyError:
+                raise HTTPException(404, f"unknown standard: {framework}") from None
+            level = (cfg or {}).get("level") if isinstance(cfg, dict) else None
+            if allowed and level not in allowed:
                 raise HTTPException(400, f"{framework} level must be one of {allowed}")
-            chosen[framework] = {"level": level}
+            if not allowed and level is not None:
+                raise HTTPException(400, f"{framework} has no verification levels")
+            chosen[framework] = {"level": level} if allowed else {}
         app.db.execute("UPDATE engagements SET standards_json=? WHERE id=?",
                        (json.dumps(chosen), eid))
         return chosen
