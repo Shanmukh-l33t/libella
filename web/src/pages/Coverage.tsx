@@ -1,337 +1,325 @@
-import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { ClipboardCheck } from "lucide-react";
-import { put } from "../api";
-import type { Engagement } from "../types";
+import { useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { ClipboardCheck, Download, Search } from "lucide-react";
+import { downloadReport, put } from "../api";
+import type { Engagement, Finding } from "../types";
 import { useApi } from "../lib/hooks";
-import { Badge, Button, Card, EmptyState, ErrorNote, Field, Input, Modal, Select, Skeleton, Table, Textarea } from "../components/ui";
+import { stateTone } from "../lib/format";
+import { Badge, Button, Card, EmptyState, ErrorNote, Input, Select, Skeleton, Table } from "../components/ui";
+import RequirementDrawer from "./coverage/RequirementDrawer";
+import {
+  AUTO_STATUSES, REVIEWS, REVIEW_TONE, SUMMARY_KEYS, TONE,
+  type AutoStatus, type Item, type Review, type Workspace,
+} from "./coverage/model";
 
-/** Automatic status: what the engagement actually executed. Never a claim of security. */
-type AutoStatus =
-  | "not_applicable" | "not_supported" | "requires_manual" | "skipped_policy"
-  | "skipped_dependency" | "attempted" | "inconclusive" | "failed"
-  | "completed_no_issue" | "partial_evidence" | "finding_unverified" | "finding_verified";
-const AUTO: AutoStatus[] = [
-  "not_applicable", "not_supported", "requires_manual", "skipped_policy", "skipped_dependency",
-  "attempted", "inconclusive", "failed", "completed_no_issue", "partial_evidence",
-  "finding_unverified", "finding_verified",
-];
-/** Manual review vocabulary, exactly as the server stores it. */
-type Review = "covered" | "manual" | "unsupported" | "unknown";
-const REVIEWS: Review[] = ["covered", "manual", "unsupported", "unknown"];
-
-const AUTO_TONE: Record<AutoStatus, "success" | "info" | "warning" | "danger" | "neutral"> = {
-  not_applicable: "neutral", not_supported: "warning", requires_manual: "warning",
-  skipped_policy: "warning", skipped_dependency: "warning", attempted: "info",
-  inconclusive: "warning", failed: "danger", completed_no_issue: "success",
-  partial_evidence: "info", finding_unverified: "info", finding_verified: "danger",
-};
-const AUTO_HELP: Record<AutoStatus, string> = {
-  not_applicable: "The engagement scope has no web category, so the web framework does not apply.",
-  not_supported: "No Libella check reaches this surface and the evidence sits outside the engagement model.",
-  requires_manual: "No automated check exists; a tester has to perform this test by hand.",
-  skipped_policy: "The engagement profile refused the mapped check. Untested, not failed.",
-  skipped_dependency: "A mapped tool or dependency was missing, so the check could not run.",
-  attempted: "Scheduled or running without a completion record.",
-  inconclusive: "Ran partially (timeout/cancel) or never ran; nothing can be concluded.",
-  failed: "The mapped check ran and failed. No result.",
-  completed_no_issue: "The mapped check executed and recorded no finding. Only as good as the check.",
-  partial_evidence: "A mapped check ran and recorded no finding, but it only covers PART of this requirement. Not a pass.",
-  finding_unverified: "A finding from the mapped check is recorded but not independently validated.",
-  finding_verified: "A finding from the mapped check was independently replayed.",
-};
-const REVIEW_TONE: Record<Review, "success" | "info" | "warning" | "neutral"> = {
-  covered: "success", manual: "info", unsupported: "warning", unknown: "neutral",
-};
-const REVIEW_HELP: Record<Review, string> = {
-  covered: "Reviewed by hand, with evidence from this engagement attached.",
-  manual: "Reviewed by hand; the note says what was checked.",
-  unsupported: "Not testable here; the note says why.",
-  unknown: "Clears the manual record and shows the automatic status only.",
-};
-
-interface Evidence { tool_calls: string[]; exchanges: string[]; intents: string[]; events: number[]; findings: string[] }
-interface Item {
-  id: string; title: string; status: AutoStatus | Review;
-  level?: number | null; section?: string | null; section_title?: string | null;
-  automatic: { status: AutoStatus; reason: string; units: string[] };
-  manual: { status: Review; note?: string | null; evidence_id?: string | null; updated_at?: number | null } | null;
-  evidence: Evidence;
-}
-interface Category { id: string; name: string; counts: Record<AutoStatus, number>; tests: Item[] }
-interface Workspace {
-  framework: { id: string; version: string; title: string; source: string; requirements: number;
-    groups: number; levels: number[] };
-  engagement_id: string;
-  summary: Record<"total" | "applicable" | "supported" | "attempted" | "completed" | "partial"
-    | "with_findings" | "skipped" | "manual_required" | "not_tested" | "catalog"
-    | "excluded_by_level", number> & { level: number | null }
-    & { statuses: Record<AutoStatus, number>; manual: Record<"covered" | "manual" | "unsupported", number> };
-  categories: Category[];
-}
+type Filter = "all" | AutoStatus | Review;
 
 export default function Coverage() {
   const [params, setParams] = useSearchParams();
   const engagements = useApi<Engagement[]>("/api/engagements");
   const eid = params.get("engagement") || "";
-  const fw = params.get("framework") || "wstg";
+  const fw = params.get("framework") || "asvs";
   const ws = useApi<Workspace>(eid
     ? `/api/engagements/${encodeURIComponent(eid)}/coverage/${encodeURIComponent(fw)}`
     : null);
   const standards = useApi<{ standards: { id: string; framework: { title: string; version: string };
     levels: number[]; requirements: number }[] }>("/api/standards");
-  const [editing, setEditing] = useState<Item | null>(null);
-  const [status, setStatus] = useState<Review>("manual");
-  const [note, setNote] = useState("");
-  const [evidence, setEvidence] = useState("");
+  const findings = useApi<Finding[]>(eid ? `/api/engagements/${encodeURIComponent(eid)}/findings` : null);
+
+  const [open, setOpen] = useState<Item | null>(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [level, setLevel] = useState("all");
+  const [manualOnly, setManualOnly] = useState(false);
+  const [withEvidence, setWithEvidence] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [filter, setFilter] = useState<"all" | AutoStatus | Review>("all");
+  const [busy, setBusy] = useState<string | null>(null);
 
-  const open = (item: Item) => {
-    setEditing(item); setStatus(item.manual?.status || "manual");
-    setNote(item.manual?.note || ""); setEvidence(item.manual?.evidence_id || ""); setError(null);
-  };
+  const d = ws.data;
+  const needle = search.trim().toLowerCase();
+  const filtering = needle !== "" || filter !== "all" || level !== "all" || manualOnly || withEvidence;
 
-  const save = async () => {
-    if (!editing) return;
-    setSaving(true); setError(null);
-    try {
-      // The server owns the rules: covered needs this engagement's evidence, manual/unsupported need a note.
-      await put(`/api/engagements/${encodeURIComponent(eid)}/coverage/${encodeURIComponent(fw)}/${encodeURIComponent(editing.id)}`,
-        { status, note: note.trim(), evidence_id: evidence.trim() || undefined });
-      setEditing(null);
-      ws.reload();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
+  const keep = (t: Item) =>
+    (filter === "all" || t.status === filter)
+    && (level === "all" || String(t.level ?? "") === level)
+    && (!manualOnly || t.automatic.status === "requires_manual")
+    && (!withEvidence || hasEvidence(t))
+    && (!needle || [t.id, t.title, t.section_title || "", t.section || ""]
+      .some((s) => s.toLowerCase().includes(needle)));
 
-  const setFramework = (value: string) => {
+  const chapters = useMemo(() => (d?.categories || []).map((c) => ({
+    ...c, shown: c.tests.filter(keep),
+  })), [d, needle, filter, level, manualOnly, withEvidence]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const shown = chapters.reduce((n, c) => n + c.shown.length, 0);
+  const inScope = chapters.reduce((n, c) => n + c.tests.length, 0);
+
+  const setParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
-    next.set("framework", value);
+    if (value) next.set(key, value); else next.delete(key);
     setParams(next, { replace: true });
   };
 
-  const setLevel = async (level: number) => {
-    setError(null);
+  const applyLevel = async (value: number) => {
+    setError(null); setBusy("level");
     try {
-      await put(`/api/engagements/${encodeURIComponent(eid)}/standards`, { [fw]: { level } });
+      await put(`/api/engagements/${encodeURIComponent(eid)}/standards`, { [fw]: { level: value } });
       ws.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    }
+    } finally { setBusy(null); }
+  };
+
+  const download = (format: "md" | "pdf") => {
+    setError(null); setBusy(format);
+    downloadReport(eid, format, "coverage")
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(null));
+  };
+
+  const reset = () => {
+    setSearch(""); setFilter("all"); setLevel("all"); setManualOnly(false); setWithEvidence(false);
   };
 
   const list = engagements.data || [];
-  const d = ws.data;
-  const rows = (tests: Item[]) => (filter === "all" ? tests : tests.filter((t) => t.status === filter));
+  const unattributed = d?.unattributed_findings || [];
 
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-semibold tracking-tight text-ink-900">Security standards &amp; coverage</h1>
         <p className="mt-1 max-w-3xl text-sm text-ink-500">
-          Every applicable requirement of the selected standard, accounted for. Two records per
-          requirement, both always shown. <span className="font-medium text-ink-700">Executed</span> is
-          derived from what this engagement actually ran — intents, tool calls, captured exchanges and findings.
-          <span className="font-medium text-ink-700"> Review</span> is what an operator recorded by hand and
-          overrides the displayed status when set. A test that was not tested is not a pass, and nothing here
-          runs a tool.
+          Every requirement of the selected standard, accounted for against what this engagement actually
+          executed — intents, tool calls, captured exchanges, degradations and findings. Two records per
+          requirement, both always shown: <span className="font-medium text-ink-700">Executed</span> is derived
+          from the run, <span className="font-medium text-ink-700">Review</span> is what an operator recorded by
+          hand. Nothing on this page runs a tool.
         </p>
       </div>
 
-      <Card title="Engagement" description="Coverage is recorded per engagement and never shared across them.">
+      <Card title="Standard" description="Coverage is recorded per engagement and never shared across them."
+        actions={d ? <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("md")} disabled={busy !== null}>
+            {busy === "md" ? "Preparing…" : "Coverage report (MD)"}
+          </Button>
+          <Button size="sm" icon={<Download size={13} />} onClick={() => download("pdf")} disabled={busy !== null}>
+            {busy === "pdf" ? "Preparing…" : "PDF"}
+          </Button>
+        </div> : undefined}>
         <div className="flex flex-wrap items-end gap-3">
           <label className="block w-full max-w-md">
             <span className="label">Engagement</span>
-            <Select aria-label="Engagement" value={eid}
-              onChange={(e) => {
-                const next = new URLSearchParams(params);
-                if (e.target.value) next.set("engagement", e.target.value); else next.delete("engagement");
-                setParams(next, { replace: true });
-              }}>
+            <Select aria-label="Engagement" value={eid} onChange={(e) => setParam("engagement", e.target.value)}>
               <option value="">Select engagement…</option>
               {list.map((e) => <option key={e.id} value={e.id}>{e.name} · {e.status} · {e.profile}</option>)}
             </Select>
           </label>
-          <label className="block w-full max-w-xs">
+          <label className="block w-full max-w-sm">
             <span className="label">Standard</span>
-            <Select aria-label="Standard" value={fw} onChange={(e) => setFramework(e.target.value)}>
+            <Select aria-label="Standard" value={fw} onChange={(e) => setParam("framework", e.target.value)}>
               {(standards.data?.standards || []).map((st) => (
-                <option key={st.id} value={st.id}>
-                  {st.framework.title} v{st.framework.version} · {st.requirements}
-                </option>
+                <option key={st.id} value={st.id}>{st.framework.title} · {st.requirements} requirements</option>
               ))}
             </Select>
           </label>
           {d && d.framework.levels.length > 0 && (
-            <label className="block w-full max-w-[10rem]">
+            <label className="block w-full max-w-[11rem]">
               <span className="label">Verification level</span>
-              <Select aria-label="Verification level" value={String(d.summary.level ?? 2)}
-                onChange={(e) => setLevel(Number(e.target.value))}>
-                {d.framework.levels.map((lv) => (
-                  <option key={lv} value={lv}>Level {lv}</option>
-                ))}
+              <Select aria-label="Verification level" value={String(d.summary.level ?? d.framework.levels[0])}
+                disabled={busy === "level"} onChange={(e) => applyLevel(Number(e.target.value))}>
+                {d.framework.levels.map((lv) => <option key={lv} value={lv}>Level {lv}</option>)}
               </Select>
             </label>
           )}
-          <label className="block w-full max-w-xs">
-            <span className="label">Filter by status</span>
-            <Select aria-label="Filter by status" value={filter}
-              onChange={(e) => setFilter(e.target.value as typeof filter)}>
-              <option value="all">All statuses ({d ? d.summary.total : 96})</option>
-              {AUTO.map((s) => <option key={s} value={s}>{s}{d ? ` (${d.summary.statuses[s]})` : ""}</option>)}
-              {REVIEWS.filter((r) => r !== "unknown").map((r) => (
-                <option key={r} value={r}>review: {r}{d ? ` (${d.summary.manual[r]})` : ""}</option>
-              ))}
-            </Select>
-          </label>
         </div>
-        <p className="mt-3 text-xs text-ink-500">
-          {AUTO.filter((s) => d?.summary.statuses[s]).map((s) => <span key={s} className="mr-3 inline-flex items-center gap-1">
-            <Badge tone={AUTO_TONE[s]}>{s}</Badge>{AUTO_HELP[s]}</span>)}
-        </p>
+        {d && (
+          <p className="mt-3 text-xs text-ink-500">
+            <span data-testid="framework-title" className="font-medium text-ink-700">
+              {d.framework.title} v{d.framework.version}
+            </span>
+            {" · "}{d.summary.total} of {d.summary.catalog} requirements
+            {typeof d.summary.level === "number" ? ` at Level ${d.summary.level}` : ""}
+            {d.summary.excluded_by_level > 0 ? ` · ${d.summary.excluded_by_level} excluded by that level` : ""}
+            {d.framework.license ? ` · ${d.framework.license}` : ""}{" · "}
+            <a className="link" href={d.framework.source} target="_blank" rel="noreferrer">catalog source</a>
+          </p>
+        )}
+        <ErrorNote error={error || ws.error} />
       </Card>
-
-      <ErrorNote error={ws.error} />
 
       {!eid ? (
         <Card><EmptyState icon={<ClipboardCheck size={22} />} title="Choose an engagement"
-          description={`The catalog lists every requirement of the selected standard, grouped by chapter.`} /></Card>
+          description="The ledger lists every requirement of the selected standard, grouped by chapter, with the reason each one is or is not accounted for." /></Card>
       ) : ws.loading && !d ? <Skeleton className="h-64 w-full" /> : !d ? null : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Mini label="Applicable" value={d.summary.applicable} hint="tests the scope can reach" />
-            <Mini label="Supported" value={d.summary.supported} hint="a Libella check can exercise them" />
-            <Mini label="Attempted" value={d.summary.attempted} hint="a check started" />
-            <Mini label="Completed" value={d.summary.completed} tone="success" hint="executed to a result" />
-            <Mini label="Partial" value={d.summary.partial} hint="a check covered only part of the requirement" />
-            <Mini label="With findings" value={d.summary.with_findings} tone="danger" hint="verified or unverified" />
-            <Mini label="Skipped" value={d.summary.skipped} hint="profile or dependency" />
-            <Mini label="Manual required" value={d.summary.manual_required} hint="no automated check exists" />
-            <Mini label="Not tested" value={d.summary.not_tested} tone="danger" hint="never completed — not a pass" />
-          </div>
-          <p className="text-xs text-ink-500">
-            {d.framework.title} v{d.framework.version} · {d.summary.total} of {d.summary.catalog}{" "}
-            requirements{typeof d.summary.level === "number" ? ` at Level ${d.summary.level}` : ""}
-            {d.summary.excluded_by_level > 0 ? ` · ${d.summary.excluded_by_level} excluded by that level` : ""} ·{" "}
-            <a className="link" href={d.framework.source} target="_blank" rel="noreferrer">catalog source</a>
-          </p>
+          <Card title="How to read a status"
+            description="A row is never greener than the evidence allows.">
+            <ul className="space-y-1.5 text-xs text-ink-700">
+              <li><Badge tone="success">completed_no_issue</Badge> is the only automatic pass, and only when a
+                check <span className="font-medium">directly</span> maps to the requirement and executed.</li>
+              <li><Badge tone="info">partial_evidence</Badge> means a mapped check ran but covers only part of the
+                requirement. <span className="font-medium">It is not a pass</span>, and neither is a
+                completed_no_issue from a partial check — the server never records one.</li>
+              <li><Badge tone="warning">requires_manual</Badge> and <Badge tone="warning">inconclusive</Badge> are{" "}
+                <span className="font-medium">untested</span>: no automated check exists, or the one that ran
+                produced no conclusion. Both count in <span className="font-medium">Not tested</span>.</li>
+              <li><Badge tone="warning">skipped_policy</Badge> / <Badge tone="warning">skipped_dependency</Badge> are
+                untested too — refused by the engagement profile or missing a tool, never failed.</li>
+              <li><Badge tone="danger">finding_verified</Badge> and <Badge tone="info">finding_unverified</Badge>{" "}
+                are evidence <span className="font-medium">against</span> the requirement, not coverage of it.</li>
+            </ul>
+          </Card>
 
-          {d.categories.map((c) => {
-            const tests = rows(c.tests);
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {SUMMARY_KEYS.map(([key, label, hint, tone]) => (
+              <div key={key} className="rounded border border-line bg-white px-3 py-2" title={hint}>
+                <div className="text-2xs text-ink-500">{label}</div>
+                <div data-testid={`summary-${key}`}
+                  className={`mt-0.5 text-base font-semibold tabular-nums ${tone === "success" ? "text-[#027A48]" : tone === "danger" ? "text-sev-high" : "text-ink-900"}`}>
+                  {(d.summary as unknown as Record<string, number>)[key]}
+                </div>
+                <div className="text-2xs text-ink-300">{hint}</div>
+              </div>
+            ))}
+          </div>
+
+          {unattributed.length > 0 && (
+            <Card title={`Findings with no requirement (${unattributed.length})`}
+              description="These exist in the engagement but no mapped check accounts for them. Open a requirement and record an attribution decision to attach one.">
+              <ul className="space-y-2">
+                {unattributed.map((f) => (
+                  <li key={f.id} className="flex flex-wrap items-center gap-2 text-xs">
+                    <Badge tone={stateTone(f.state)}>{f.state}</Badge>
+                    <span className="font-mono text-2xs text-ink-500">{f.id}</span>
+                    <span className="font-mono text-2xs text-ink-500">{f.cwe || "no CWE"}</span>
+                    <Link to={`/findings/${f.id}`} className="link">{f.title}</Link>
+                    <span className="text-ink-500">— {f.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+
+          <Card title="Filters" description={`${shown} of ${inScope} requirements shown in scope.`}>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="block w-full max-w-sm">
+                <span className="label">Search</span>
+                <div className="relative">
+                  <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-300" />
+                  <Input aria-label="Search requirements" className="pl-7" value={search}
+                    onChange={(e) => setSearch(e.target.value)} placeholder="V3.4, section or requirement text" />
+                </div>
+              </label>
+              <label className="block w-full max-w-xs">
+                <span className="label">Status</span>
+                <Select aria-label="Status filter" value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
+                  <option value="all">All statuses ({d.summary.total})</option>
+                  {AUTO_STATUSES.map((s) => <option key={s} value={s}>{s} ({d.summary.statuses[s]})</option>)}
+                  {REVIEWS.filter((r) => r !== "unknown").map((r) => (
+                    <option key={r} value={r}>review: {r} ({d.summary.manual[r]})</option>
+                  ))}
+                </Select>
+              </label>
+              {d.framework.levels.length > 0 && (
+                <label className="block w-full max-w-[9.5rem]">
+                  <span className="label">Requirement level</span>
+                  <Select aria-label="Requirement level" value={level} onChange={(e) => setLevel(e.target.value)}>
+                    <option value="all">All levels</option>
+                    {d.framework.levels.map((lv) => <option key={lv} value={String(lv)}>Level {lv}</option>)}
+                  </Select>
+                </label>
+              )}
+              <label className="inline-flex items-center gap-2 pb-2 text-sm text-ink-700">
+                <input type="checkbox" aria-label="Manual required only" checked={manualOnly}
+                  onChange={(e) => setManualOnly(e.target.checked)} />
+                Manual required only
+              </label>
+              <label className="inline-flex items-center gap-2 pb-2 text-sm text-ink-700">
+                <input type="checkbox" aria-label="With evidence only" checked={withEvidence}
+                  onChange={(e) => setWithEvidence(e.target.checked)} />
+                With evidence only
+              </label>
+              {filtering && <Button size="sm" variant="ghost" className="mb-1" onClick={reset}>Reset filters</Button>}
+            </div>
+          </Card>
+
+          {chapters.every((c) => filtering && c.shown.length === 0) && (
+            <Card><EmptyState title="No requirement matches"
+              description="Clear the search or filters to see the whole catalog." /></Card>
+          )}
+
+          {chapters.map((c) => {
+            if (filtering && c.shown.length === 0) return null;
+            const isOpen = filtering || !!expanded[c.id];
+            const counts = AUTO_STATUSES.filter((s) => c.counts[s]);
             return (
-              <Card key={c.id} title={<span className="inline-flex items-center gap-2">
-                <span className="font-mono text-xs text-ink-700">{c.id}</span>{c.name}</span>}
-                description={`${tests.length} of ${c.tests.length} tests shown`} padded={false}
-                actions={<span className="flex flex-wrap gap-1">
-                  {AUTO.filter((s) => c.counts[s]).map((s) => <Badge key={s} tone={AUTO_TONE[s]}>{c.counts[s]} {s}</Badge>)}
-                </span>}>
-                {tests.length === 0 ? (
-                  <div className="px-4 py-6 text-center text-xs text-ink-500">No test in this category has that status.</div>
-                ) : (
-                  <Table<Item>
-                    rows={tests} getKey={(t) => t.id} dense onRowClick={open}
-                    columns={[
-                      { key: "id", label: "ID", render: (t) => (
-                        <span className="font-mono text-2xs text-ink-700">{t.id}</span>
-                      ) },
-                      ...(d.framework.levels.length > 0 ? [{ key: "level", label: "Level",
-                        render: (t: Item) => <span className="text-2xs text-ink-500">L{t.level ?? "—"}</span> }] : []),
-                      { key: "title", label: "Requirement", render: (t) => (
-                        <div className="space-y-0.5">
-                          {t.section_title && <div className="text-2xs text-ink-500">{t.section_title}</div>}
-                          <span className="text-xs text-ink-900">{t.title}</span>
-                        </div>
-                      ) },
-                      { key: "auto", label: "Executed", sortValue: (t) => t.automatic.status, render: (t) => (
-                        <div className="space-y-0.5">
-                          <Badge tone={AUTO_TONE[t.automatic.status]}>{t.automatic.status}</Badge>
-                          <div className="max-w-[260px] truncate text-2xs text-ink-500" title={t.automatic.reason}>
-                            {t.automatic.reason}
-                          </div>
-                        </div>
-                      ) },
-                      { key: "review", label: "Review", sortValue: (t) => t.manual?.status || "", render: (t) => (
-                        t.manual?.status
-                          ? <Badge tone={REVIEW_TONE[t.manual.status]}>{t.manual.status}</Badge>
-                          : <span className="text-2xs text-ink-300">—</span>
-                      ) },
-                      { key: "evidence", label: "Evidence", render: (t) => (
-                        <span className="font-mono text-2xs text-ink-500">{evidenceSummary(t)}</span>
-                      ) },
-                    ]}
-                  />
-                )}
-              </Card>
+              <div key={c.id} data-testid="chapter">
+                <Card padded={false}
+                  title={<button className="inline-flex items-center gap-2 text-left" aria-expanded={isOpen}
+                    onClick={() => setExpanded((x) => ({ ...x, [c.id]: !x[c.id] }))}>
+                    <span className="font-mono text-xs text-ink-700">{c.id}</span>
+                    <span className="text-sm font-semibold text-ink-900">{c.name}</span>
+                    <span aria-hidden className="text-2xs text-ink-500">{isOpen ? "▾" : "▸"}</span>
+                  </button>}
+                  description={`${c.shown.length} of ${c.tests.length} requirements${isOpen ? "" : " — open the chapter"}`}
+                  actions={<span className="flex flex-wrap justify-end gap-1">
+                    {counts.map((s) => <Badge key={s} tone={TONE[s]}>{c.counts[s]} {s}</Badge>)}
+                  </span>}>
+                  {isOpen && c.shown.length === 0 ? (
+                    <div className="px-4 py-6 text-center text-xs text-ink-500">No requirement in this chapter has that status.</div>
+                  ) : isOpen ? (
+                    <Table<Item> rows={c.shown} getKey={(t) => t.id} dense onRowClick={(t) => setOpen(t)}
+                      columns={[
+                        { key: "id", label: "ID", width: "6.5rem", render: (t) => (
+                          <span className="font-mono text-2xs text-ink-700">{t.id}</span>) },
+                        ...(d.framework.levels.length > 0 ? [{ key: "level", label: "Level", width: "4rem",
+                          className: "hidden sm:table-cell",
+                          render: (t: Item) => <span className="text-2xs text-ink-500">L{t.level ?? "—"}</span> }] : []),
+                        { key: "title", label: "Requirement", render: (t) => (
+                          <div className="space-y-0.5">
+                            {t.section_title && <div className="text-2xs text-ink-500">{t.section_title}</div>}
+                            <span className="text-xs text-ink-900">{t.title}</span>
+                          </div>) },
+                        { key: "auto", label: "Executed", sortValue: (t) => t.automatic.status, render: (t) => (
+                          <div className="space-y-0.5">
+                            <Badge tone={TONE[t.automatic.status]}>{t.automatic.status}</Badge>
+                            <div className="hidden max-w-[220px] truncate text-2xs text-ink-500 sm:block" title={t.automatic.reason}>
+                              {t.automatic.reason}
+                            </div>
+                          </div>) },
+                        { key: "review", label: "Review", className: "hidden sm:table-cell",
+                          sortValue: (t) => t.manual?.status || "", render: (t) => (
+                          t.manual?.status
+                            ? <Badge tone={REVIEW_TONE[t.manual.status]}>{t.manual.status}</Badge>
+                            : <span className="text-2xs text-ink-300">—</span>) },
+                        { key: "evidence", label: "Evidence", className: "hidden sm:table-cell", render: (t) => (
+                          <span className="font-mono text-2xs text-ink-500">{evidenceSummary(t)}</span>) },
+                      ]} />
+                  ) : null}
+                </Card>
+              </div>
             );
           })}
         </>
       )}
 
-      <Modal open={!!editing} onClose={() => setEditing(null)} width="max-w-2xl"
-        title={editing ? `${editing.id} · ${editing.title}` : ""}
-        footer={<><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
-          <Button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save review"}</Button></>}>
-        {editing && (
-          <div className="space-y-4">
-            <div className="rounded border border-line bg-ink-100 px-3 py-2">
-              <div className="flex items-center gap-2">
-                <span className="text-2xs uppercase tracking-wide text-ink-500">Automatically derived</span>
-                <Badge tone={AUTO_TONE[editing.automatic.status]}>{editing.automatic.status}</Badge>
-              </div>
-              <p className="mt-1 text-xs text-ink-700">{editing.automatic.reason}</p>
-              <p className="mt-1 text-2xs text-ink-500">{AUTO_HELP[editing.automatic.status]}</p>
-              <p className="mt-2 break-words font-mono text-2xs text-ink-500">
-                {[
-                  editing.evidence.findings.length && `findings: ${editing.evidence.findings.join(", ")}`,
-                  editing.evidence.tool_calls.length && `tool_calls: ${editing.evidence.tool_calls.join(", ")}`,
-                  editing.evidence.exchanges.length && `exchanges: ${editing.evidence.exchanges.length}`,
-                  editing.evidence.intents.length && `intents: ${editing.evidence.intents.join(", ")}`,
-                  editing.evidence.events.length && `degradations: #${editing.evidence.events.join(", #")}`,
-                ].filter(Boolean).join(" · ") || "no evidence recorded"}
-              </p>
-            </div>
-            <Field label="Review status" hint={REVIEW_HELP[status]}>
-              <Select aria-label="Review status" value={status}
-                onChange={(e) => setStatus(e.target.value as Review)}>
-                {REVIEWS.map((s) => <option key={s} value={s}>{s}</option>)}
-              </Select>
-            </Field>
-            <Field label="Note" hint={status === "manual" || status === "unsupported"
-              ? "Required: what you checked, or why it cannot be tested here." : "Optional context for the reviewer."}>
-              <Textarea aria-label="Review note" rows={3} value={note} onChange={(e) => setNote(e.target.value)} />
-            </Field>
-            <Field label="Evidence ID" hint="Only for covered: an ev_ id from this engagement. A foreign or missing id is rejected.">
-              <Input aria-label="Evidence ID" value={evidence} onChange={(e) => setEvidence(e.target.value)}
-                placeholder="ev_…" disabled={status !== "covered"} />
-            </Field>
-            <ErrorNote error={error} />
-          </div>
-        )}
-      </Modal>
+      {open && eid && (
+        <RequirementDrawer key={`${open.id}-${open.manual?.updated_at || 0}`} eid={eid} fw={fw} item={open}
+          mapping={d?.mapping || {}} findings={findings.data || []}
+          onClose={() => setOpen(null)} onSaved={() => ws.reload()} />
+      )}
     </div>
   );
+}
+
+function hasEvidence(t: Item) {
+  const e = t.evidence;
+  return !!(e.tool_calls.length || e.exchanges.length || e.intents.length || e.events.length || e.findings.length);
 }
 
 function evidenceSummary(t: Item) {
   const calls = t.evidence.tool_calls.length + t.evidence.exchanges.length;
   const findings = t.evidence.findings.length;
   return `${findings ? `${findings} finding${findings > 1 ? "s" : ""} · ` : ""}${calls} call${calls === 1 ? "" : "s"}`;
-}
-
-function Mini({ label, value, tone, hint }: {
-  label: string; value: number; tone?: "success" | "danger"; hint?: string;
-}) {
-  const color = tone === "success" ? "text-[#027A48]" : tone === "danger" ? "text-sev-high" : "text-ink-900";
-  return (
-    <div className="rounded border border-line bg-white px-3 py-2" title={hint}>
-      <div className="text-2xs text-ink-500">{label}</div>
-      <div className={`mt-0.5 text-base font-semibold tabular-nums ${color}`}>{value}</div>
-      {hint && <div className="text-2xs text-ink-300">{hint}</div>}
-    </div>
-  );
 }
