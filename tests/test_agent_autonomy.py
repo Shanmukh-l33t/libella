@@ -15,6 +15,7 @@ from flask import Flask, request
 from werkzeug.serving import make_server
 
 import libella.agent_runtime as ar_mod
+from libella import specialists
 from libella.agent_runtime import AgentRunner
 from libella.db import DB
 from libella.evidence import EvidenceStore
@@ -89,16 +90,16 @@ def _agent(platform, steps, profile="safe_active", budgets=None):
     return AgentRunner(db, ev, pipe, probe, reg, runner, llm, scope, "eng"), llm
 
 
-def _mint(slug, actions, **budget):
+def _mint(slug, actions, tools=None, **budget):
     return {"thought": f"mint {slug}", "action": "create_specialist",
             "args": {"slug": slug,
                      "expertise": "ColdFusion administrator API and J2EE stack configuration review",
-                     "actions": actions, "budget": budget}}
+                     "actions": actions, "tools": tools or [], "budget": budget}}
 
 
 def _stored(db, slug):
-    row = db.one("SELECT value_json FROM settings WHERE key=?", (f"agent_specialist:eng:{slug}",))
-    return json.loads(row["value_json"]) if row else None
+    spec = specialists.get(db, "eng", slug)
+    return spec["charter"] if spec else None
 
 
 def test_generated_specialist_is_persisted_then_delegated_and_run(platform, lab):
@@ -278,7 +279,7 @@ def test_working_memory_is_bounded_and_keeps_older_observations_as_a_digest(plat
 def test_specialist_cannot_leave_scope_or_run_a_forbidden_tool(platform, lab):
     db, *_ = platform
     steps = [
-        _mint("cf_config", ["http_request", "run_tool"]),
+        _mint("cf_config", ["http_request", "run_tool"], tools=["httpx"]),
         {"thought": "hand off", "action": "delegate",
          "args": {"role": "cf_config", "objective": "scan the CF host", "target": lab}},
         # the specialist tries to break out of the controller

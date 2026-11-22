@@ -7,6 +7,7 @@ import time
 
 import httpx
 
+from .budget import BudgetLedger
 from .db import DB, new_id
 
 # USD per 1M tokens (input, output). Estimates; configurable via settings.
@@ -16,10 +17,18 @@ DEFAULT_PRICING = {
     "claude-sonnet-4-5": (3.0, 15.0), "claude-haiku-4-5": (1.0, 5.0),
     "deepseek-chat": (0.27, 1.1), "default": (1.0, 3.0),
 }
+# A reservation must not under-estimate: 3 chars/token is below prose (~4) and
+# JSON/code (~2.5) alike, and the call has no max_tokens, so assume a full reply.
+CHARS_PER_TOKEN = 3
+MAX_OUTPUT_TOKENS = 1024
 
 
 class LLMError(Exception):
     pass
+
+
+class BudgetExceeded(LLMError):
+    """The engagement ceiling refused the reservation: no call was made."""
 
 
 class LLM:
@@ -34,6 +43,7 @@ class LLM:
         self.fallback = config.get("fallback", [])
         self.pricing = {**DEFAULT_PRICING, **config.get("pricing", {})}
         self.timeout = config.get("timeout_s", 120)
+        self.ledger = BudgetLedger(db) if db is not None else None
 
     def model_for(self, role: str) -> str:
         return self.models.get(role, self.default_model)
@@ -42,6 +52,20 @@ class LLM:
         # longest match wins, so "gpt-4o-mini" is not priced as "gpt-4o"
         keys = [k for k in self.pricing if k != "default" and k in model]
         return tuple(self.pricing[max(keys, key=len)] if keys else self.pricing["default"])
+
+    def estimate(self, system: str, user: str, model: str | None = None,
+                 max_output_tokens: int = MAX_OUTPUT_TOKENS) -> float:
+        """Conservative USD estimate for one call: the amount to reserve before it."""
+        pin, pout = self._price(model or self.default_model)
+        prompt_tokens = (len(system) + len(user)) / CHARS_PER_TOKEN + 64
+        return (prompt_tokens * pin + max_output_tokens * pout) / 1_000_000
+
+    def _max_usd(self, engagement_id: str) -> float:
+        row = self.db.one("SELECT budgets_json FROM engagements WHERE id=?", (engagement_id,))
+        try:
+            return float(json.loads((row or {}).get("budgets_json") or "{}").get("max_usd", 10.0))
+        except (TypeError, ValueError):
+            return 10.0  # corrupt ceilings never widen
 
     def complete(self, role: str, system: str, user: str, engagement_id: str | None = None,
                  json_schema: dict | None = None, temperature: float = 0.1) -> dict:
@@ -52,12 +76,39 @@ class LLM:
         for model in models:
             try:
                 return self._call(model, role, system, user, engagement_id, json_schema, temperature)
+            except BudgetExceeded:
+                raise  # another model cannot help: the ceiling is the engagement's
             except LLMError as e:
                 last_err = e
                 continue
         raise LLMError(f"all models failed: {last_err}")
 
     def _call(self, model, role, system, user, engagement_id, json_schema, temperature) -> dict:
+        """One provider call: headroom is reserved before it and settled after it.
+
+        A refusal raises BudgetExceeded before any HTTP request is made; every
+        failure path releases the reservation, so a dead provider costs nothing.
+        """
+        reservation = None
+        if engagement_id is not None and self.ledger is not None:
+            amount = self.estimate(system, user, model)
+            reservation = self.ledger.reserve(engagement_id, None, amount,
+                                              self._max_usd(engagement_id))
+            if reservation is None:
+                raise BudgetExceeded(
+                    f"engagement budget refused a model call: reserving ~{amount:.4f} USD on top of "
+                    f"{self.ledger.committed(engagement_id):.4f} USD committed would pass the "
+                    f"{self._max_usd(engagement_id):.4f} USD ceiling")
+        try:
+            return self._provider_call(model, role, system, user, engagement_id, json_schema,
+                                       temperature, reservation)
+        except BaseException:
+            if reservation is not None and self.ledger is not None:
+                self.ledger.settle(reservation, 0.0)  # no usage known: give the headroom back
+            raise
+
+    def _provider_call(self, model, role, system, user, engagement_id, json_schema, temperature,
+                       reservation) -> dict:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         body = {"model": model, "messages": messages, "temperature": temperature}
         if json_schema:
@@ -90,6 +141,10 @@ class LLM:
             "VALUES(?,?,?,?,?,?,?,?)",
             (new_id("lu"), engagement_id, role, model, it, ot, round(cost, 6), time.time()),
         )
+        if reservation is not None and self.ledger is not None:
+            # settle to what the provider says it used; llm_usage above stays the
+            # reporting record, the ledger is what the ceiling is enforced on
+            self.ledger.settle(reservation, cost)
         parsed = None
         if json_schema:
             parsed = self._parse_json(content)

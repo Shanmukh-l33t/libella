@@ -17,7 +17,7 @@ from .checks import WebChecks
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
-from .llm import LLM, LLMError
+from .llm import LLM, BudgetExceeded, LLMError
 from .policy import DEFAULT_PROFILE, permits
 from .scope import Scope
 from .tools import Registry, readiness
@@ -26,14 +26,14 @@ from .tools.runner import ToolRunner
 from .verifier import _norm  # one whitespace normalization, shared with replay comparison
 
 # Working memory the model receives per turn: bounded, whatever the engagement size.
-CONTEXT_CHARS = 4500
+CONTEXT_CHARS = specialists.CONTEXT_CHARS
 PREV_CHARS = 3000
 
 
-def _trim(d: dict, keys) -> dict:
-    """Drop tail entries until the JSON fits CONTEXT_CHARS: deterministic, no model call."""
+def _trim(d: dict, keys, limit: int = CONTEXT_CHARS) -> dict:
+    """Drop tail entries until the JSON fits limit chars: deterministic, no model call."""
     for key in keys:
-        while d.get(key) and len(json.dumps(d, default=str)) > CONTEXT_CHARS:
+        while d.get(key) and len(json.dumps(d, default=str)) > limit:
             d[key].pop()
     return d
 
@@ -157,10 +157,11 @@ Action args:
 - run_check: {"check":"xss|sqli|ssti|traversal|redirect|cors|headers|cookies|upload|sensitive_paths|auth_bypass|idor|ssrf","url","param"?,"extra"?}
 - run_tool: {"tool":"<a tool name from list_capabilities>","params":{...}}
 - list_capabilities: {}  # tools this engagement's profile permits: params, readiness, what each is good for
-- create_specialist: {"slug","expertise","actions":[...],"budget":{"max_usd"?,"max_duration_s"?,"max_iterations"?}}
+- create_specialist: {"slug","expertise","actions":[...],"tools":[...],"budget":{"max_usd"?,"max_duration_s"?,"max_iterations"?,"context_chars"?}}
   # mint a specialist charter for a technology/domain the built-in roles do not cover
   # (e.g. coldfusion_config, graphql_schema, pci_payment_flow, llm_app); then delegate to it.
-  # actions must come from: %s; budget is clamped to the engagement's.
+  # actions must come from: %s; tools names the tools it may launch with run_tool
+  # (registered names, e.g. httpx/subfinder/nuclei); budget is clamped to the engagement's.
 - record_hypothesis: {"statement","kind"?,"asset_id"?}
 - update_hypothesis: {"id","status":"open|supported|refuted|inconclusive","confidence"?}
 - record_observation: {"kind","summary","evidence_id"?,"quote"?}
@@ -286,25 +287,31 @@ class AgentRunner:
         return {"profile": self.profile, "tools": tools}
 
     def _create_specialist(self, args, run_id, intent_id, seq):
-        """Mint a specialist charter from a spec: narrowed actions, clamped budget."""
+        """Mint a specialist charter from a spec: narrowed actions, named tools, clamped budget."""
         try:
             charter = specialists.validate_spec(args, self._budgets(), reserved=frozenset(CHARTERS))
         except ValueError as e:
             return {"error": f"specialist refused: {e}"}
-        specialists.save(self.db, self.eng, charter)
+        existing = specialists.get(self.db, self.eng, charter["slug"])
+        if existing is not None:
+            return {"error": f"specialist {charter['slug']!r} is already registered "
+                             f"({existing['state']}); delegate to it instead of re-creating it"}
+        spec = specialists.register(self.db, self.eng, charter, parent_run_id=run_id,
+                                    objective=str(args.get("expertise") or ""))
         self._step(run_id, intent_id, seq, "specialist",
                    f"specialist {charter['slug']}: {', '.join(charter['actions'])}")
         self.db.emit(self.eng, "specialist_created", {
-            "slug": charter["slug"], "actions": charter["actions"],
+            "slug": charter["slug"], "actions": charter["actions"], "tools": charter["tools"],
             "max_iterations": charter["max_iterations"], "budget": charter["budget"],
             "clamped": charter["clamped"], "created_by": run_id})
-        return {"ok": True, "slug": charter["slug"], "actions": charter["actions"],
+        return {"ok": True, "slug": charter["slug"], "state": spec["state"],
+                "actions": charter["actions"], "tools": charter["tools"],
                 "max_iterations": charter["max_iterations"], "budget": charter["budget"],
                 "clamped": charter["clamped"]}
 
     # ---- action execution (deterministic gate) ----
 
-    def _exec_action(self, action, args, run_id, intent_id, seq, produced):
+    def _exec_action(self, action, args, run_id, intent_id, seq, produced, charter=None):
         if action == "list_capabilities":
             return self._capabilities()
         if action == "create_specialist":
@@ -452,6 +459,10 @@ class AgentRunner:
             if refused:
                 return refused
             params = args.get("params", {})
+            tools = (charter or {}).get("tools")
+            if tools is not None and tool not in tools:
+                return {"error": f"tool {tool!r} is not in this charter's tool surface "
+                                 f"{sorted(tools)}; use a permitted tool or ask for a new specialist"}
             target = params.get("target") or params.get("url") or params.get("domain") or ""
             r = self.runner.run(spec, params, self.scope, self.eng, intent_id, target)
             self._step(run_id, intent_id, seq, "tool_call", f"tool {tool} {target}: {r.get('status')}",
@@ -531,16 +542,30 @@ class AgentRunner:
             role = args.get("role")
             specialist = None
             if role not in CHARTERS:
-                specialist = specialists.resolve(self.db, self.eng, role)
+                # a specialist must be registered for THIS engagement and still runnable
+                specialist = specialists.get(self.db, self.eng, role)
                 if specialist is None:
                     return {"error": f"unknown role {role!r}; built-in roles are {sorted(CHARTERS)} "
                                      f"and a specialist must be created first via create_specialist"}
+                if specialist["state"] not in specialists.RUNNABLE:
+                    return {"error": f"specialist {role!r} is {specialist['state']}, not runnable; "
+                                     f"create a new specialist for further work"}
+                # its actual capabilities must sit inside the engagement's profile
+                denied = specialists.denied_units(specialist["charter"], self.profile)
+                if denied:
+                    self.db.emit(self.eng, "degradation", {
+                        "code": "policy_restriction", "unit": ", ".join(denied),
+                        "specialist": role,
+                        "detail": f"specialist {role!r} needs {', '.join(denied)}, which the "
+                                  f"{self.profile!r} profile forbids: not delegated"})
+                    specialists.transition(self.db, self.eng, role, "failed",
+                                           f"policy restriction: {', '.join(denied)}")
+                    return {"error": f"specialist {role!r} is not permitted by the "
+                                     f"{self.profile!r} profile: {', '.join(denied)}"}
             else:
                 refused = self._refused(role)  # a built-in role needs its profile
                 if refused:
                     return refused
-            # A generated specialist has no policy entry: its authority is its action
-            # list, and every action is gated on its own unit in this method.
             target = args.get("target", "")
             if target:
                 d = self.scope.check_url(target) if "://" in target else self.scope.check_host_port(target, 0)
@@ -561,9 +586,10 @@ class AgentRunner:
             if remaining <= 0:
                 return {"ok": True, "intent_id": iid, "role": role,
                         "error": "engagement budget spent; the specialist was not started"}
-            charter = {**specialist, "budget": {
-                "max_usd": min(float(specialist["budget"].get("max_usd") or remaining), remaining),
-                "max_duration_s": specialist["budget"].get("max_duration_s")}}
+            stored = specialist["charter"]
+            charter = {**stored, "budget": {
+                "max_usd": min(float(stored["budget"].get("max_usd") or remaining), remaining),
+                "max_duration_s": stored["budget"].get("max_duration_s")}}
             res = self.run({"id": iid, "objective": args.get("objective", ""), "role": role},
                            role, charter=charter)
             self.db.execute("UPDATE intents SET status=? WHERE id=?",
@@ -580,7 +606,7 @@ class AgentRunner:
             return {"ok": True, "finish": True, "summary": args.get("summary", "")}
         return {"error": f"unknown action {action}"}
 
-    def _context(self):
+    def _context(self, limit: int | None = None):
         """Bounded working memory: recent observations verbatim, older ones summarised.
 
         Deterministic (no extra model call): counts by kind plus a few samples, so a
@@ -613,13 +639,23 @@ class AgentRunner:
                 "samples": [(o["kind"], (o["summary"] or "")[:100]) for o in older[:3]]},
         }
         # deterministic trim: the newest evidence-bearing detail outranks the rest
-        return _trim(ctx, ("assets", "findings", "hypotheses", "recent_observations"))
+        return _trim(ctx, ("assets", "findings", "hypotheses", "recent_observations"),
+                     limit or CONTEXT_CHARS)
 
     # ---- the investigation loop ----
 
     def run(self, intent: dict, role: str, charter: dict | None = None) -> dict:
-        charter = charter or CHARTERS.get(role) or specialists.resolve(self.db, self.eng, role) \
-            or CHARTERS["web"]
+        """One investigation loop. A registered specialist's row follows the run.
+
+        The role is resolved from the built-in charters or the engagement's own
+        registry, never invented: an unregistered name has no charter and no run.
+        """
+        specialist = None if role in CHARTERS else specialists.get(self.db, self.eng, role)
+        if charter is None:
+            charter = CHARTERS.get(role) or (specialist["charter"] if specialist else None)
+        if charter is None:
+            raise ValueError(f"unknown role {role!r}: not a built-in charter or a specialist "
+                             f"registered for this engagement")
         run_id = new_id("run")
         model = self.llm.model_for(role)
         now = time.time()
@@ -627,7 +663,10 @@ class AgentRunner:
             "INSERT INTO agent_runs(id, engagement_id, intent_id, role, model, status, started_at) "
             "VALUES(?,?,?,?,?,?,?)", (run_id, self.eng, intent["id"], role, model, "running", now))
         self.db.emit(self.eng, "agent_run_started", {"run_id": run_id, "role": role, "model": model})
+        if specialist is not None:
+            specialists.transition(self.db, self.eng, role, "running", f"agent run {run_id} started")
         actions = charter["actions"]
+        context_limit = min(int(charter.get("context_chars") or CONTEXT_CHARS), CONTEXT_CHARS)
         tool_schemas = ""
         if "run_tool" in actions:
             specs = [s.schema() for s in self.registry.tools.values()
@@ -662,13 +701,14 @@ class AgentRunner:
         max_iter = charter["max_iterations"]
         while iterations < max_iter:
             iterations += 1
-            ctx = self._context()
+            ctx = self._context(context_limit)
             workmem = {"objective": objective[:400],
                        "evidence_collected": produced["evidence"][-8:],
                        "findings_proposed": produced["findings"][-8:],
                        "checks_completed": sorted(checks_done)[:40], **ctx}
             workmem = _trim(workmem, ("checks_completed", "evidence_collected", "findings_proposed",
-                                      "assets", "findings", "hypotheses", "recent_observations"))
+                                      "assets", "findings", "hypotheses", "recent_observations"),
+                            context_limit)
             prev = json.dumps(history[-1], default=str)[:PREV_CHARS] if history else "none (first action)"
             covered = len({c.split("|")[0] for c in checks_done})
             converge_hint = (" Coverage of check classes is broad; if the surface is assessed, "
@@ -680,6 +720,12 @@ class AgentRunner:
                       "choose a new endpoint/class or finish." + converge_hint)
             try:
                 out = self.llm.complete(role, system, user, self.eng, json_schema={"type": "object"})
+            except BudgetExceeded as e:
+                # the ledger refused the reservation before the call: stop, never
+                # report the investigation as finished
+                exit_reason = "budget_exhausted"
+                summary = f"Stopped: {e}"
+                break
             except LLMError as e:
                 exit_reason = "model_failed"
                 summary = str(e)
@@ -738,7 +784,7 @@ class AgentRunner:
             # the run: it degrades to an error the model can react to
             try:
                 result = self._exec_action(action, args, run_id, intent["id"], iterations,
-                                           produced)
+                                           produced, charter)
             except Exception as e:
                 result = {"error": f"{type(e).__name__}: {e}"[:300]}
                 self._step(run_id, intent["id"], iterations, "tool_call",
@@ -760,6 +806,12 @@ class AgentRunner:
         self.db.emit(self.eng, "agent_run_finished",
                      {"run_id": run_id, "role": role, "status": status, "exit_reason": exit_reason,
                       "iterations": iterations, "findings": len(produced["findings"]), "cost_usd": round(cost, 4)})
+        if specialist is not None:
+            # the registry follows the run's own verdict: never "completed" for a run
+            # that was stopped (budget, model failure, no action)
+            specialists.transition(self.db, self.eng, role,
+                                   "completed" if status == "completed" else status,
+                                   f"{exit_reason}: {summary or 'no summary'}"[:300])
         return {"run_id": run_id, "role": role, "status": status, "exit_reason": exit_reason,
                 "iterations": iterations, "findings": produced["findings"],
                 "evidence_ids": produced["evidence"],

@@ -107,10 +107,12 @@ class Orchestrator:
                              "in Settings or start in deterministic mode")
 
     def cancel(self, engagement_id: str):
+        from . import specialists
         self.db.execute("UPDATE engagements SET status='cancelled', finished_at=? WHERE id=?",
                         (time.time(), engagement_id))
         self.db.execute("UPDATE intents SET status='stopped' WHERE engagement_id=? AND status IN ('open','running')",
                         (engagement_id,))
+        specialists.cancel_running(self.db, engagement_id)
         self.db.emit(engagement_id, "engagement_cancelled", {})
 
     def pause(self, engagement_id: str):
@@ -118,6 +120,7 @@ class Orchestrator:
         self.db.emit(engagement_id, "engagement_paused", {})
 
     def resume(self, engagement_id: str, mode: str = "deterministic"):
+        from . import specialists
         eng = self.db.one("SELECT * FROM engagements WHERE id=?", (engagement_id,))
         self._check_mode(mode)
         scope = Scope(json.loads(eng["scope_json"]))
@@ -126,6 +129,10 @@ class Orchestrator:
         self.gate = self._gate_for(scope)
         self.db.execute("UPDATE engagements SET status='running' WHERE id=?", (engagement_id,))
         self.db.emit(engagement_id, "engagement_resumed", {"mode": mode})
+        # a specialist left 'running' by the interrupted run is re-opened like the
+        # intents whose expired leases _run_loop sweeps; the claim token still fences
+        # the dead worker out
+        specialists.reopen_running(self.db, engagement_id)
         self._run_loop(engagement_id, scope, eng, mode)
 
     def _window_allows(self, engagement_id: str, eng: dict) -> bool:
@@ -166,8 +173,12 @@ class Orchestrator:
     def _add_intent(self, engagement_id, role, objective, depends=None, informed=None, assets=None):
         profile = self._profile(engagement_id)
         if not permits(role, profile):
-            self._policy_skip(engagement_id, role, profile)
-            return None
+            from . import specialists
+            # a registered specialist is a schedulable role; its charter's own
+            # capabilities are policy-checked when it is executed
+            if specialists.get(self.db, engagement_id, role) is None:
+                self._policy_skip(engagement_id, role, profile)
+                return None
         iid = new_id("i")
         self.db.execute(
             "INSERT INTO intents(id, engagement_id, role, objective, status, depends_on_json, "
@@ -428,9 +439,12 @@ class Orchestrator:
             (engagement_id, time.time()))
 
     def _finish(self, engagement_id: str, status: str, detail: str):
+        from . import specialists
         self.db.execute("UPDATE engagements SET status=?, finished_at=?, status_detail=? WHERE id=?",
                         (status, time.time(), detail, engagement_id))
         self.db.emit(engagement_id, "engagement_finished", {"status": status, "detail": detail})
+        # a specialist registered but never reached by this run expires with it
+        specialists.expire_unrun(self.db, engagement_id)
         if status in ("done", "budget_exhausted", "window_closed"):
             # independent verification + report always run at termination, so findings
             # are validated and reported even if the investigation budget capped early.
@@ -464,10 +478,43 @@ class Orchestrator:
     def _execute(self, engagement_id: str, scope: Scope, eng: dict, intent: dict,
                  mode: str = "deterministic") -> tuple[str, dict]:
         """Run one intent; return (intent status, result) so the caller records it honestly."""
+        from . import specialists
+        from .agent_runtime import AgentRunner, CHARTERS
         role = intent["role"]
         obj = intent["objective"]
         profile = eng.get("profile") or DEFAULT_PROFILE
-        if not permits(role, profile):
+        specialist = None
+        if role not in CHARTERS and role not in ROLES:
+            # any other role must be a specialist registered for THIS engagement:
+            # an arbitrary role name was never granted authority
+            if mode == "agent" and self.llm:
+                specialist = specialists.get(self.db, engagement_id, role)
+            if specialist is None:
+                self.db.emit(engagement_id, "degradation", {
+                    "code": "unknown_specialist", "intent_id": intent["id"], "role": role,
+                    "detail": f"intent role {role!r} is not a built-in role and no specialist by "
+                              f"that slug is registered for this engagement: refused"})
+                return "exhausted", {"skipped": "unknown_specialist", "role": role}
+            if specialist["state"] not in specialists.RUNNABLE:
+                self.db.emit(engagement_id, "degradation", {
+                    "code": "specialist_not_runnable", "intent_id": intent["id"],
+                    "specialist": role, "state": specialist["state"],
+                    "detail": f"specialist {role!r} is {specialist['state']}: not run again"})
+                return "exhausted", {"skipped": "specialist_not_runnable", "specialist": role}
+            denied = specialists.denied_units(specialist["charter"], profile)
+            if denied:
+                # the charter's ACTUAL capabilities decide, not its name: a passive
+                # engagement must not run a specialist that can do active work
+                self.db.emit(engagement_id, "degradation", {
+                    "code": "policy_restriction", "unit": ", ".join(denied), "specialist": role,
+                    "intent_id": intent["id"],
+                    "detail": f"specialist {role!r} needs {', '.join(denied)}, which the "
+                              f"{profile!r} profile forbids: not run"})
+                specialists.transition(self.db, engagement_id, role, "failed",
+                                       f"policy restriction: {', '.join(denied)}")
+                return "exhausted", {"skipped": "policy_restriction", "specialist": role,
+                                     "units": denied}
+        elif not permits(role, profile):
             # defense in depth: a pre-existing or model-proposed intent is not authority
             self._policy_skip(engagement_id, role, profile, intent["id"])
             return "exhausted", {"skipped": "policy_restriction", "profile": profile}
@@ -475,11 +522,16 @@ class Orchestrator:
         # agent mode: genuine specialist investigation via the autonomous runtime.
         # verification and reporting stay deterministic/independent in every mode.
         if mode == "agent" and self.llm and role not in ("verify", "report"):
-            from .agent_runtime import AgentRunner, CHARTERS
-            if role in CHARTERS:
+            if role in CHARTERS or specialist is not None:
                 ar = AgentRunner(self.db, self.evidence, self.pipeline, self.probe,
                                  self.registry, self.runner, self.llm, scope, engagement_id)
-                res = ar.run(intent, role)
+                charter = None
+                if specialist is not None:
+                    specialists.transition(self.db, engagement_id, role, "scheduled",
+                                           f"intent {intent['id']} claimed")
+                    charter = specialist["charter"]
+                res = (ar.run(intent, role) if charter is None
+                       else ar.run(intent, role, charter=charter))
                 result = {"agent_run": res["run_id"], "exit_reason": res["exit_reason"]}
                 if res["status"] != "completed":
                     # a run that did not finish its investigation is not a pass
