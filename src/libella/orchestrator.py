@@ -33,7 +33,8 @@ from .verifier import Verifier
 LEASE_S = 120
 MODES = ("deterministic", "llm", "agent")
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
-         "code_audit", "api_audit", "container_scan", "graphql_audit"}
+         "code_audit", "api_audit", "container_scan", "graphql_audit",
+         "jwt_audit", "oauth_audit", "session_audit", "privesc_audit"}
 
 
 class ConcurrencyGate:
@@ -217,6 +218,22 @@ class Orchestrator:
         if auth.get("openapi") and urls:
             audit_ids.append(self._add_intent(engagement_id, "api_audit",
                                               f"OpenAPI-driven API audit {urls[0]}", depends=recon_ids))
+        if ((auth.get("test_hints") or {}).get("jwt")) and urls:
+            audit_ids.append(self._add_intent(engagement_id, "jwt_audit",
+                                              "Self-contained token attacks on the declared verifier",
+                                              depends=recon_ids))
+        if auth.get("oauth") and urls:
+            audit_ids.append(self._add_intent(engagement_id, "oauth_audit",
+                                              f"OAuth client audit {auth['oauth']}",
+                                              depends=recon_ids))
+        if auth.get("session") and urls:
+            audit_ids.append(self._add_intent(engagement_id, "session_audit",
+                                              "Session lifecycle audit for the declared identity",
+                                              depends=recon_ids))
+        if len(auth.get("identities") or []) >= 2 and urls:
+            audit_ids.append(self._add_intent(engagement_id, "privesc_audit",
+                                              "Role matrix across the declared identities",
+                                              depends=recon_ids))
         if auth.get("graphql"):
             audit_ids.append(self._add_intent(engagement_id, "graphql_audit",
                                               f"GraphQL audit {auth['graphql']}", depends=recon_ids))
@@ -557,6 +574,14 @@ class Orchestrator:
             self._do_code_audit(engagement_id, scope, obj, intent["id"])
         elif role == "api_audit":
             self._do_api_audit(engagement_id, scope, eng, obj, intent["id"])
+        elif role == "jwt_audit":
+            self._do_jwt_audit(engagement_id, scope, eng, intent["id"])
+        elif role == "oauth_audit":
+            self._do_oauth_audit(engagement_id, scope, eng, intent["id"])
+        elif role == "session_audit":
+            self._do_session_audit(engagement_id, scope, eng, intent["id"])
+        elif role == "privesc_audit":
+            self._do_privesc_audit(engagement_id, scope, eng, intent["id"])
         elif role == "container_scan":
             self._do_container_scan(engagement_id, scope, obj, intent["id"])
         elif role == "graphql_audit":
@@ -934,6 +959,28 @@ class Orchestrator:
         from .api_audit import assess_api
         assess_api(url, openapi, auth.get("identities", []), self.db, self.evidence,
                    self.pipeline, self.probe, scope, engagement_id)
+
+    # ---- offensive audits: each needs a declared target in auth_json ----
+
+    def _do_jwt_audit(self, engagement_id, scope, eng, intent_id):
+        from .jwt_audit import audit_jwt
+        audit_jwt(self.db, self.evidence, self.probe, scope, engagement_id,
+                  json.loads(eng["auth_json"]), self.pipeline, intent_id)
+
+    def _do_oauth_audit(self, engagement_id, scope, eng, intent_id):
+        from .oauth_audit import audit_oauth
+        audit_oauth(self.db, self.evidence, self.probe, scope, engagement_id,
+                    json.loads(eng["auth_json"]), self.pipeline, intent_id)
+
+    def _do_session_audit(self, engagement_id, scope, eng, intent_id):
+        from .session_audit import audit_session
+        audit_session(self.db, self.evidence, self.probe, scope, engagement_id,
+                      json.loads(eng["auth_json"]), self.pipeline, intent_id)
+
+    def _do_privesc_audit(self, engagement_id, scope, eng, intent_id):
+        from .privesc_audit import audit_role_matrix
+        audit_role_matrix(self.db, self.evidence, self.probe, scope, engagement_id,
+                          json.loads(eng["auth_json"]), self.pipeline, intent_id)
 
     def _do_container_scan(self, engagement_id, scope, obj, intent_id):
         image = obj.split()[-1]

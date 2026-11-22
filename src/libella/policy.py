@@ -23,6 +23,9 @@ MIN_PROFILE = {
     "web_checks": "passive", "code_audit": "passive", "container_scan": "passive",
     "nuclei_scan": "safe_active", "infra_scan": "safe_active",
     "api_audit": "safe_active", "graphql_audit": "safe_active",
+    # offence: token, OAuth, session and role-boundary audits are active but bounded
+    "jwt_audit": "safe_active", "oauth_audit": "safe_active",
+    "session_audit": "safe_active", "privesc_audit": "safe_active",
     # agent specialist roles
     "web": "safe_active", "api": "safe_active", "authz": "safe_active",
     "infra": "safe_active", "correlator": "passive", "risk": "passive",
