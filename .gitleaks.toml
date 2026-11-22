@@ -18,4 +18,10 @@ paths = [
   "labs/vulnrepo/app/signing.py",
   "labs/tlslab/certs/",
   "benchmarks/check_target_credentials_ui.py",
+  # a hand-written JWT for the PDF/HTML injection test: header/payload are the
+  # literal string above it and the signature is "signature_for_audit2_test_only"
+  "tests/audit2/test_report_pdf_injection.py",
+  # pinned upstream commit ids for the standards catalogs (40 hex chars, flagged
+  # as a generic key); they are public commit hashes, not credentials
+  "scripts/import_standards.py",
 ]
