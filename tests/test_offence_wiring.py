@@ -126,3 +126,33 @@ def test_a_blocked_audit_is_inconclusive_not_a_pass(tmp_path):
     status = flat["WSTG-ATHZ-02"]["automatic"]["status"]
     assert status == "inconclusive", status
     assert flat["WSTG-ATHZ-02"]["automatic"]["status"] != "completed_no_issue"
+
+
+def test_impact_proof_is_planned_only_when_a_lab_is_authorized(tmp_path):
+    allowed = _app(tmp_path / "a", {"identities": IDENTITIES,
+                                    "test_hints": {"impact_proof": {"lab": True}}})
+    orch = allowed.orchestrator()
+    eng = allowed.db.one("SELECT * FROM engagements WHERE id='eng'")
+    orch._plan_deterministic("eng", Scope(json.loads(eng["scope_json"])), eng)
+    assert "impact_proof" in _roles(allowed), _roles(allowed)
+
+    denied = _app(tmp_path / "b", {"identities": IDENTITIES,
+                                   "test_hints": {"impact_proof": {"lab": False}}})
+    orch2 = denied.orchestrator()
+    eng2 = denied.db.one("SELECT * FROM engagements WHERE id='eng'")
+    orch2._plan_deterministic("eng", Scope(json.loads(eng2["scope_json"])), eng2)
+    assert "impact_proof" not in _roles(denied)
+
+
+def test_impact_proof_runs_after_verify_and_before_report(tmp_path):
+    app = _app(tmp_path, {"identities": IDENTITIES,
+                          "test_hints": {"impact_proof": {"lab": True}}})
+    orch = app.orchestrator()
+    eng = app.db.one("SELECT * FROM engagements WHERE id='eng'")
+    orch._plan_deterministic("eng", Scope(json.loads(eng["scope_json"])), eng)
+    rows = {r["role"]: r for r in app.db.query(
+        "SELECT id, role, depends_on_json FROM intents WHERE engagement_id='eng'")}
+    verify = rows["verify"]["id"]
+    imp = rows["impact_proof"]
+    assert verify in (imp["depends_on_json"] or ""), imp
+    assert imp["id"] in (rows["report"]["depends_on_json"] or ""), rows["report"]

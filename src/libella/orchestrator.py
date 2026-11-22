@@ -35,7 +35,7 @@ MODES = ("deterministic", "llm", "agent")
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
          "code_audit", "api_audit", "container_scan", "graphql_audit",
          "jwt_audit", "oauth_audit", "session_audit", "privesc_audit",
-         "injection_audit", "web_protocol_audit"}
+         "injection_audit", "web_protocol_audit", "impact_proof"}
 
 
 class ConcurrencyGate:
@@ -258,8 +258,16 @@ class Orchestrator:
         verify_id = self._add_intent(engagement_id, "verify",
                                      "Independently verify all candidate findings",
                                      depends=check_ids + audit_ids)
+        # impact proof is a SEPARATE dimension: verified means reproduced, not "impact
+        # demonstrated". It runs only when the operator authorizes a lab.
+        report_deps = [verify_id]
+        if ((auth.get("test_hints") or {}).get("impact_proof") or {}).get("lab") is True:
+            report_deps.append(self._add_intent(
+                engagement_id, "impact_proof",
+                "Demonstrate impact for validated findings (authorized lab)",
+                depends=[verify_id]))
         self._add_intent(engagement_id, "report", "Render assessment report",
-                         depends=[verify_id])
+                         depends=report_deps)
 
     def _plan_llm(self, engagement_id: str, scope: Scope, eng: dict):
         """LLM proposes additional intents; compile gate validates before write."""
@@ -578,6 +586,8 @@ class Orchestrator:
             self._do_nuclei(engagement_id, scope, obj, intent["id"])
         elif role == "infra_scan":
             self._do_infra(engagement_id, scope, obj, intent["id"])
+        elif role == "impact_proof":
+            self._do_impact_proof(engagement_id, scope, eng, intent["id"])
         elif role == "verify":
             self._do_verify(engagement_id, scope)
         elif role == "code_audit":
@@ -944,6 +954,22 @@ class Orchestrator:
             self._upsert_asset(engagement_id, "host", h["addr"], {"ports": h["ports"]}, by="nmap")
             for p in h["ports"]:
                 self._upsert_asset(engagement_id, "service", f"{h['addr']}:{p['port']}", p, by="nmap")
+
+    def _do_impact_proof(self, engagement_id, scope, eng, intent_id):
+        """Demonstrate impact for already-validated findings, lab-authorised only.
+
+        The module re-checks the lab flag and scope on every call; this only picks
+        which findings are eligible (verified ones) so a suspected signal is never
+        dressed up as demonstrated impact.
+        """
+        from .impact_proof import prove_impact
+        auth = json.loads(eng["auth_json"])
+        findings = self.db.query(
+            "SELECT * FROM findings WHERE engagement_id=? AND state IN "
+            "('validated','reported','retested_persists')", (engagement_id,))
+        for f in findings:
+            prove_impact(self.db, self.evidence, self.probe, scope, engagement_id, f,
+                         auth, self.pipeline, intent_id)
 
     def _do_verify(self, engagement_id, scope):
         findings = self.db.query(

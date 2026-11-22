@@ -27,6 +27,7 @@ MIN_PROFILE = {
     "jwt_audit": "safe_active", "oauth_audit": "safe_active",
     "session_audit": "safe_active", "privesc_audit": "safe_active",
     "injection_audit": "safe_active", "web_protocol_audit": "safe_active",
+    "impact_proof": "safe_active",
     # agent specialist roles
     "web": "safe_active", "api": "safe_active", "authz": "safe_active",
     "infra": "safe_active", "correlator": "passive", "risk": "passive",

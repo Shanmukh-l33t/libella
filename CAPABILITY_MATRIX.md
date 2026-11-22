@@ -127,6 +127,7 @@ REAL-TARGET = exercised against an authorized external site.
 | Web protocol (host header, cache, HPP, verb, smuggling detect) | `web_protocol_audit.py` | VERIFIED unit/lab, WIRED | 12 tests; smuggling opt-in |
 | Registered specialists the scheduler runs | `specialists.py`, `orchestrator.py` | VERIFIED | lifecycle + capability admission tests |
 | Atomic spend reservations (concurrency-safe ceiling) | `budget.py` | VERIFIED | 8-thread boundary + crash expiry tests |
+| Impact demonstration (SQLi data, cross-identity, command execution) | `impact_proof.py` | VERIFIED unit/lab, WIRED | 9 tests; lab flag + read-only allowlist + scope gate |
 | Dial-time egress on every path | `egress.py` | VERIFIED, REAL-TARGET | KeyReed: 200/47KB read, 0 denials after alias fix |
 | WAF challenge classified, not scored | `http_probe.mitigation` | VERIFIED, REAL-TARGET | KeyReed: 114 challenge responses -> inconclusive |
 
