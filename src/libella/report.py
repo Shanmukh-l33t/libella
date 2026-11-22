@@ -292,6 +292,29 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
             md.append(f"- Independent verification: **{last['verdict']}** ({last['detail']})")
         md.append(f"- Evidence: {', '.join('`'+e+'`' for e in f['evidence_ids'])}")
         md.append("")
+    # Impact is a separate dimension from verification: a verified finding is a
+    # reproduced signal, not proof of what it costs. Say which, explicitly.
+    impact = db.query("SELECT kind, summary, quote, evidence_id FROM observations "
+                      "WHERE engagement_id=? AND kind='impact_demonstrated' "
+                      "ORDER BY rowid", (engagement_id,))
+    report["impact"] = [{"summary": _safe(o["summary"]), "quote": _safe(o["quote"]),
+                         "evidence_id": _safe(o["evidence_id"])} for o in impact]
+    md.append("\n## Demonstrated impact\n")
+    if report["impact"]:
+        for o in report["impact"]:
+            md.append(f"- {o['summary']}")
+            if o["quote"]:
+                md.append(f"  - observed: `{o['quote']}`")
+            if o["evidence_id"]:
+                md.append(f"  - evidence: `{o['evidence_id']}`")
+    elif any(f["verified"] for f in report["findings"]):
+        md.append("Verified findings reproduced their recorded signal; none was taken further to a "
+                  "demonstrated impact in this engagement. Impact proof requires an explicitly "
+                  "authorized lab, so nothing here shows what an attacker would gain.")
+    else:
+        md.append("Nothing was verified, so no impact could be demonstrated.")
+    md.append("")
+
     md.append("\n## Method\n")
     md.append("Reconnaissance and crawling, deterministic web checks, template scanning (where available), "
               "independent replay verification of every candidate finding. Every tool call was scope-checked "
