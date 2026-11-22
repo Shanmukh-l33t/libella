@@ -34,7 +34,8 @@ LEASE_S = 120
 MODES = ("deterministic", "llm", "agent")
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
          "code_audit", "api_audit", "container_scan", "graphql_audit",
-         "jwt_audit", "oauth_audit", "session_audit", "privesc_audit"}
+         "jwt_audit", "oauth_audit", "session_audit", "privesc_audit",
+         "injection_audit", "web_protocol_audit"}
 
 
 class ConcurrencyGate:
@@ -233,6 +234,15 @@ class Orchestrator:
         if len(auth.get("identities") or []) >= 2 and urls:
             audit_ids.append(self._add_intent(engagement_id, "privesc_audit",
                                               "Role matrix across the declared identities",
+                                              depends=recon_ids))
+        hints = auth.get("test_hints") or {}
+        if (hints.get("injection") or {}).get("targets") and urls:
+            audit_ids.append(self._add_intent(engagement_id, "injection_audit",
+                                              "Injection depth on the declared parameters",
+                                              depends=recon_ids))
+        if hints.get("web_protocol") and urls:
+            audit_ids.append(self._add_intent(engagement_id, "web_protocol_audit",
+                                              "Web protocol attacks on the declared endpoint",
                                               depends=recon_ids))
         if auth.get("graphql"):
             audit_ids.append(self._add_intent(engagement_id, "graphql_audit",
@@ -582,6 +592,10 @@ class Orchestrator:
             self._do_session_audit(engagement_id, scope, eng, intent["id"])
         elif role == "privesc_audit":
             self._do_privesc_audit(engagement_id, scope, eng, intent["id"])
+        elif role == "injection_audit":
+            self._do_injection_audit(engagement_id, scope, eng, intent["id"])
+        elif role == "web_protocol_audit":
+            self._do_web_protocol_audit(engagement_id, scope, eng, intent["id"])
         elif role == "container_scan":
             self._do_container_scan(engagement_id, scope, obj, intent["id"])
         elif role == "graphql_audit":
@@ -981,6 +995,16 @@ class Orchestrator:
         from .privesc_audit import audit_role_matrix
         audit_role_matrix(self.db, self.evidence, self.probe, scope, engagement_id,
                           json.loads(eng["auth_json"]), self.pipeline, intent_id)
+
+    def _do_injection_audit(self, engagement_id, scope, eng, intent_id):
+        from .injection_audit import audit_injection
+        audit_injection(self.db, self.evidence, self.probe, scope, engagement_id,
+                        json.loads(eng["auth_json"]), self.pipeline, intent_id)
+
+    def _do_web_protocol_audit(self, engagement_id, scope, eng, intent_id):
+        from .web_protocol_audit import audit_web_protocol
+        audit_web_protocol(self.db, self.evidence, self.probe, scope, engagement_id,
+                           json.loads(eng["auth_json"]), self.pipeline, intent_id)
 
     def _do_container_scan(self, engagement_id, scope, obj, intent_id):
         image = obj.split()[-1]

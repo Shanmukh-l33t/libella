@@ -52,6 +52,16 @@ def test_planner_creates_each_audit_only_for_a_declared_target(tmp_path):
     assert {"jwt_audit", "oauth_audit", "session_audit", "privesc_audit"} <= roles
 
 
+def test_planner_creates_the_protocol_and_injection_audits_from_hints(tmp_path):
+    app = _app(tmp_path, {"test_hints": {
+        "injection": {"targets": [{"url": BASE + "/xml", "param": "body"}]},
+        "web_protocol": {"url": BASE + "/"}}})
+    orch = app.orchestrator()
+    eng = app.db.one("SELECT * FROM engagements WHERE id='eng'")
+    orch._plan_deterministic("eng", Scope(json.loads(eng["scope_json"])), eng)
+    assert {"injection_audit", "web_protocol_audit"} <= _roles(app)
+
+
 def test_nothing_is_planned_without_the_configuration_it_needs(tmp_path):
     app = _app(tmp_path, {"identities": [IDENTITIES[0]]})  # one identity, no hints
     orch = app.orchestrator()
@@ -65,6 +75,8 @@ def test_nothing_is_planned_without_the_configuration_it_needs(tmp_path):
     ("oauth_audit", "oauth_audit", "audit_oauth"),
     ("session_audit", "session_audit", "audit_session"),
     ("privesc_audit", "privesc_audit", "audit_role_matrix"),
+    ("injection_audit", "injection_audit", "audit_injection"),
+    ("web_protocol_audit", "web_protocol_audit", "audit_web_protocol"),
 ])
 def test_executor_dispatches_each_audit_with_the_engagement_context(tmp_path, monkeypatch,
                                                                    role, module, func):
@@ -91,6 +103,7 @@ def test_executor_dispatches_each_audit_with_the_engagement_context(tmp_path, mo
 
 def test_an_audit_role_is_policy_gated(tmp_path):
     from libella.policy import permits
-    for role in ("jwt_audit", "oauth_audit", "session_audit", "privesc_audit"):
+    for role in ("jwt_audit", "oauth_audit", "session_audit", "privesc_audit",
+                 "injection_audit", "web_protocol_audit"):
         assert permits(role, "safe_active"), role
         assert not permits(role, "passive"), role
