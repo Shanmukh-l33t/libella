@@ -24,12 +24,12 @@ import urllib.request
 
 REPO = "https://raw.githubusercontent.com/OWASP/ASVS"
 # Pinned import point: the 5.0.0 export as it stands in the OWASP repository.
-ASVS_SHA = "82fb2f41cdb623e0b11e4d9a6b97c4306c1d119c"
+ASVS_SHA = "82fb2f41cdb623e0b11e4d9a6b97c4306c1d119c"  #gitleaks:allow (commit id, not a key)
 OUT = pathlib.Path(__file__).resolve().parent.parent / "src/libella/standards_data/asvs-5.0.0.json"
 FLAT = "5.0/docs_en/OWASP_Application_Security_Verification_Standard_5.0.0_en.flat.json"
 # OWASP API Security Top 10 2023, from the project's own repository (CC BY-SA 4.0)
 API_REPO = "https://raw.githubusercontent.com/OWASP/API-Security"
-API_SHA = "33cea37b2ffde3e2e62f6b5d79a029a22a846633"
+API_SHA = "33cea37b2ffde3e2e62f6b5d79a029a22a846633"  #gitleaks:allow (commit id, not a key)
 API_OUT = OUT.parent / "api-top10-2023.json"
 API_INDEX = "editions/2023/en/0x11-t10.md"
 
