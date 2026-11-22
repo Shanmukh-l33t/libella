@@ -200,15 +200,25 @@ def main(out: Path) -> int:
                 assert drawer.get_by_label("Review note").input_value() == NOTE
                 expect(drawer.get_by_text("What remains untested", exact=False)).to_have_count(0)
 
-                # 7. the evidence link lands on a page that renders that finding
+                # 7. analyst attribution correction is offered here and records history
                 link = drawer.get_by_role("link", name=re.compile("Missing security headers")).first
                 finding_id = link.get_attribute("href").rsplit("/", 1)[-1]
+                drawer.get_by_label("Link finding").select_option(finding_id)
+                drawer.get_by_label("Link note").fill("Attribution reviewed: the header evidence is this requirement's.")
+                drawer.get_by_role("button", name="Record attribution").click()
+                expect(drawer.get_by_text("Recorded: add", exact=False)).to_be_visible(timeout=15000)
+                drawer.evaluate("el => el.scrollTo(0, el.scrollHeight)")
+                page.wait_for_timeout(150)
+                page.screenshot(path=out / "standards-drawer-review-1440.png")
+                drawer.evaluate("el => el.scrollTo(0, 0)")
+
+                # 8. the evidence link lands on a page that renders that finding
                 link.click()
                 page.wait_for_url(re.compile(r"/findings/f_"), timeout=15000)
                 expect(page.get_by_text(finding_id, exact=False).first).to_be_visible(timeout=15000)
                 expect(page.get_by_text("Missing security headers", exact=False).first).to_be_visible()
 
-                # 8. report download through the existing export
+                # 9. report download through the existing export
                 page.goto(f"{base}/coverage?engagement={eid}&framework=asvs")
                 connect()  # a full navigation drops the in-memory token
                 expect(page.get_by_test_id("summary-not_tested")).to_be_visible(timeout=15000)
@@ -216,7 +226,7 @@ def main(out: Path) -> int:
                     page.get_by_role("button", name="Coverage report (MD)").click()
                 assert dl.value.suggested_filename.endswith("-coverage.md"), dl.value.suggested_filename
 
-                # 9. desktop + mobile screenshots of the ledger itself
+                # 10. desktop + mobile screenshots of the ledger itself
                 page.locator('[data-testid="chapter"] button[aria-expanded]').first.click()
                 page.evaluate("window.scrollTo(0, 0)")
                 page.wait_for_timeout(150)
