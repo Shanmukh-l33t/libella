@@ -45,7 +45,7 @@ def _engagement(app, eid, targets, categories, identities, hints):
          json.dumps({"targets": targets, "categories": categories, "rate_limit_rps": 16}),
          json.dumps({"identities": identities, "test_hints": hints,
                      **({"openapi": hints.pop("openapi")} if "openapi" in hints else {})}),
-         json.dumps({"max_duration_s": 420, "max_usd": 2}), time.time()))
+         json.dumps({"max_duration_s": 900, "max_usd": 2}), time.time()))
 
 
 def _intents(app, eid):

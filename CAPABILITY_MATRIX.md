@@ -119,10 +119,10 @@ REAL-TARGET = exercised against an authorized external site.
 | One coverage ledger, per-requirement strength | `coverage.py` | VERIFIED | 26/253 ASVS L2 executed on PairLab, 227 honestly untested |
 | Structured control ids (no title/CWE-only attribution) | `controls.py` | VERIFIED | negative controls incl. misleading title |
 | Analyst attribution add/remove with history | `coverage.link` | VERIFIED | route + append-only history test |
-| JWT attacks (alg none, confusion, weak secret, kid, claims) | `jwt_audit.py` | VERIFIED unit/lab, WIRED | 6 tests, hardened lab control |
+| JWT attacks (alg none, confusion, weak secret, kid, claims) | `jwt_audit.py` | VERIFIED unit/lab, WIRED, JOINT | 4 validated findings in the joint acceptance |
 | OAuth/OIDC misconfiguration | `oauth_audit.py` | VERIFIED unit/lab, WIRED | 10 tests |
 | Session lifecycle (fixation, logout, cookie scope) | `session_audit.py` | VERIFIED unit/lab, WIRED | 7 tests |
-| Role matrix privilege escalation | `privesc_audit.py` | VERIFIED unit/lab, WIRED | 7 tests, matrix differential only |
+| Role matrix privilege escalation | `privesc_audit.py` | VERIFIED unit/lab, WIRED, JOINT | CWE-306 + CWE-639 validated in the joint acceptance |
 | Injection depth (XXE+OOB, blind RCE, LFI, CRLF) | `injection_audit.py` | VERIFIED unit/lab, WIRED | 12 tests; OOB proof replays inconclusive |
 | Web protocol (host header, cache, HPP, verb, smuggling detect) | `web_protocol_audit.py` | VERIFIED unit/lab, WIRED | 12 tests; smuggling opt-in |
 | Registered specialists the scheduler runs | `specialists.py`, `orchestrator.py` | VERIFIED | lifecycle + capability admission tests |
@@ -130,7 +130,11 @@ REAL-TARGET = exercised against an authorized external site.
 | Dial-time egress on every path | `egress.py` | VERIFIED, REAL-TARGET | KeyReed: 200/47KB read, 0 denials after alias fix |
 | WAF challenge classified, not scored | `http_probe.mitigation` | VERIFIED, REAL-TARGET | KeyReed: 114 challenge responses -> inconclusive |
 
-Not yet done: no end-to-end run of the six offensive audits against a target that
-declares their hints (they are wired and lab-proven, not field-proven); OOB and
-smuggling proofs replay as inconclusive by design; nmap remains argv-confined and
-is reported as egress-unconfined.
+Joint acceptance (`benchmarks/acceptance_offence.py`): two real engagements drive
+planner -> executor -> lab -> pipeline; 8 findings, all independently validated,
+ledgers and evidence chains intact. JWT and role-matrix audits are exercised that
+way. Injection, web-protocol, OAuth and session audits remain lab-proven and wired
+but are not yet exercised in a joint run. A blocked audit (preconditions unmet)
+reports `inconclusive`, never a pass. OOB and smuggling proofs replay as
+inconclusive by design; nmap remains argv-confined and is reported as
+egress-unconfined.
