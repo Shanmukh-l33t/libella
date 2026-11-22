@@ -171,7 +171,7 @@ memory + drift; independent verification + retest; PDF/HTML/DOCX/XLSX/CSV/MD/JSO
 reports + remediation tracking + historical comparison; premium operational UI (Command
 Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph,
 read-only Validation workspace, WSTG coverage review).
-779 tests passed, 1 skipped (branch `defensive-readiness`, v0.5.0 in development).
+913 tests passed, 1 skipped (branch `defensive-readiness`, v0.5.0 in development).
 The PairLab benchmark gate, run separately on the same commit, is 16/16 seeds with
 0 false positives. Browser acceptance journeys (beginner run to Done and PDF,
 tool readiness, target credentials, execution controls, report recovery) live in

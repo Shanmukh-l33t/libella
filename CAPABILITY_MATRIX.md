@@ -105,3 +105,32 @@ Parent: agent_runtime + graph + memory + orchestrator integration + verification
 - Reference benchmarking (same labs, comparable workflows) once references executed.
 - Independent adversarial re-audit of new modules; end-to-end acceptance gate.
 - Release v0.5.0 (versions bumped in pyproject/__init__; artifacts not yet published).
+
+## Family F — Standards and offence (added on `defensive-readiness`)
+
+Status vocabulary: VERIFIED unit/lab = its own tests prove it against a real local
+lab; WIRED = the planner creates its intent and the executor runs it (asserted);
+REAL-TARGET = exercised against an authorized external site.
+
+| Capability | Module | Status | Evidence |
+|---|---|---|---|
+| Versioned ASVS 5.0.0 catalog (345 reqs, exact ids/levels) | `standards.py`, `standards_data/asvs-5.0.0.json` | VERIFIED | import pinned by SHA, 16 tests |
+| OWASP API Security Top 10 2023 | `standards_data/api-top10-2023.json` | VERIFIED | pinned by SHA, mapped rows |
+| One coverage ledger, per-requirement strength | `coverage.py` | VERIFIED | 26/253 ASVS L2 executed on PairLab, 227 honestly untested |
+| Structured control ids (no title/CWE-only attribution) | `controls.py` | VERIFIED | negative controls incl. misleading title |
+| Analyst attribution add/remove with history | `coverage.link` | VERIFIED | route + append-only history test |
+| JWT attacks (alg none, confusion, weak secret, kid, claims) | `jwt_audit.py` | VERIFIED unit/lab, WIRED | 6 tests, hardened lab control |
+| OAuth/OIDC misconfiguration | `oauth_audit.py` | VERIFIED unit/lab, WIRED | 10 tests |
+| Session lifecycle (fixation, logout, cookie scope) | `session_audit.py` | VERIFIED unit/lab, WIRED | 7 tests |
+| Role matrix privilege escalation | `privesc_audit.py` | VERIFIED unit/lab, WIRED | 7 tests, matrix differential only |
+| Injection depth (XXE+OOB, blind RCE, LFI, CRLF) | `injection_audit.py` | VERIFIED unit/lab, WIRED | 12 tests; OOB proof replays inconclusive |
+| Web protocol (host header, cache, HPP, verb, smuggling detect) | `web_protocol_audit.py` | VERIFIED unit/lab, WIRED | 12 tests; smuggling opt-in |
+| Registered specialists the scheduler runs | `specialists.py`, `orchestrator.py` | VERIFIED | lifecycle + capability admission tests |
+| Atomic spend reservations (concurrency-safe ceiling) | `budget.py` | VERIFIED | 8-thread boundary + crash expiry tests |
+| Dial-time egress on every path | `egress.py` | VERIFIED, REAL-TARGET | KeyReed: 200/47KB read, 0 denials after alias fix |
+| WAF challenge classified, not scored | `http_probe.mitigation` | VERIFIED, REAL-TARGET | KeyReed: 114 challenge responses -> inconclusive |
+
+Not yet done: no end-to-end run of the six offensive audits against a target that
+declares their hints (they are wired and lab-proven, not field-proven); OOB and
+smuggling proofs replay as inconclusive by design; nmap remains argv-confined and
+is reported as egress-unconfined.
