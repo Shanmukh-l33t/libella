@@ -134,10 +134,20 @@ def main(out: Path):
                     use_inner_text=True)
                 page.screenshot(path=out / "b3-done.png")
                 ev = api.get(f"/api/engagements/{eid}/events?since=0").json()
+                # what the egress policy refused, by host and reason: a denial is only
+                # correct if it names a destination the operator never authorized
+                denials = {}
+                for e in ev:
+                    if e["kind"] not in ("egress_denied", "scope_refusal"):
+                        continue
+                    p = e.get("payload") or {}
+                    key = f"{p.get('host') or p.get('url') or '?'} :: {(p.get('reason') or '')[:80]}"
+                    denials[key] = denials.get(key, 0) + 1
                 kinds = {}
                 for e in ev:
                     kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
                 return {"status": status["status"], "events": len(ev), "kinds": kinds,
+                        "denials": denials,
                         "ui_done_lag_s": round(time.time() - done_at, 1) if done_at else None,
                         "progress_events": kinds.get("scan_progress", 0),
                         "progress_rendered": progress_seen,
