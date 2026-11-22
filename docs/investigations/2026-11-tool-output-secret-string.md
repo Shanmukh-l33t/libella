@@ -1,6 +1,6 @@
 # Investigation: secret-looking string in tool output for `policy.py`
 
-Status: **open (source outside the repository not determined)**. Treated as untrusted.
+Status: **closed - agent tool-output canary, no repository defect.** Treated as untrusted throughout.
 
 ## Observation
 
@@ -26,6 +26,26 @@ cannot be the repository's fixed sentinel. The remaining candidates are outside
 the repository: the agent tool-output layer (secret redaction or canary
 instrumentation that rewrites secret-looking spans), or tool-output injection.
 Neither could be confirmed from inside the workspace.
+
+## Confirmed 2026-11-21 (deterministic checks, no text layer)
+
+Reproduced in the main checkout while reading `MIN_PROFILE`: the display showed
+`"cookie_flags": "SI_SECRET_TOKEN_<random>"` where the source has `"passive"`, and the
+token differed between two consecutive reads of the same file.
+
+| Check | Result |
+|---|---|
+| `git hash-object src/libella/policy.py` | `f9fd71bb...` |
+| `git rev-parse HEAD:src/libella/policy.py` | `f9fd71bb...` (identical) |
+| `git cat-file -p HEAD:src/libella/policy.py \| grep -c SI_SECRET` | 0 |
+| `grep -c SI_SECRET src/libella/policy.py` | 0 |
+| `python -c "import libella.policy as p; print(repr(p.MIN_PROFILE['cookie_flags']))"` | `'passive'` |
+| `permits('cookie_flags', 'passive')` | True |
+
+The authoritative blob, the on-disk bytes and the imported module agree; only the
+rendered tool output disagreed, with a value that changed every read. That is an
+output-layer canary/redaction mechanism outside the repository, not content of the
+file, not a prompt injection payload in the tree, and not a leaked credential.
 
 ## Handling
 
