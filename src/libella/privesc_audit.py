@@ -9,17 +9,18 @@ test_hints; otherwise they are recorded as unexercised and never sent.
 """
 import json
 import re
+from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
 from .agent_runtime import _cookie_header
+from .authorization import PLACEHOLDER, PolicyModel, evaluate, from_openapi, from_operator, infer, served_owner
+from .authorization import norm as _norm
 from .checks import _candidate
 
 MAX_ENDPOINTS = 40
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 STATIC = (".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".woff", ".woff2", ".ttf",
           ".svg", ".ico", ".map")
-# template styles Flask/FastAPI/Spring/Express paths use for one object id
-PLACEHOLDER = re.compile(r"\{[^}]*\}|<[^>]*>|:[A-Za-z_]\w*")
 PAIR = re.compile(r'"[^"{}\[\],:]+"\s*:\s*(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)')
 QUOTE_KEYS = ("title", "name", "username", "email", "user", "report", "note", "body", "detail")
 # Role ordering for the inversion check; unknown roles are left unranked.
@@ -33,10 +34,6 @@ def _path_of(url: str) -> str:
 
 def _fill(path: str, value) -> str:
     return PLACEHOLDER.sub(str(value), path)
-
-
-def _norm(path: str) -> str:
-    return "/" + PLACEHOLDER.sub("*", path.strip("/"))
 
 
 def _skipped(path: str) -> bool:
@@ -157,6 +154,113 @@ def _crossings(rows: list[dict]) -> list[tuple[dict, dict, str]]:
     return out
 
 
+CWE_BY_CLASS = {"owner_only": ("CWE-639", "API1:2023 Broken Object Level Authorization"),
+                "tenant": ("CWE-639", "API1:2023 Broken Object Level Authorization"),
+                "authenticated": ("CWE-306", "API2:2023 Broken Authentication")}
+
+
+def _authz_pass(model, eps, rows, identities, sessions, hint_ids, fetch, target, submit,
+                pipeline, engagement_id, intent_id, out, limit):
+    """Judge each endpoint's content against its expected-authorization rule.
+
+    Requests every identity plus anonymous per object, so a resource that EVERY identity
+    can read is judged against who should have read it, not against the other identities.
+    """
+    meta = {i["username"]: i for i in identities}
+    ids = {u: s["uid"] for u, s in sessions.items() if s["uid"] is not None}
+    ids.update(hint_ids)
+    people = [{"username": u, "uid": ids.get(u), "email": meta[u].get("email")} for u in sessions]
+    verdicts, hypotheses = {}, []
+    for ep in eps:
+        if ep["method"] != "GET":
+            continue
+        label = f"GET {ep['path']}"
+        rule = model.get("GET", ep["path"])
+        if rule is None:
+            seen = [r for r in rows if (r["method"], r["path"]) == ("GET", ep["path"])]
+            verdicts[label] = {"verdict": "unknown_policy", "reasons": ["no expected-authorization rule"]}
+            if len([r for r in seen if r["class"] == "ALLOWED"]) >= 2 and not any(r["class"] == "DENIED" for r in seen):
+                msg = (f"{label}: every identity got the same access and no expected-authorization rule exists; "
+                       f"public vs private cannot be decided. Supply a policy (operator/analyst) to validate.")
+                pipeline.record_observation(engagement_id, intent_id, "authz_unknown_policy", msg)
+                hypotheses.append(msg)
+            continue
+        templated = bool(PLACEHOLDER.search(ep["path"]))
+        subjects = [(o, ids[o]) for o in sessions if o in ids] if templated else [(None, None)]
+        if not subjects:
+            verdicts[label] = {"verdict": "inconclusive", "reasons": ["no object ids known"]}
+            continue
+        obs = []
+        for owner, oid in subjects:
+            path = _fill(ep["path"], oid) if templated else ep["path"]
+            url = target(ep, path)
+            for user in [*sessions, None]:
+                s = sessions.get(user)
+                r = fetch(url, "GET", s["cookie"] if s else None, tool="authz_oracle")
+                ok = bool(r.get("ok"))
+                o = {"identity": user or "anonymous", "role": s["role"] if s else None,
+                     "tenant": meta[user].get("tenant") if s else None,
+                     "relation": ("anonymous" if s is None else "owner" if owner in (None, user)
+                                  else "other_tenant" if None not in (meta[user].get("tenant"), meta[owner].get("tenant"))
+                                  and meta[user]["tenant"] != meta[owner]["tenant"] else "other_user"),
+                     "status": r.get("status") if ok else None, "mitigated": r.get("mitigated"),
+                     "body": r.get("body") or "", "evidence_id": r.get("evidence_id"), "url": url,
+                     "cookie": s["cookie"] if s else None, "object_owner": owner}
+                if s and ok:
+                    o["served_owner"], o["served_owner_of"] = served_owner(
+                        o["body"], people[list(sessions).index(user)], [p for p in people if p["username"] != user])
+                obs.append(o)
+        res = evaluate(rule, obs)
+        bad, good = res.pop("violation_obs"), res.pop("control_obs")
+        verdicts[label] = res
+        summary = (f"{label}: {res['verdict']} (expected {rule.access}, from {rule.source})"
+                   + (f"; {'; '.join(res['reasons'])}" if res["reasons"] else ""))
+        pipeline.record_observation(engagement_id, intent_id, "authz_verdict", summary,
+                                    evidence_id=(bad or good or [{}])[0].get("evidence_id"))
+        if res["verdict"] != "violation":
+            continue
+        if rule.source == "inferred":
+            hypotheses.append(summary)
+            pipeline.record_observation(engagement_id, intent_id, "authz_hypothesis",
+                                        summary + " [hypothesis: review before reporting]",
+                                        evidence_id=bad[0].get("evidence_id"))
+            continue
+        if not res["confirmable"]:
+            limit(f"{label}: violation without a control comparison, not reported")
+            continue
+        v, c = bad[0], good[0]
+        quote = _quote(v["body"], v["object_owner"]) or _quote(v["body"])
+        if not quote or not v["evidence_id"]:
+            limit(f"{label}: violation but no verbatim quote bound to evidence, not reported")
+            continue
+        kind = rule.access.split(":")[0]
+        cwe, owasp = CWE_BY_CLASS.get(kind, ("CWE-285", "API5:2023 Broken Function Level Authorization"))
+        if v["relation"] == "anonymous":
+            cwe, owasp = CWE_BY_CLASS["authenticated"]
+        same = v["body"] == c["body"]
+        cand = _candidate(
+            f"Authorization violation on {label}: {v['identity']} reads a {rule.access} resource",
+            cwe, owasp, "high", "high", v["url"],
+            f"Expected access '{rule.access}' (source: {rule.source}"
+            + (f", {rule.note}" if rule.note else "") + f"). {v['identity']} ({v['relation']}, role "
+            f"{v['role'] or 'none'}) received status {v['status']} with data"
+            + (f" carrying {v['served_owner_of']}'s record" if v.get("served_owner_of") else "")
+            + f"; control: {c['identity']} ({c['relation']}) is permitted and read the same URL"
+            + (" with an IDENTICAL response - identical responses are not proof of correct authorization."
+               if same else ".")
+            + (f" Also unexpectedly granted: {', '.join(sorted(set(res['violations']) - {v['identity']}))}."
+               if len(set(res["violations"])) > 1 else ""),
+            "Data the policy restricts is served to identities it should refuse.",
+            "Enforce the stated access rule server-side on every request; deny by default.",
+            v["evidence_id"], quote,
+            {"method": "GET", "url": v["url"], **({"headers": {"Cookie": v["cookie"]}} if v["cookie"] else {})},
+            f"authz:GET:{_norm(ep['path'])}")
+        if c["evidence_id"] and c["evidence_id"] != v["evidence_id"]:
+            cand["evidence_ids"].append(c["evidence_id"])
+        submit(cand)
+    out["authorization"] = {"model": model.to_data(), "verdicts": verdicts, "hypotheses": hypotheses}
+
+
 def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipeline,
                       intent_id=None, endpoints=None) -> dict:
     """Log every identity in once, sweep the endpoint matrix, report contradictions."""
@@ -170,6 +274,7 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
         pipeline.record_observation(engagement_id, intent_id, "limitation",
                                     f"role matrix: {reason}")
         if blocked:
+            out["verdict"] = "inconclusive"  # never "ran, nothing found"
             # a sweep that never authenticated proved nothing: without this the
             # ledger would read the intent's completion as "ran, no finding"
             db.emit(engagement_id, "degradation",
@@ -295,13 +400,32 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
             evidence_id=row["evidence_id"])
     out["matrix"] = rows
     out["status"] = "assessed"
+    out["verdict"] = "assessed"
+
+    # ---- expected-authorization model: operator > analyst > openapi_security > inferred
+    model = PolicyModel.load(db, engagement_id)
+    try:
+        spec = auth_json.get("openapi")
+        if isinstance(spec, str):
+            spec = json.loads(Path(spec).read_text())
+        for r in (from_openapi(spec) if isinstance(spec, dict) else []) \
+                + from_operator(hints.get("authz_policy") or auth_json.get("authz_policy")):
+            model.add(r)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        limit(f"authorization policy could not be read: {type(e).__name__}: {e}")
+    for ep in eps:
+        if model.get(ep["method"], ep["path"]) is None and (hyp := infer(ep["method"], ep["path"])):
+            model.add(hyp)
+    model.save(db, engagement_id)
+    # an explicit expectation replaces the differential heuristics on that endpoint
+    covered = {k for k, r in model.rules.items() if r.source != "inferred"}
 
     # ---- missing authentication: 2xx anonymous where another identity is refused
     by_ep: dict[tuple, list[dict]] = {}
     for row in rows:
         by_ep.setdefault((row["method"], row["path"]), []).append(row)
     for (method, template), group in by_ep.items():
-        if method in WRITE_METHODS:
+        if method in WRITE_METHODS or (method, _norm(template)) in covered:
             continue
         url = next((r["url"] for r in group if r["url"]), None)
         denied = [r for r in group if r["class"] == "DENIED"]
@@ -337,7 +461,8 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
     ids = {u: s["uid"] for u, s in sessions.items() if s["uid"] is not None}
     ids.update(hint_ids)
     for ep in eps:
-        if ep["method"] != "GET" or not PLACEHOLDER.search(ep["path"]):
+        if ep["method"] != "GET" or not PLACEHOLDER.search(ep["path"]) \
+                or ("GET", _norm(ep["path"])) in covered:
             continue
         done = False
         for reader, s in sessions.items():
@@ -374,7 +499,7 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
 
     # ---- cross-role: the matrix contradicts itself for one role
     for row, control, kind in _crossings(rows):
-        if not row["quote"] or not row["url"]:
+        if not row["quote"] or not row["url"] or (row["method"], _norm(row["path"])) in covered:
             continue
         inverted = kind == "inverted"
         submit(_candidate(
@@ -394,6 +519,9 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
             row["evidence_id"], row["quote"],
             {"method": row["method"], "url": row["url"], "headers": {"Cookie": sessions[row["identity"]]["cookie"]}},
             f"crossrole:{row['method']}:{row['path']}:{row['identity']}"))
+
+    _authz_pass(model, eps, rows, identities, sessions, hint_ids, fetch, target, submit,
+                pipeline, engagement_id, intent_id, out, limit)
 
     db.emit(engagement_id, "role_matrix_complete",
             {"base_url": base, "endpoints": len(eps), "identities": len(sessions),
