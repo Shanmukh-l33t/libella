@@ -149,7 +149,17 @@ class ToolRunner:
                         f"to {decision.resolved_ips or dest} and the authorized ports; a tool that "
                         "ignores its arguments could dial anywhere")
         elif spec.name in RAW_TOOLS:
-            os.chown(rundir, UID, UID)  # the tool runs as an unprivileged uid
+            # the tool runs as an unprivileged uid inside the namespace, so it must be
+            # able to write its own work dir. Only root can hand a dir to another uid;
+            # without that privilege the isolation is unavailable, so say so instead of
+            # crashing (CI runs the suite unprivileged).
+            try:
+                if os.stat(rundir).st_uid != UID or os.stat(rundir).st_gid != UID:
+                    os.chown(rundir, UID, UID)
+            except PermissionError as e:
+                return self._fail_closed(call_id, engagement_id, intent_id, spec.name, dest,
+                                         started, egress,
+                                         f"cannot hand the run dir to the confined uid: {e}")
             try:
                 box = stack.enter_context(Confinement(decision.resolved_ips, ports))
             except NetnsUnavailable as e:

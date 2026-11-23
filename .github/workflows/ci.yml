@@ -36,6 +36,16 @@ jobs:
         run: ruff check src/ tests/ benchmarks/
       - name: Unit tests
         run: python -m pytest tests/ -q
+      # The confinement tests need root (ip/nft/setpriv); the step above runs them
+      # unprivileged, where they skip, so the boundary would never be exercised in CI.
+      # Run them again as root and fail if they skipped instead of proving anything.
+      - name: Network confinement proven as root (no silent skips)
+        run: |
+          sudo -E python -m pytest tests/test_netns_confinement.py -q -rs | tee /tmp/netns.log
+          if grep -qE '^SKIPPED' /tmp/netns.log; then
+            echo "::error::confinement tests skipped; the boundary was not exercised"
+            exit 1
+          fi
       - name: Integration benchmark (PairLab twins, real execution)
         run: |
           pip install flask requests
