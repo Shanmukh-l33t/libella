@@ -1,4 +1,5 @@
 """Scope engine tests: the authorization boundary must fail closed."""
+import json
 import pytest
 from libella.scope import Scope
 
@@ -55,6 +56,45 @@ def test_scheme_restriction():
     assert not s.check_url("gopher://127.0.0.1:8801/").allowed
 
 
+def test_websocket_scheme_is_decided_as_its_http_origin():
+    """A ws upgrade is an authorization question about an http(s) destination.
+
+    Refusing the scheme outright (the old behaviour) made every websocket
+    unassessable AND made the egress negative control vacuous: the block came
+    from the scheme gate, so it never distinguished an authorized destination
+    from a forbidden one.
+    """
+    s = Scope(spec())
+    assert s.check_url("ws://127.0.0.1:8801/ws").allowed
+    assert s.check_url("ws://127.0.0.1:8801/ws", category="web").allowed
+    # and the same restrictions still apply to it
+    assert not s.check_url("ws://127.0.0.1:9999/ws").allowed          # port not authorized
+    assert not s.check_url("ws://127.0.0.1:8801/ws", category="code").allowed  # category
+    assert not s.check_url("wss://127.0.0.1:8801/ws").allowed         # wss is https
+    assert not s.check_url("ws://169.254.169.254/ws").allowed         # metadata block
+    # unknown schemes stay refused
+    assert not s.check_url("gopher://127.0.0.1:8801/").allowed
+    assert not s.check_url("ftp://127.0.0.1:8801/").allowed
+
+
+def test_websocket_default_ports_match_the_http_equivalents():
+    """ws defaults to 80 and wss to 443, so no port means the same thing twice."""
+    s80 = Scope({"targets": [{"kind": "url", "value": "http://127.0.0.1"}], "categories": ["web"]})
+    assert s80.check_url("ws://127.0.0.1/ws").allowed
+    assert not s80.check_url("ws://127.0.0.1:8080/ws").allowed
+    s443 = Scope({"targets": [{"kind": "url", "value": "https://127.0.0.1"}], "categories": ["web"]})
+    assert s443.check_url("wss://127.0.0.1/ws").allowed
+    assert not s443.check_url("ws://127.0.0.1/ws").allowed  # 80 is not the authorized port
+
+
+def test_websocket_url_honours_path_exclusions_and_userinfo():
+    s = Scope(spec(exclusions=[{"kind": "url_prefix", "value": "http://127.0.0.1:8801/admin"}]))
+    assert not s.check_url("ws://127.0.0.1:8801/admin/socket").allowed
+    assert s.check_url("ws://127.0.0.1:8801/app/socket").allowed
+    # userinfo in the authority must not make an off-site host look in-scope
+    assert not s.check_url("ws://127.0.0.1:8801@evil.example/ws").allowed
+
+
 def test_category_gate():
     s = Scope(spec(categories=["recon"]))
     assert not s.check_url("http://127.0.0.1:8801/", category="web").allowed
@@ -80,3 +120,97 @@ def test_prompt_block_derives_from_scope():
     block = s.prompt_block()
     assert "127.0.0.1:8801" in block
     assert "UNTRUSTED DATA" in block
+
+
+def test_exclusion_respects_path_segment_boundary():
+    s = Scope(spec(exclusions=[{"kind": "url_prefix", "value": "http://127.0.0.1:8801/admin"}]))
+    assert not s.check_url("http://127.0.0.1:8801/admin/users").allowed
+    assert not s.check_url("http://127.0.0.1:8801/admin").allowed
+    assert s.check_url("http://127.0.0.1:8801/administrator").allowed
+
+
+def test_url_target_authorizes_only_its_own_port():
+    s = Scope({"targets": [{"kind": "url", "value": "https://127.0.0.1:8443"}],
+               "categories": ["infra"]})
+    assert s.check_host_port("127.0.0.1", 8443).allowed
+    assert not s.check_host_port("127.0.0.1", 22).allowed
+    # scheme default port is the URL's own port
+    s2 = Scope({"targets": [{"kind": "url", "value": "https://127.0.0.1"}],
+                "categories": ["infra"]})
+    assert s2.check_host_port("127.0.0.1", 443).allowed
+    assert not s2.check_host_port("127.0.0.1", 80).allowed
+
+
+def test_explicit_ip_target_still_authorizes_other_ports():
+    s = Scope({"targets": [{"kind": "ip", "value": "127.0.0.1"}], "categories": ["infra"]})
+    assert s.check_host_port("127.0.0.1", 22).allowed
+
+
+def test_portless_tool_check_is_host_level_not_a_port_claim():
+    s = Scope(spec(allowed_ports=[8801]))
+    assert s.check_host_port("127.0.0.1", None).allowed
+    assert not s.check_host_port("127.0.0.1", 0).allowed  # 0 is a bogus port, not "any"
+    assert not s.check_host_port("127.0.0.1", 22).allowed
+
+
+def test_a_url_target_authorizes_its_own_www_or_apex_alias():
+    """A site that 301s apex -> www is the SAME site the operator authorized."""
+    sc = Scope({"targets": [{"kind": "url", "value": "https://keyreed.com"}],
+                "categories": ["web"]})
+    for host in ("keyreed.com", "www.keyreed.com", "WWW.Keyreed.com"):
+        d = sc.check_host_port(host, 443, "web")
+        assert d.allowed, (host, d.reason)
+    # the alias does not widen the authorized port
+    assert not sc.check_host_port("www.keyreed.com", 8443, "web").allowed
+    assert sc.check_url("https://www.keyreed.com/about").allowed
+
+
+def test_the_alias_rule_does_not_authorize_another_domain():
+    sc = Scope({"targets": [{"kind": "url", "value": "https://keyreed.com"}],
+                "categories": ["web"]})
+    for name in ("evil.com", "wwwevil.com", "keyreed.com.evil.com", "notkeyreed.com"):
+        host = {"wwwevil.com": "wwwevil.example", "notkeyreed.com": "notkeyreed.example"}
+        d = sc.check_host_port(host.get(name, name), 443, "web", ips=["203.0.113.10"])
+        assert not d.allowed, (name, d.reason)
+    # an exclusion still wins over the alias
+    sc2 = Scope({"targets": [{"kind": "url", "value": "https://keyreed.com"}],
+                 "exclusions": [{"kind": "domain", "value": "www.keyreed.com"}],
+                 "categories": ["web"]})
+    assert not sc2.check_host_port("www.keyreed.com", 443, "web").allowed
+
+
+def test_exchange_keeps_the_authorized_hostname_not_the_pinned_ip(tmp_path):
+    """The transport dials an IP; the evidence must still name the host it was authorized by."""
+    import threading
+    import time
+    from flask import Flask
+    from werkzeug.serving import make_server
+    from libella.api import App
+    from libella.scope import Scope
+
+    flask = Flask("probe-url")
+
+    @flask.get("/")
+    def index():
+        return "<html><body>ok</body></html>"
+
+    srv = make_server("127.0.0.1", 0, flask)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    time.sleep(0.2)
+    try:
+        port = srv.server_port
+        app = App(tmp_path / "data")
+        # the rebinding guard requires the loopback ADDRESS to be authorized too
+        scope = {"targets": [{"kind": "url", "value": f"http://localhost:{port}"},
+                             {"kind": "ip", "value": "127.0.0.1"}],
+                 "categories": ["web"], "rate_limit_rps": 50}
+        app.db.execute("INSERT INTO engagements(id,name,profile,status,scope_json,created_at) "
+                       "VALUES('e','p','safe_active','draft',?,0)", (json.dumps(scope),))
+        r = app.probe.request("e", Scope(scope), f"http://localhost:{port}/", tool="probe_url")
+        assert r["ok"] and r["status"] == 200
+        assert r["url"] == f"http://localhost:{port}/", r["url"]
+        row = app.db.one("SELECT url, peer_ip FROM exchanges WHERE engagement_id='e'")
+        assert row["url"].startswith(f"http://localhost:{port}"), row["url"]
+        assert row["peer_ip"] is None or row["peer_ip"].startswith("127.0.0.1")
+    finally:
+        srv.shutdown()

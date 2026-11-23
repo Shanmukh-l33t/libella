@@ -22,6 +22,8 @@ class _Lab:
     def __init__(self):
         self.hits: list[str] = []
         self.bodies: list[bytes] = []
+        self.headers: list[dict] = []  # request headers per hit (replay fidelity)
+        self.cookie = "lab-session-cookie"  # value /login sends back as Set-Cookie
         self.out_url = "http://127.0.0.1:1/never"
         lab = self
 
@@ -46,7 +48,10 @@ class _Lab:
 
             def do_GET(self):
                 lab.hits.append(self.path)
+                lab.headers.append({k.lower(): v for k, v in self.headers.items()})
                 path = self.path.split("?")[0]
+                if path == "/login":
+                    return self._send(200, b"ok", {"Set-Cookie": f"session={lab.cookie}; HttpOnly"})
                 if path == "/redir-out":
                     return self._send(302, b"", {"Location": lab.out_url})
                 if path == "/404":

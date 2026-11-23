@@ -6,6 +6,7 @@ a verbatim quote. Nothing here trusts scanner banners or model prose.
 import re
 import uuid
 
+from .controls import COOKIE_CONTROLS, HEADER_CONTROLS
 from .tools.http_probe import HttpProbe
 
 CANARY = "libella" + uuid.uuid4().hex[:6]
@@ -35,13 +36,15 @@ SEC_HEADERS = {
 
 def _candidate(title, cwe, owasp, severity, confidence, endpoint, description,
                impact, remediation, evidence_id, quote, proof_request, dedup_key,
-                quote_in="body"):
+               quote_in="body", controls=()):
     return {
         "title": title, "cwe": cwe, "owasp": owasp, "severity": severity,
         "confidence": confidence, "endpoint": endpoint, "description": description,
         "impact": impact, "remediation": remediation,
         "evidence_ids": [evidence_id], "quote": quote, "quote_in": quote_in,
         "proof_request": proof_request, "dedup_key": dedup_key,
+        # structured control ids this candidate asserts failed (controls.py)
+        "controls": sorted(set(controls)),
     }
 
 
@@ -50,10 +53,30 @@ class WebChecks:
         self.probe = probe
         self.eng = engagement_id
         self.scope = scope
+        self.mitigated: list[str] = []  # challenges seen: those checks are inconclusive
+        self.browser_urls: set[str] = set()  # pages read through the browser fallback
+
+    def _proof(self, url: str, **extra) -> dict:
+        """Proof request for a candidate, replayed later over the same transport."""
+        proof = {"method": "GET", "url": url, **extra}
+        if url in self.browser_urls:
+            proof["via"] = "browser"
+        return proof
 
     def _req(self, url, method="GET", headers=None, body=None, client=None, tool="check"):
-        return self.probe.request(self.eng, self.scope, url, method=method,
-                                  headers=headers, body=body, client=client, tool=tool)
+        r = self.probe.request(self.eng, self.scope, url, method=method,
+                               headers=headers, body=body, client=client, tool=tool)
+        if r.get("ok") and r.get("mitigated") and method.upper() == "GET":
+            # the CDN challenged the HTTP client; read the same page as a browser would
+            alt = self.probe.browser_request(self.eng, self.scope, url, tool=f"{tool}_browser")
+            if alt.get("ok") and not alt.get("mitigated"):
+                self.browser_urls.add(url)
+                return alt
+        if r.get("mitigated"):
+            # the target answered with a WAF/CDN challenge: judge nothing from it
+            self.mitigated.append(f"{tool}: {r['mitigated']}")
+            return {**r, "ok": False, "error": f"target_mitigated: {r['mitigated']}"}
+        return r
 
     def security_headers(self, url: str) -> list[dict]:
         r = self._req(url, tool="headers_check")
@@ -72,8 +95,10 @@ class WebChecks:
             f"Response lacks: {names}.",
             "Increased exposure to clickjacking, MIME sniffing, protocol downgrade, and XSS impact.",
             "Set the missing headers at the server or application layer.",
-            r["evidence_id"], quote, {"method": "GET", "url": url},
+            r["evidence_id"], quote, self._proof(url),
             f"headers:{url}", quote_in="header_fact",
+            controls=[HEADER_CONTROLS[h] for h in SEC_HEADERS
+                      if h not in {k.lower() for k in r["headers"]}],
         )]
 
     def cookie_flags(self, url: str, method="GET", body=None, headers=None) -> list[dict]:
@@ -81,7 +106,11 @@ class WebChecks:
         if not r.get("ok"):
             return []
         out = []
-        raw_cookies = [v for k, v in r["headers"].items() if k.lower() == "set-cookie"]
+        # every Set-Cookie the response carried, not just the last one the
+        # headers dict kept (http_probe records the full list as set-cookie-all)
+        all_jars = next((v for k, v in r["headers"].items() if k.lower() == "set-cookie-all"), "")
+        raw_cookies = ([x for x in all_jars.split("\n") if x.strip()] or
+                       [v for k, v in r["headers"].items() if k.lower() == "set-cookie"])
         for c in raw_cookies:
             low = c.lower()
             if "session" not in low and "token" not in low and "auth" not in low:
@@ -104,6 +133,7 @@ class WebChecks:
                     r["evidence_id"], f"{name}|{','.join(problems)}",
                     {"method": method, "url": url, "body": body, "headers": headers},
                     f"cookie:{url}:{name}", quote_in="cookie_fact",
+                    controls=[COOKIE_CONTROLS[p] for p in problems],
                 ))
         return out
 
@@ -123,7 +153,7 @@ class WebChecks:
                 "Any origin can make credentialed cross-origin requests (browser permitting).",
                 "Restrict ACAO to an explicit allowlist; never combine wildcard with credentials.",
                 r["evidence_id"], f"access-control-allow-origin: {acao}",
-                {"method": "GET", "url": url, "headers": {"Origin": evil}},
+                self._proof(url, headers={"Origin": evil}),
                 f"cors:{url}", quote_in="header_fact",
             )]
         if acao == evil and acac.lower() == "true":
@@ -134,7 +164,7 @@ class WebChecks:
                 "Any website can read authenticated responses cross-origin.",
                 "Validate Origin against a strict allowlist.",
                 r["evidence_id"], f"access-control-allow-origin: {acao}",
-                {"method": "GET", "url": url, "headers": {"Origin": evil}},
+                self._proof(url, headers={"Origin": evil}),
                 f"cors:{url}", quote_in="header_fact",
             )]
         return []
@@ -154,7 +184,7 @@ class WebChecks:
                 f"Payload {payload} reflected unescaped in HTML response.",
                 "Arbitrary JavaScript execution in victims' browsers; session theft, actions on behalf of users.",
                 "Context-aware output encoding; apply a strict Content-Security-Policy.",
-                r["evidence_id"], payload, {"method": "GET", "url": target},
+                r["evidence_id"], payload, self._proof(target),
                 f"xss:{url}:{param}",
             )]
         return []
@@ -176,7 +206,7 @@ class WebChecks:
                 f"Single quote triggers database error signature: {hit}.",
                 "Full database read/write depending on privileges; authentication bypass; data exfiltration.",
                 "Use parameterized queries / prepared statements; least-privilege DB account.",
-                r["evidence_id"], quote, {"method": "GET", "url": base + "'"},
+                r["evidence_id"], quote, self._proof(base + "'"),
                 f"sqli:{url}:{param}",
             )]
         return []
@@ -196,7 +226,7 @@ class WebChecks:
             f"UNION payload extracts data; marker '{marker}' present in response.",
             "Arbitrary data extraction from the database.",
             "Parameterized queries; least-privilege DB account.",
-            r["evidence_id"], quote, {"method": "GET", "url": target},
+            r["evidence_id"], quote, self._proof(target),
             f"sqli:{url}:{param}",
         )]
 
@@ -218,7 +248,7 @@ class WebChecks:
                     f"Payload {payload} reads /etc/passwd.",
                     "Arbitrary file read on the server; source code, secrets, configuration exposure.",
                     "Canonicalize and confine paths to an allowlisted base directory; reject '..'.",
-                    r["evidence_id"], m.group(0), {"method": "GET", "url": target},
+                    r["evidence_id"], m.group(0), self._proof(target),
                     f"traversal:{url}:{param}",
                 )]
         return []
@@ -239,7 +269,7 @@ class WebChecks:
                 f"Redirects to arbitrary external URL {dest}.",
                 "Phishing via trusted domain; OAuth token theft in redirect flows.",
                 "Allowlist redirect destinations; reject off-host URLs.",
-                r["evidence_id"], f"location: {loc}", {"method": "GET", "url": target},
+                r["evidence_id"], f"location: {loc}", self._proof(target),
                 f"redirect:{url}:{param}", quote_in="header_fact",
             )]
         return []
@@ -259,7 +289,7 @@ class WebChecks:
             f"Server fetches {internal_url} and returns its content (marker '{marker}').",
             "Access to internal services and cloud metadata; potential credential theft.",
             "Allowlist outbound destinations; block link-local/metadata ranges; egress filtering.",
-            r["evidence_id"], quote, {"method": "GET", "url": target},
+            r["evidence_id"], quote, self._proof(target),
             f"ssrf:{url}:{param}",
         )]
 
@@ -307,7 +337,7 @@ class WebChecks:
                     base + path, f"GET {path} returns 200 with sensitive content.",
                     "Information disclosure aiding further attacks; possible secret exposure.",
                     "Remove or restrict access to the exposed resource.",
-                    r["evidence_id"], quote, {"method": "GET", "url": base + path},
+                    r["evidence_id"], quote, self._proof(base + path),
                     f"path:{base}{path}",
                 ))
         return out
@@ -330,7 +360,7 @@ class WebChecks:
             "Payloads {{7*7}} and {{7*19}} are evaluated server-side (49, 133).",
             "Template engine execution; often escalates to remote code execution.",
             "Never render user input as template source; use sandboxed templating with autoescape.",
-            r2["evidence_id"], quote, {"method": "GET", "url": proof_url},
+            r2["evidence_id"], quote, self._proof(proof_url),
             f"ssti:{url}:{param}",
         )]
 
@@ -374,7 +404,7 @@ class WebChecks:
                     "Web-shell upload potential; remote code execution if the path is script-executable.",
                     "Allowlist extensions and content types; rename uploads; store outside web root; disable script execution in upload dirs.",
                     rr["evidence_id"], marker,
-                    {"method": "GET", "url": reach},
+                    self._proof(reach),
                     f"upload:{upload_url}",
                 )]
         return []
@@ -432,7 +462,7 @@ class WebChecks:
             "Horizontal privilege escalation; access to other users' data.",
             "Enforce object-level ownership checks on every request.",
             r["evidence_id"], quote,
-            {"method": "GET", "url": object_url, "headers": {"Cookie": cookie_header}},
+            self._proof(object_url, headers={"Cookie": cookie_header}),
             f"idor:{object_url}:{identity_name}",
         )]
 

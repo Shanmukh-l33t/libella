@@ -6,10 +6,13 @@ Attacks under test:
      existed, must not create a finding.
   3. a run must stop when the engagement's USD budget is spent (no per-run bound
      existed: one specialist could burn the whole engagement budget).
+
+H3: a model that is missing or dies mid-run must never leave a clean 'done' + PASS.
 """
 import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from flask import Flask
@@ -18,11 +21,16 @@ from libella.agent_runtime import AgentRunner
 from libella.db import DB
 from libella.evidence import EvidenceStore
 from libella.findings import FindingPipeline
+from libella.gate import evaluate, normalize
+from libella.llm import LLMError
+from libella.orchestrator import Orchestrator
+from libella.report import render_report
 from libella.scope import Scope
 from libella.tools import Registry
 from libella.tools.adapters import ALL_ADAPTERS
 from libella.tools.http_probe import HttpProbe
 from libella.tools.runner import ToolRunner
+from libella.verifier import Verifier
 from werkzeug.serving import make_server
 
 
@@ -195,3 +203,95 @@ def test_run_stops_when_usd_budget_is_spent(platform, lab):
     assert res["exit_reason"] == "budget_exhausted", res
     assert res["status"] == "budget_exhausted"
     assert res["iterations"] < 20
+
+
+# ---- H3: a missing or dying model is never a clean pass ----
+
+class DyingLLM:
+    """Planner succeeds once, then every call fails like an unreachable provider."""
+
+    def __init__(self, plan):
+        self.plan = plan
+        self.calls = 0
+
+    def model_for(self, role):
+        return "mock-model"
+
+    def complete(self, role, system, user, engagement_id=None, json_schema=None, **kw):
+        self.calls += 1
+        if self.calls == 1:
+            return {"content": "{}", "parsed": self.plan,
+                    "usage": {"input_tokens": 5, "output_tokens": 5, "cost_usd": 0.0,
+                              "model": "mock-model"}}
+        raise LLMError("provider 500: upstream unavailable")
+
+    def spend(self, eid):
+        return {"cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0}
+
+
+def _orchestrator(platform, llm):
+    db, ev, pipe, probe, reg, runner, scope = platform
+    return Orchestrator(db, ev, probe, pipe, Verifier(db, ev, probe, pipe), reg, runner, llm)
+
+
+def test_agent_mode_without_a_provider_is_refused(platform):
+    db, ev, pipe, probe, reg, runner, scope = platform
+    orch = _orchestrator(platform, None)
+    with pytest.raises(ValueError, match="provider"):
+        orch.start("eng", "agent")
+    with pytest.raises(ValueError, match="provider"):
+        orch.start("eng", "llm")
+    with pytest.raises(ValueError, match="unknown mode"):
+        orch.start("eng", "turbo")
+    assert db.one("SELECT status FROM engagements WHERE id='eng'")["status"] == "draft"
+    assert db.one("SELECT COUNT(*) n FROM intents WHERE engagement_id='eng'")["n"] == 0
+
+
+@pytest.mark.parametrize("exit_reason", ["model_failed", "max_iterations", "budget_exhausted"])
+def test_unfinished_agent_run_blocks_the_intent(platform, monkeypatch, exit_reason):
+    db, ev, pipe, probe, reg, runner, scope = platform
+    import libella.agent_runtime as ar_mod
+
+    class StubRun:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, intent, role):
+            return {"run_id": "run_stub", "role": role,
+                    "status": "failed" if exit_reason == "model_failed" else "budget_exhausted",
+                    "exit_reason": exit_reason, "summary": "", "iterations": 1,
+                    "findings": [], "tokens": 0, "cost_usd": 0.0}
+
+    monkeypatch.setattr(ar_mod, "AgentRunner", StubRun)
+    orch = _orchestrator(platform, ScriptedLLM(db, []))
+    iid = orch._add_intent("eng", "web", "investigate")
+    eng = db.one("SELECT * FROM engagements WHERE id='eng'")
+    intent = db.one("SELECT * FROM intents WHERE id=?", (iid,))
+    status, result = orch._execute("eng", scope, eng, intent, "agent")
+    assert status == "blocked", result
+    assert result["exit_reason"] == exit_reason
+    degs = [json.loads(r["payload_json"]) for r in db.query(
+        "SELECT payload_json FROM events WHERE engagement_id='eng' AND kind='degradation'")]
+    assert any(d["code"] == "agent_run_failed" and exit_reason in d["detail"]
+               for d in degs), degs
+
+
+def test_failed_run_cannot_pass_the_offline_gate(platform, lab):
+    """Whole journey: agent mode, provider dies mid-run, report and gate."""
+    db, ev, pipe, probe, reg, runner, scope = platform
+    orch = _orchestrator(platform, DyingLLM({"intents": [
+        {"role": "web", "objective": f"investigate {lab}", "target": f"{lab}/ok"}]}))
+    orch.start("eng", "agent")
+
+    intent = db.one("SELECT * FROM intents WHERE engagement_id='eng' AND role='web'")
+    assert intent["status"] == "blocked", intent["status"]
+    assert db.one("SELECT status FROM engagements WHERE id='eng'")["status"] == "done"
+    report = render_report(db, ev, "eng")
+    doc = json.loads((Path(report["outdir"]) / "report.json").read_text())
+    assert doc["engagement"]["mode"] == "agent"
+    assert [r["exit_reason"] for r in doc["agent_runs"]] == ["model_failed"]
+    assert [d["code"] for d in doc["degradations"]] == ["agent_run_failed"]
+    gate = evaluate(None, normalize(doc))
+    assert gate["passed"] is False
+    assert {"name": "intents", "status": "failed"} in [
+        {"name": c["name"], "status": c["status"]} for c in gate["coverage"]]

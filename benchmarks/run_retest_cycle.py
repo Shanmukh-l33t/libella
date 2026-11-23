@@ -4,6 +4,7 @@ Phase 1: assess lab on :8803 (vuln), retest a validated finding -> persists.
 Phase 2: after operator swaps :8803 to hardened mode, retest -> fixed.
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -13,8 +14,9 @@ from libella.api import App
 from libella.scope import Scope
 
 ROOT = Path(__file__).parent.parent
-BASE = "http://127.0.0.1:8803"
-DATA = ROOT / "benchmark_runs" / "retest"
+PORT = os.environ.get("LAB_PORT", "8803")
+BASE = f"http://127.0.0.1:{PORT}"
+DATA = Path(os.environ.get("RETEST_DATA") or ROOT / "benchmark_runs" / "retest")
 
 
 def get_app():

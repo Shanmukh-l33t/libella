@@ -9,7 +9,7 @@ from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -17,11 +17,15 @@ from .auth_browser import STEP_ACTIONS, AuthBrowser
 from .browser_crawl import browser_available
 from .db import DB, new_id
 from .evidence import EvidenceStore
+from .report import _write_atomic
 from .findings import FindingPipeline
 from .llm import LLM
-from .orchestrator import Orchestrator
+from .orchestrator import MODES, Orchestrator
 from . import __version__, mcp_client  # plugin/MCP extension framework
+
 from .plugins import PluginHost
+from .policy import DEFAULT_PROFILE, PROFILES
+from .provider_diagnostic import normalize_base, diagnostic_result, same_base, test_connection
 from .report import render_report
 from .scope import Scope
 from .secrets import SecretBox, is_encrypted
@@ -30,6 +34,27 @@ from .tools.adapters import ALL_ADAPTERS
 from .tools.http_probe import HttpProbe
 from .tools.runner import ToolRunner
 from .verifier import Verifier
+
+# Report kinds are declared here so the API can reject an unsupported request before
+# rendering anything, and the UI can discover what this build actually offers.
+REPORT_KINDS = [
+    {"id": "technical", "title": "Technical penetration-test report",
+     "description": "Every observation with evidence, verification history, coverage and limitations.",
+     "formats": ["json", "md", "pdf", "html", "docx", "xlsx", "csv", "sarif", "dojo"]},
+    {"id": "executive", "title": "Executive security summary",
+     "description": "Risk, verified findings and what was not tested, for a non-technical reader.",
+     "formats": ["md", "html", "pdf"]},
+    {"id": "coverage", "title": "Methodology and coverage report",
+     "description": "WSTG test status with the reason each test was not completed.",
+     "formats": ["md", "html", "pdf"]},
+    {"id": "evidence", "title": "Evidence appendix",
+     "description": "Hash-chain ledger of every captured artifact (metadata only, no bodies).",
+     "formats": ["csv", "md", "html", "pdf"]},
+    {"id": "gitlab", "title": "GitLab DAST report",
+     "description": "GitLab DAST 15.0.0 JSON built from independently verified findings.",
+     "formats": ["json"]},
+]
+REPORT_KINDS_BY_ID = {k["id"]: k for k in REPORT_KINDS}
 
 
 class SPAStaticFiles(StaticFiles):
@@ -88,11 +113,12 @@ class App:
             self.db.execute("INSERT INTO settings(key, value_json) VALUES('api_token', ?)",
                             (json.dumps(self.box.encrypt(self.token)),))
 
-    def llm(self) -> LLM | None:
+    def llm_settings(self) -> dict:
         row = self.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
-        if not row:
-            return None
-        cfg = json.loads(self.box.decrypt_or_plain(row["value_json"]))
+        return json.loads(self.box.decrypt_or_plain(row["value_json"])) if row else {}
+
+    def llm(self) -> LLM | None:
+        cfg = self.llm_settings()
         if not cfg.get("base_url") and not cfg.get("api_key"):
             return None
         return LLM(self.db, cfg)
@@ -112,6 +138,14 @@ class App:
         try:
             orch.start(engagement_id, mode)
         except Exception as e:
+            # a finished run must keep its truthful terminal status: an error while the
+            # run was already done (e.g. rendering) is a limitation, not a failed run
+            row = self.db.one("SELECT status FROM engagements WHERE id=?", (engagement_id,)) or {}
+            if row.get("status") in ("done", "budget_exhausted", "cancelled", "window_closed"):
+                self.db.emit(engagement_id, "degradation", {
+                    "code": "post_run_error",
+                    "detail": f"the run finished as {row['status']} but post-run work raised: {e}"})
+                return
             self.db.execute("UPDATE engagements SET status='failed', status_detail=?, finished_at=? WHERE id=?",
                             (str(e), time.time(), engagement_id))
             self.db.emit(engagement_id, "engagement_failed", {"error": str(e)})
@@ -202,12 +236,24 @@ def create_api(app: App) -> FastAPI:
             Scope(scope_spec)  # validate fail-closed at creation
         except ValueError as e:
             raise HTTPException(400, f"invalid scope: {e}")
+        profile = body.get("profile", DEFAULT_PROFILE)
+        if profile not in PROFILES:
+            raise HTTPException(400, f"unknown profile {profile!r}; expected one of "
+                                     f"{', '.join(PROFILES)}")
+        budgets = body.get("budgets", {})
+        if not isinstance(budgets, dict):
+            raise HTTPException(400, "budgets must be an object")
+        for key in ("max_duration_s", "max_usd", "max_plan_rounds"):
+            value = budgets.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not value > 0):
+                raise HTTPException(400, f"budget {key} must be a positive number")
         eid = new_id("eng")
         app.db.execute(
             "INSERT INTO engagements(id, name, profile, status, scope_json, auth_json, budgets_json, "
             "objectives_json, window_start, window_end, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (eid, name, body.get("profile", "safe_active"), "draft", json.dumps(scope_spec),
-             app.db.seal(json.dumps(body.get("auth", {}))), json.dumps(body.get("budgets", {})),
+            (eid, name, profile, "draft", json.dumps(scope_spec),
+             app.db.seal(json.dumps(body.get("auth", {}))), json.dumps(budgets),
              json.dumps(body.get("objectives", [])), body.get("window_start"),
              body.get("window_end"), time.time()))
         app.db.emit(eid, "engagement_created", {"name": name})
@@ -232,17 +278,36 @@ def create_api(app: App) -> FastAPI:
         r["scope"] = json.loads(r.pop("scope_json"))
         r["budgets"] = json.loads(r.pop("budgets_json"))
         r["auth"] = _public_auth(json.loads(r.pop("auth_json")))
+        r["standards"] = json.loads(r.pop("standards_json") or "{}")
         r["spend"] = app.llm().spend(eid) if app.llm() else {"cost_usd": 0}
         return r
 
+    def _check_startable(mode: str, profile: str):
+        """Refuse a run that cannot honour its mode or a profile the engine cannot enforce."""
+        if mode not in MODES:
+            raise HTTPException(400, f"unknown mode {mode!r}; expected one of {', '.join(MODES)}")
+        if profile not in PROFILES:
+            raise HTTPException(400, f"engagement has unknown profile {profile!r}; "
+                                     f"expected one of {', '.join(PROFILES)}")
+        if mode in ("llm", "agent") and app.llm() is None:
+            raise HTTPException(400, f"mode {mode!r} requires a configured LLM provider; "
+                                     "configure one in Settings or start in deterministic mode")
+
+    def _check_closed_window(status: str):
+        if status == "window_closed":
+            raise HTTPException(409, "This assessment window closed. Its results remain available. "
+                                     "Create a new engagement with an authorized window.")
+
     @api.post("/api/engagements/{eid}/start", dependencies=[Depends(auth)])
     def start(eid: str, body: dict | None = None):
-        r = app.db.one("SELECT status FROM engagements WHERE id=?", (eid,))
+        r = app.db.one("SELECT status, profile FROM engagements WHERE id=?", (eid,))
         if not r:
             raise HTTPException(404)
+        _check_closed_window(r["status"])
         if r["status"] not in ("draft", "done", "failed", "cancelled", "budget_exhausted"):
             raise HTTPException(409, f"cannot start from status {r['status']}")
         mode = (body or {}).get("mode", "deterministic")
+        _check_startable(mode, r["profile"])
         app.start_async(eid, mode)
         return {"started": True, "mode": mode}
 
@@ -253,19 +318,22 @@ def create_api(app: App) -> FastAPI:
 
     @api.post("/api/engagements/{eid}/resume", dependencies=[Depends(auth)])
     def resume(eid: str, body: dict | None = None):
-        r = app.db.one("SELECT status FROM engagements WHERE id=?", (eid,))
+        r = app.db.one("SELECT status, profile FROM engagements WHERE id=?", (eid,))
         if not r:
             raise HTTPException(404)
+        _check_closed_window(r["status"])
         if r["status"] not in ("draft", "paused", "failed", "cancelled", "budget_exhausted"):
             raise HTTPException(409, f"cannot resume from status {r['status']}")
         t = app._threads.get(eid)
         if t is not None and t.is_alive():
             raise HTTPException(409, "engagement worker already running")
         mode = (body or {}).get("mode", "deterministic")
+        _check_startable(mode, r["profile"])
         t = threading.Thread(target=app._run_guarded,
                              args=(app.orchestrator(), eid, mode), daemon=True)
         app._threads[eid] = t
-        app.db.execute("UPDATE engagements SET status='running' WHERE id=?", (eid,))
+        # status is NOT flipped here: start() reads it to tell a continuation ('paused', or
+        # 'running' left by a crashed worker) from a deliberate fresh run ('done'/'failed')
         t.start()
         return {"resumed": True}
 
@@ -455,11 +523,31 @@ def create_api(app: App) -> FastAPI:
             ex["blob"] = blob
         return ex
 
-    @api.get("/api/engagements/{eid}/report", dependencies=[Depends(auth)])
-    def report(eid: str, format: str = "json"):
+    @api.get("/api/engagements/{eid}/report/kinds", dependencies=[Depends(auth)])
+    def report_kinds(eid: str):
+        """What can be generated for this engagement, and in which formats."""
         if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
             raise HTTPException(404)
-        res = render_report(app.db, app.evidence, eid)
+        return {"kinds": REPORT_KINDS}
+
+    @api.get("/api/engagements/{eid}/report", dependencies=[Depends(auth)])
+    def report(eid: str, format: str = "json", kind: str = "technical"):
+        if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
+            raise HTTPException(404)
+        if kind not in REPORT_KINDS_BY_ID:
+            raise HTTPException(400, f"unknown report kind {kind!r}; expected one of "
+                                     f"{', '.join(REPORT_KINDS_BY_ID)}")
+        if format not in REPORT_KINDS_BY_ID[kind]["formats"]:
+            raise HTTPException(400, f"kind {kind!r} supports "
+                                     f"{', '.join(REPORT_KINDS_BY_ID[kind]['formats'])}, not {format!r}")
+        if kind != "technical":
+            return _focused_report(eid, kind, format)
+        try:
+            res = render_report(app.db, app.evidence, eid)
+        except Exception as exc:  # an unwritable output path must read as a report problem
+            raise HTTPException(500, f"Report render failed: {type(exc).__name__}: {exc}. "
+                                     "The previous report on disk is unchanged; fix the report "
+                                     "output path, then regenerate.")
         p = Path(res["outdir"])
         if format == "md":
             return FileResponse(p / "report.md", media_type="text/markdown")
@@ -474,7 +562,61 @@ def create_api(app: App) -> FastAPI:
             body = defectdojo_export(json.loads((p / "report.json").read_text()))
             return JSONResponse(body, headers={
                 "Content-Disposition": f'attachment; filename="libella-{eid}-defectdojo.json"'})
+        if format in ("html", "docx", "xlsx", "csv"):
+            from . import report_formats
+            doc = json.loads((p / "report.json").read_text())
+            if format == "html":
+                return HTMLResponse(report_formats.render_html(doc))
+            if format == "csv":
+                return PlainTextResponse(report_formats.render_csv(doc), media_type="text/csv",
+                                         headers={"Content-Disposition": f'attachment; filename="{eid}.csv"'})
+            if format == "docx":
+                path = report_formats.render_docx(doc, p / "report.docx")
+                return FileResponse(path, filename=f"{eid}.docx",
+                                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            path = report_formats.render_xlsx(doc, p / "report.xlsx")
+            return FileResponse(path, filename=f"{eid}.xlsx",
+                                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         return json.loads((p / "report.json").read_text())
+
+    def _focused_report(eid: str, kind: str, format: str):
+        """Executive, coverage, evidence-ledger and GitLab views of the same report."""
+        from . import report_kinds
+
+        res = render_report(app.db, app.evidence, eid)  # one source of truth, rendered first
+        doc = json.loads((Path(res["outdir"]) / "report.json").read_text())
+        if kind == "gitlab":
+            return JSONResponse(report_kinds.gitlab_json(doc), headers={
+                "Content-Disposition": f'attachment; filename="libella-{eid}-gitlab-dast.json"'})
+        if kind == "evidence":
+            csv_text = report_kinds.evidence_csv(app.db, eid)
+            if format == "csv":
+                out = Path(res["outdir"]) / "evidence.csv"
+                _write_atomic(out, csv_text)
+                return FileResponse(out, media_type="text/csv",
+                                    filename=f"libella-{eid}-evidence.csv")
+            md = ("# Evidence appendix (chain metadata)\n\n"
+                  "This appendix lists the evidence ledger, not raw captured content: id, kind, "
+                  "SHA-256 and chain hash, in insertion order. Bodies and headers stay redacted "
+                  "in the platform and are never exported here.\n\n```csv\n"
+                  + csv_text.strip() + "\n```\n")
+        elif kind == "executive":
+            md = report_kinds.executive_md(doc)
+        else:
+            md = report_kinds.coverage_md(doc)
+        title = {"executive": "Executive security summary", "coverage": "Methodology and coverage",
+                 "evidence": "Evidence appendix"}[kind]
+        if format == "md":
+            out = Path(res["outdir"]) / f"{kind}.md"
+            _write_atomic(out, md)
+            return FileResponse(out, media_type="text/markdown",
+                                filename=f"libella-{eid}-{kind}.md")
+        html = report_kinds.html_doc(f"{title} — {title}", report_kinds.md_to_html(md))
+        if format == "html":
+            return HTMLResponse(html)
+        from .tools.browser_fetch import render_pdf
+        pdf = render_pdf(html, Path(res["outdir"]) / f"{kind}.pdf")
+        return FileResponse(pdf, media_type="application/pdf", filename=f"libella-{eid}-{kind}.pdf")
 
     # ---------------- remediation tracking + historical comparison (WS-Report) ----
     @api.post("/api/findings/{fid}/remediation", dependencies=[Depends(auth)])
@@ -514,14 +656,97 @@ def create_api(app: App) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(404, f"engagement not found: {exc}")
 
+    # ---- standards coverage ledger (per-requirement accounting, no execution) ----
+    from .standards import available as _standards_available
+
+    @api.get("/api/standards", dependencies=[Depends(auth)])
+    def list_standards():
+        return {"standards": _standards_available()}
+
+    @api.get("/api/engagements/{eid}/coverage/{framework}", dependencies=[Depends(auth)])
+    def coverage_workspace(eid: str, framework: str = "wstg"):
+        from .coverage import workspace
+        try:
+            return workspace(app.db, eid, framework, app.evidence)
+        except KeyError as exc:  # unknown standard id
+            raise HTTPException(404, f"unknown standard: {exc}") from None
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+
+    @api.put("/api/engagements/{eid}/coverage/{framework}/{requirement_id}",
+             dependencies=[Depends(auth)])
+    def coverage_record(eid: str, framework: str, requirement_id: str, body: dict):
+        from .coverage import record
+        try:
+            return record(app.db, eid, requirement_id, body.get("status"), body.get("note"),
+                          body.get("evidence_id"), framework)
+        except LookupError as exc:  # covers KeyError for an unknown standard id
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @api.post("/api/engagements/{eid}/coverage/{framework}/{requirement_id}/links",
+              dependencies=[Depends(auth)])
+    def coverage_link(eid: str, framework: str, requirement_id: str, body: dict):
+        """Analyst correction of finding -> requirement attribution, kept as history."""
+        from .coverage import link
+        try:
+            return link(app.db, eid, framework, requirement_id, body.get("finding_id"),
+                        body.get("action"), body.get("note"))
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @api.put("/api/engagements/{eid}/standards", dependencies=[Depends(auth)])
+    def set_standards(eid: str, body: dict):
+        """Select which standards this engagement is assessed against, and their level.
+
+        The body replaces the selection: {"asvs": {"level": 2}, "api-top10": {}}.
+        A standard with verification levels needs one; a standard without levels
+        must not be given one. WSTG is always reported and needs no selection.
+        """
+        from .standards import levels
+        if not app.db.one("SELECT id FROM engagements WHERE id=?", (eid,)):
+            raise HTTPException(404, "engagement not found")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must map standard id to its settings")
+        chosen = {}
+        for framework, cfg in body.items():
+            try:
+                allowed = levels(framework)
+            except KeyError:
+                raise HTTPException(404, f"unknown standard: {framework}") from None
+            level = (cfg or {}).get("level") if isinstance(cfg, dict) else None
+            if allowed and level not in allowed:
+                raise HTTPException(400, f"{framework} level must be one of {allowed}")
+            if not allowed and level is not None:
+                raise HTTPException(400, f"{framework} has no verification levels")
+            chosen[framework] = {"level": level} if allowed else {}
+        app.db.execute("UPDATE engagements SET standards_json=? WHERE id=?",
+                       (json.dumps(chosen), eid))
+        return chosen
+
     @api.get("/api/tools", dependencies=[Depends(auth)])
     def tools():
         return app.registry.available()
 
+    from .routes_tools import register as register_tool_routes
+    register_tool_routes(api, app, auth)
+
+    @api.post("/api/tools/{name}/version-check", dependencies=[Depends(auth)])
+    def tool_version_check(name: str):
+        from .tools.diagnostics import diagnose
+        # Caller picks a registered tool only; executable and arguments are server-side.
+        try:
+            spec = app.registry.get(name)
+        except KeyError:
+            raise HTTPException(404, "Tool not registered.") from None
+        return diagnose(spec)
+
     @api.get("/api/settings", dependencies=[Depends(auth)])
     def get_settings():
-        row = app.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
-        cfg = json.loads(app.box.decrypt_or_plain(row["value_json"])) if row else {}
+        cfg = app.llm_settings()
         if cfg.get("api_key"):
             cfg["api_key"] = "[SET]"
         return {"llm": cfg}
@@ -529,16 +754,54 @@ def create_api(app: App) -> FastAPI:
     @api.put("/api/settings", dependencies=[Depends(auth)])
     def put_settings(body: dict):
         if "llm" in body:
-            existing = app.db.one("SELECT value_json FROM settings WHERE key='llm_config'")
-            cfg = json.loads(app.box.decrypt_or_plain(existing["value_json"])) if existing else {}
+            cfg = app.llm_settings()
             new = body["llm"]
+            if not isinstance(new, dict) or ("base_url" in new and not isinstance(new["base_url"], str)):
+                raise HTTPException(400, "Invalid provider settings.")
+            if isinstance(new.get("api_key"), str):
+                new["api_key"] = new["api_key"].strip()
             if new.get("api_key") in ("[SET]", "", None):
                 new.pop("api_key", None)
+            if "base_url" in new:
+                if new["base_url"].strip():
+                    try:
+                        new["base_url"] = normalize_base(new["base_url"].strip())
+                    except ValueError:
+                        raise HTTPException(400, "Use an HTTPS base URL without credentials, a query, "
+                                                 "or a fragment. Plain HTTP is allowed only for a loopback IP.") from None
+                if not same_base(cfg.get("base_url"), new["base_url"]):
+                    cfg.pop("api_key", None)
             cfg.update(new)
             app.db.execute("INSERT INTO settings(key, value_json) VALUES('llm_config', ?) "
                            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
                            (app.box.encrypt(json.dumps(cfg)),))
         return {"ok": True}
+
+    # shortcut: per-process lock, so "busy" only holds with a single uvicorn worker (as tickets above).
+    provider_test_lock = threading.Lock()
+
+    @api.post("/api/settings/provider-test", dependencies=[Depends(auth)])
+    async def provider_test(request: Request):
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 8192:
+                raise HTTPException(413, "Provider settings are too large.")
+            raw.extend(chunk)
+        try:
+            draft = json.loads(raw)
+        except (ValueError, RecursionError):
+            raise HTTPException(400, "Invalid provider settings.") from None
+        if not isinstance(draft, dict) or any(
+            k not in {"base_url", "default_model", "api_key"} or not isinstance(v, str) or len(v) > 2048
+            for k, v in draft.items()
+        ):
+            raise HTTPException(400, "Invalid provider settings.")
+        if not provider_test_lock.acquire(blocking=False):
+            return diagnostic_result("busy")
+        try:
+            return await test_connection(app.llm_settings(), draft)
+        finally:
+            provider_test_lock.release()
 
     @api.get("/api/engagements/{eid}/graph", dependencies=[Depends(auth)])
     def graph(eid: str, include: str | None = None):
@@ -747,6 +1010,14 @@ def create_api(app: App) -> FastAPI:
                         "error": str(e)[:300], "tools": []}
         return {"server": server, "available": True,
                 "tools": [s.schema() for s in specs]}
+
+    # target credentials: sealed at rest, tested only inside an authorized scope
+    from .routes_target_auth import register as register_target_auth
+    register_target_auth(api, app, auth)
+
+    # registered runtime specialists: read-only lifecycle view
+    from .routes_specialists import register as register_specialist_routes
+    register_specialist_routes(api, app, auth)
 
     # static frontend (built). Resolve robustly: env override, container path,
     # then source-tree relative (pip-installed packages live in site-packages,

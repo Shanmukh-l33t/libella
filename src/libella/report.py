@@ -4,12 +4,18 @@ Outputs: Markdown, JSON, SARIF 2.1.0. Redaction pass over secrets/PII.
 Coverage and degradation sections are mandatory: a blocked scan must never
 read as 'all clear'.
 """
+import hashlib
 import json
+import os
 import re
+import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote
 
+from . import __version__
+from . import coverage
 from .db import DB
 from .evidence import EvidenceStore
 
@@ -61,6 +67,26 @@ def redact_headers(headers: dict | None) -> dict:
             for k, v in (headers or {}).items()}
 
 
+# Serializes the write+ledger step so two concurrent GETs of one state record once.
+# shortcut: per process; two processes can still append one artifact row each.
+_RENDER_LOCK = threading.Lock()
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Readers must never see a half-written report: temp file, then os.replace."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
 def _md(value) -> str:
     """Single-line, code-span-safe rendering of any untrusted value."""
     s = "" if value is None else str(value)
@@ -78,6 +104,45 @@ def _csv_escape(s: str) -> str:
     return s
 
 
+def _coverage_md(md: list, c: dict) -> None:
+    """One standard's ledger: totals, per-chapter table, and what was never tested."""
+    cs = c["summary"]
+    fw = c["framework"]
+    level = f" Level {cs['level']}" if cs.get("level") else ""
+    name = str(fw["id"]).removeprefix("OWASP-")  # "WSTG 4.2", "ASVS 5.0.0 Level 2"
+    md.append(f"\n## {_md(name)} {_md(fw['version'])}{level} coverage\n")
+    md.append("Derived from what this engagement executed, not from what was planned. "
+              "A requirement that is not tested is not a pass, and a check that covers only "
+              "part of a requirement is reported as partial evidence.\n")
+    if cs.get("excluded_by_level"):
+        md.append(f"- {cs['total']} of {cs['catalog']} requirements apply at the selected level "
+                  f"({cs['excluded_by_level']} higher-level requirements excluded)")
+    md.append(f"- Applicable: {cs['applicable']} of {cs['total']} | "
+              f"supported by a Libella check: {cs['supported']} | attempted: {cs['attempted']} | "
+              f"completed: {cs['completed']} (partial evidence: {cs.get('partial', 0)}) | "
+              f"with findings: {cs['with_findings']}")
+    md.append(f"- Skipped by profile or dependency: {cs['skipped']} | manual review required: "
+              f"{cs['manual_required']} | not tested: {cs['not_tested']}\n")
+    md.append("| Chapter | requirements | completed | findings | skipped | manual | untested |")
+    md.append("|---|---|---|---|---|---|---|")
+    for cat in c["categories"]:
+        k = cat["counts"]
+        done = sum(k.get(x, 0) for x in coverage.COMPLETED)
+        md.append(f"| {_md(cat['id'])} {_md(cat['name'])} | {cat['tests']} | {done} | "
+                  f"{k['finding_unverified'] + k['finding_verified']} | "
+                  f"{k['skipped_policy'] + k['skipped_dependency']} | "
+                  f"{k['requires_manual']} | {cat['tests'] - done} |")
+    untested = {}
+    for t in c["not_tested"]:
+        untested.setdefault(t["id"].rsplit("-" if t["id"].startswith("WSTG") else ".", 1)[0],
+                            []).append(t["id"])
+    if untested:
+        md.append("\n### Not tested\n")
+        for prefix in sorted(untested):
+            md.append(f"- {prefix} ({len(untested[prefix])}): {', '.join(untested[prefix])}")
+    md.append("")
+
+
 def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
                   outdir: str | Path | None = None) -> dict:
     eng = db.one("SELECT * FROM engagements WHERE id=?", (engagement_id,))
@@ -91,6 +156,13 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         "SELECT * FROM events WHERE engagement_id=? AND kind='degradation' ORDER BY seq",
         (engagement_id,))
     tool_calls = db.query("SELECT * FROM tool_calls WHERE engagement_id=?", (engagement_id,))
+    agent_runs = db.query(
+        "SELECT role, model, status, exit_reason, iterations, cost_usd FROM agent_runs "
+        "WHERE engagement_id=? ORDER BY started_at", (engagement_id,))
+    started = db.one(
+        "SELECT payload_json FROM events WHERE engagement_id=? AND kind='engagement_started' "
+        "ORDER BY seq DESC LIMIT 1", (engagement_id,))
+    mode = json.loads(started["payload_json"]).get("mode") if started else None
     verifications = db.query("SELECT * FROM verifications WHERE finding_id IN "
                              "(SELECT id FROM findings WHERE engagement_id=?)", (engagement_id,))
     spend = db.one("SELECT COALESCE(SUM(cost_usd),0) c, COALESCE(SUM(input_tokens),0) i, "
@@ -101,12 +173,22 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
     by_state = {}
     for f in findings:
         by_state[f["state"]] = by_state.get(f["state"], 0) + 1
-    confirmed = [f for f in findings if f["state"] in ("validated", "reported", "retested_persists")]
+    # one source of truth for "independently validated": the same state set the
+    # offline gate derives `verified` from, so a report cannot declare a count
+    # its own per-finding flags contradict. retest states are earned, not bypassed
+    # (findings.ALLOWED_TRANSITIONS), so this is a claim about a reproduced proof.
+    CONFIRMED_STATES = {"validated", "reported", "retested_persists"}  # == gate.CONFIRMED_STATES
+
+    def _verified(f: dict) -> bool:
+        return f["state"] in CONFIRMED_STATES
+
+    confirmed = [f for f in findings if _verified(f)]
     refused = [t for t in tool_calls if (t["scope_decision"] or "").startswith("refused")]
 
     report = {
         "engagement": {"id": eng["id"], "name": _safe(eng["name"]), "status": eng["status"],
-                       "profile": eng["profile"], "started_at": eng["started_at"],
+                       "profile": eng["profile"], "mode": mode,
+                       "started_at": eng["started_at"],
                        "finished_at": eng["finished_at"], "status_detail": _safe(eng["status_detail"])},
         "scope": scope,
         "summary": {
@@ -123,8 +205,31 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         "degradations": [{"code": _safe(json.loads(d["payload_json"]).get("code")),
                           "detail": _safe(json.loads(d["payload_json"]).get("detail"))}
                          for d in degradations],
+        "agent_runs": [{"role": r["role"], "model": r["model"], "status": r["status"],
+                        "exit_reason": r["exit_reason"], "iterations": r["iterations"],
+                        "cost_usd": r["cost_usd"]} for r in agent_runs],
         "generated_at": time.time(),
     }
+    # Methodology coverage is part of the report, not an appendix: an untested
+    # category must never read as clean.
+    def _ledger(cov):
+        return {
+            "framework": cov["framework"], "summary": cov["summary"],
+            "categories": [{"id": c["id"], "name": c["name"], "tests": len(c["tests"]),
+                            "counts": c["counts"]} for c in cov["categories"]],
+            "not_tested": [{"id": t["id"], "title": t["title"], "status": t["status"]}
+                           for c in cov["categories"] for t in c["tests"]
+                           if t["automatic"]["status"] not in coverage.COMPLETED
+                           and t["status"] != "covered"],
+        }
+    report["coverage"] = _ledger(coverage.workspace(db, engagement_id, evidence=evidence))
+    # every standard the engagement selected is accounted for in the report itself
+    try:
+        selected = json.loads(eng.get("standards_json") or "{}")
+    except ValueError:
+        selected = {}
+    report["standards"] = [_ledger(coverage.workspace(db, engagement_id, fid, evidence))
+                           for fid in selected if fid != coverage.DEFAULT]
     for f in findings:
         vs = [v for v in verifications if v["finding_id"] == f["id"]]
         report["findings"].append({
@@ -135,12 +240,14 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
             "evidence_ids": [_safe(e) for e in json.loads(f["evidence_ids_json"])],
             "verifications": [{"attempt": v["attempt"], "verdict": v["verdict"],
                                "detail": _safe(v["detail"])} for v in vs],
+            "verified": _verified(f),
         })
 
     # ---- Markdown ----
     md = []
     md.append(f"# Penetration Test Report: {_md(redact(eng['name']))}\n")
-    md.append(f"Engagement `{eng['id']}` | profile `{_md(eng['profile'])}` | status `{_md(eng['status'])}`")
+    md.append(f"Engagement `{eng['id']}` | profile `{_md(eng['profile'])}` | "
+              f"mode `{_md(mode)}` | status `{_md(eng['status'])}`")
     if eng["status_detail"]:
         md.append(f"Status detail: {_md(redact(eng['status_detail']))}")
     md.append("\nGenerated by Libella (deterministic rendering from captured evidence).\n")
@@ -160,8 +267,15 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         md.append("\n## Coverage limitations (read before trusting 'no findings')\n")
         for d in report["degradations"]:
             md.append(f"- **{_md(d['code'])}**: {_md(redact(str(d['detail'])))}")
+    if agent_runs:
+        md.append("\n## Agent runs\n")
+        for r in agent_runs:
+            md.append(f"- {_md(r['role'])} ({_md(r['model'])}): {_md(r['status'])} after "
+                      f"{r['iterations']} iterations, exit `{_md(r['exit_reason'])}`")
     if eng["status"] not in ("done",):
         md.append(f"\n> Assessment ended with status `{eng['status']}`. Results may be incomplete.\n")
+    for c in [report["coverage"], *report["standards"]]:
+        _coverage_md(md, c)
     md.append("\n## Findings\n")
     if not findings:
         md.append("No findings recorded. Check coverage limitations above before interpreting this as secure.\n")
@@ -178,6 +292,29 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
             md.append(f"- Independent verification: **{last['verdict']}** ({last['detail']})")
         md.append(f"- Evidence: {', '.join('`'+e+'`' for e in f['evidence_ids'])}")
         md.append("")
+    # Impact is a separate dimension from verification: a verified finding is a
+    # reproduced signal, not proof of what it costs. Say which, explicitly.
+    impact = db.query("SELECT kind, summary, quote, evidence_id FROM observations "
+                      "WHERE engagement_id=? AND kind='impact_demonstrated' "
+                      "ORDER BY rowid", (engagement_id,))
+    report["impact"] = [{"summary": _safe(o["summary"]), "quote": _safe(o["quote"]),
+                         "evidence_id": _safe(o["evidence_id"])} for o in impact]
+    md.append("\n## Demonstrated impact\n")
+    if report["impact"]:
+        for o in report["impact"]:
+            md.append(f"- {o['summary']}")
+            if o["quote"]:
+                md.append(f"  - observed: `{o['quote']}`")
+            if o["evidence_id"]:
+                md.append(f"  - evidence: `{o['evidence_id']}`")
+    elif any(f["verified"] for f in report["findings"]):
+        md.append("Verified findings reproduced their recorded signal; none was taken further to a "
+                  "demonstrated impact in this engagement. Impact proof requires an explicitly "
+                  "authorized lab, so nothing here shows what an attacker would gain.")
+    else:
+        md.append("Nothing was verified, so no impact could be demonstrated.")
+    md.append("")
+
     md.append("\n## Method\n")
     md.append("Reconnaissance and crawling, deterministic web checks, template scanning (where available), "
               "independent replay verification of every candidate finding. Every tool call was scope-checked "
@@ -189,7 +326,7 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",
         "runs": [{
-            "tool": {"driver": {"name": "Libella", "version": "0.1.0",
+            "tool": {"driver": {"name": "Libella", "version": __version__,
                                 "informationUri": "https://github.com/Shanmukh-l33t/libella"}},
             "results": [{
                 "ruleId": f["cwe"] or "libella/finding",
@@ -206,9 +343,20 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
 
     outdir = Path(outdir) if outdir else Path(evidence.root) / engagement_id / "report"
     outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / "report.md").write_text(md_text)
-    (outdir / "report.json").write_text(json.dumps(report, indent=2, default=str))
-    (outdir / "report.sarif").write_text(json.dumps(sarif, indent=2))
-    ev = evidence.put_json(engagement_id, report, "report")
-    db.emit(engagement_id, "report_rendered", {"evidence_id": ev["id"], "path": str(outdir)})
+    _write_atomic(outdir / "report.md", md_text)
+    _write_atomic(outdir / "report.json", json.dumps(report, indent=2, default=str))
+    _write_atomic(outdir / "report.sarif", json.dumps(sarif, indent=2))
+    # One artifact row per unchanged state: a report GET is a read, not an event.
+    state = hashlib.sha256(json.dumps({**report, "generated_at": None}, sort_keys=True,
+                                      default=str).encode()).hexdigest()
+    with _RENDER_LOCK:
+        last = db.one("SELECT payload_json FROM events WHERE engagement_id=? "
+                      "AND kind='report_rendered' ORDER BY seq DESC LIMIT 1", (engagement_id,))
+        prev = json.loads(last["payload_json"]) if last else {}
+        if prev.get("state") == state and prev.get("evidence_id"):
+            return {"outdir": str(outdir), "evidence_id": prev["evidence_id"],
+                    "summary": report["summary"]}
+        ev = evidence.put_json(engagement_id, report, "report")
+        db.emit(engagement_id, "report_rendered",
+                {"evidence_id": ev["id"], "path": str(outdir), "state": state})
     return {"outdir": str(outdir), "evidence_id": ev["id"], "summary": report["summary"]}

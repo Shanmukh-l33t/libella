@@ -103,6 +103,20 @@ export default function CommandCenter() {
       <ErrorNote error={list.error} />
       <ErrorNote error={partial} />
 
+      {list.data && !list.data.length && (
+        <Card title="Get started" description="Four short setup steps before your first assessment. None of them touches a target."
+          actions={<Button variant="primary" onClick={() => navigate("/setup")}>Open setup</Button>}>
+          <ol className="grid gap-1 text-sm text-ink-700 sm:grid-cols-2">
+            {["Check the backend and data store", "Connect an AI provider, or stay offline", "Review installed tools", "Review results or create a draft"].map((s, i) => (
+              <li key={s} className="flex gap-2">
+                <span className="w-3 shrink-0 tabular-nums text-ink-300">{i + 1}</span>
+                <span>{s}</span>
+              </li>
+            ))}
+          </ol>
+        </Card>
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Stat label="Active assessments" value={list.loading ? <Skeleton className="h-6 w-8" /> : active.length}
           hint={engagements.filter((e) => e.status === "draft").length ? `${engagements.filter((e) => e.status === "draft").length} draft` : "running or paused"} />

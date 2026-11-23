@@ -31,6 +31,11 @@ def _template_roots() -> list[str]:
 
 # ---- nmap ----
 
+# nmap --max-rate is packets/s, not requests/s: a declared rps ceiling is carried
+# over as packets and capped so a high rate_limit_rps cannot make the scan loud.
+NMAP_MAX_RATE = 200
+
+
 def _nmap_argv(p: dict, decision) -> list[str]:
     targets = decision.resolved_ips or [p["target"]]
     argv = ["nmap", "-Pn", "--open", "-oX", "-"]
@@ -41,7 +46,8 @@ def _nmap_argv(p: dict, decision) -> list[str]:
         argv += ["-p", ports]
     else:
         argv += ["--top-ports", str(p.get("top_ports", 100))]
-    argv += ["-T3", "--max-retries", "1", "--host-timeout", "90s"]
+    argv += ["-T3", "--max-retries", "1", "--host-timeout", "90s",
+             "--max-rate", str(p.get("rate_limit", NMAP_MAX_RATE))]
     argv += targets
     return argv
 
@@ -78,18 +84,29 @@ NMAP = ToolSpec(
         "ports": {"type": "string", "maxLength": 100, "description": "e.g. 80,443 or 1-1024"},
         "top_ports": {"type": "integer", "minimum": 1, "maximum": 65535},
         "service_detect": {"type": "boolean"},
+        "rate_limit": {"type": "integer", "minimum": 1, "maximum": NMAP_MAX_RATE},
     },
-    required=["target"], handler=_nmap_argv,
+    required=["target"], handler=_nmap_argv, port_param="ports",
 )
 
 # ---- nuclei ----
 
+# nuclei's own -rate-limit ceiling; the declared engagement rate is passed through.
+NUCLEI_MAX_RATE = 150
+
+
 def _nuclei_argv(p: dict, decision) -> list[str]:
     target = p["target"]
-    argv = ["nuclei", "-u", target, "-jsonl", "-silent", "-no-color",
+    # -stats (JSON, to stderr) is what makes progress real; -silent would suppress it.
+    argv = ["nuclei", "-u", target, "-jsonl", "-no-color", "-stats", "-si", "5",
             "-rate-limit", str(p.get("rate_limit", 50)),
             "-timeout", str(p.get("timeout", 10)),
-            "-retries", "0", "-disable-update-check"]
+            "-retries", "0", "-disable-update-check",
+            # callbacks would go to public interactsh hosts the engagement does not authorize
+            "-no-interactsh"]
+    if target.startswith(("http://", "https://")):
+        # a URL target is not a DNS/TCP/SSL target: those templates dial other ports
+        argv += ["-pt", "http"]
     tdir = os.path.expanduser("~/nuclei-templates")
     if os.path.isdir(tdir):
         argv += ["-t", tdir]
@@ -102,6 +119,33 @@ def _nuclei_argv(p: dict, decision) -> list[str]:
     if p.get("templates"):
         argv += ["-t", _confine_path(p["templates"], _template_roots(), "templates")]
     return argv
+
+
+def parse_nuclei_stats(line: str) -> dict | None:
+    """One progress sample from `nuclei -stats` (a JSON object on stderr).
+
+    Real numbers only: the engine reports its own percent/requests/rps, so the UI never
+    has to invent a percentage.
+    """
+    line = line.strip()
+    if not line.startswith("{"):
+        return None
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(row, dict) or not {"percent", "requests", "templates"} <= set(row):
+        return None
+
+    def num(key):
+        try:
+            return int(float(row.get(key)))
+        except (TypeError, ValueError):
+            return None
+
+    return {"percent": num("percent"), "requests": num("requests"), "matched": num("matched"),
+            "errors": num("errors"), "rps": num("rps"), "templates": num("templates"),
+            "total_requests": num("total"), "elapsed": row.get("duration")}
 
 
 def parse_nuclei_jsonl(stdout: str) -> list[dict]:
@@ -136,7 +180,7 @@ NUCLEI = ToolSpec(
                      "pattern": r"(info|low|medium|high|critical)(,(info|low|medium|high|critical))*"},
         "tags": {"type": "string", "maxLength": 200},
         "templates": {"type": "string", "maxLength": 500},
-        "rate_limit": {"type": "integer", "minimum": 1, "maximum": 150},
+        "rate_limit": {"type": "integer", "minimum": 1, "maximum": NUCLEI_MAX_RATE},
         "timeout": {"type": "integer", "minimum": 1, "maximum": 30},
     },
     required=["target"], handler=_nuclei_argv,
@@ -208,9 +252,20 @@ def _ffuf_argv(p: dict, decision) -> list[str]:
 
 
 def parse_ffuf_json(stdout: str) -> list[dict]:
+    # With -s and -o /dev/stdout, ffuf prints matched words before the JSON report;
+    # parsing the whole stream silently returned [] for every real scan.
+    r = None
     try:
         r = json.loads(stdout)
     except json.JSONDecodeError:
+        for line in reversed(stdout.splitlines()):
+            if line.lstrip().startswith("{"):
+                try:
+                    r = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+    if not isinstance(r, dict):
         return []
     return [{"url": x.get("url"), "status": x.get("status"), "length": x.get("length"),
              "words": x.get("words")} for x in r.get("results", [])]
@@ -232,4 +287,5 @@ FFUF = ToolSpec(
 
 ALL_ADAPTERS = [NMAP, NUCLEI, HTTPX, SUBFINDER, FFUF]
 PARSERS = {"nmap": parse_nmap_xml, "nuclei": parse_nuclei_jsonl,
+           "nuclei_stats": parse_nuclei_stats,
            "httpx": parse_httpx_jsonl, "ffuf": parse_ffuf_json}

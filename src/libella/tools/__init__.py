@@ -17,6 +17,7 @@ class ToolSpec:
     handler: Callable | None = None
     timeout_s: int = 120
     target_param: str = "target"  # the param the adapter actually dials/scans
+    port_param: str | None = None  # param declaring the ports it dials, when enumerable
 
     def schema(self) -> dict:
         return {
@@ -73,6 +74,11 @@ class Registry:
 
     def for_category(self, category: str) -> list[ToolSpec]:
         return [t for t in self.tools.values() if t.category == category]
+
+    def diagnostics(self) -> list[dict]:
+        """Functional readiness per tool (executes the version command, cached)."""
+        from .diagnostics import diagnose
+        return [diagnose(t) for t in self.tools.values()]
 
 
 def validate_params(spec: ToolSpec, params: dict) -> dict:
