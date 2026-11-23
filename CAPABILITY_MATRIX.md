@@ -131,11 +131,15 @@ REAL-TARGET = exercised against an authorized external site.
 | Dial-time egress on every path | `egress.py` | VERIFIED, REAL-TARGET | KeyReed: 200/47KB read, 0 denials after alias fix |
 | WAF challenge classified, not scored | `http_probe.mitigation` | VERIFIED, REAL-TARGET | KeyReed: 114 challenge responses -> inconclusive |
 
-Joint acceptance (`benchmarks/acceptance_offence.py`): two real engagements drive
-planner -> executor -> lab -> pipeline; 8 findings, all independently validated,
-ledgers and evidence chains intact. JWT and role-matrix audits are exercised that
-way. Injection, web-protocol, OAuth and session audits remain lab-proven and wired
-but are not yet exercised in a joint run. A blocked audit (preconditions unmet)
+Joint acceptance (`benchmarks/acceptance_offence.py`): SIX real engagements drive
+planner -> executor -> lab -> pipeline, 21 findings all independently validated,
+ledgers and evidence chains intact: JWT forgery (CWE-347/613/863), role matrix
+(CWE-306/639), OAuth (CWE-601/863/352/598), session (CWE-384/613/620), injection
+LFI (CWE-22) and host-header injection (CWE-601). Every audit is now exercised
+end to end, not only lab-tested.
+`scripts/check_test_env.py` (run in CI) fails when a critical test group stops
+being collected or Chromium will not launch, because those turn tests into silent
+skips and make a suite look greener while covering less. A blocked audit (preconditions unmet)
 reports `inconclusive`, never a pass. OOB and smuggling proofs replay as
 inconclusive by design; nmap remains argv-confined and is reported as
 egress-unconfined.

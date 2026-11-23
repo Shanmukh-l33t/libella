@@ -30,6 +30,8 @@ jobs:
           chmod +x /usr/local/bin/trivy /usr/local/bin/gitleaks
       - name: Install browser (rendered-crawl tests)
         run: python -m playwright install --with-deps chromium
+      - name: Test environment readiness (critical groups collected, Chromium launches)
+        run: python scripts/check_test_env.py
       - name: Lint
         run: ruff check src/ tests/ benchmarks/
       - name: Unit tests
