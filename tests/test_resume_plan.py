@@ -90,7 +90,7 @@ def test_resume_does_not_clone_the_plan(tmp_path, lab):
 
 
 def test_run_again_on_a_completed_engagement_plans_fresh_work(tmp_path, lab):
-    """Negative control: a completed engagement has no open intents, so it replans."""
+    """Negative control: a deliberate Run again on a finished engagement plans fresh work."""
     data, scope = _app(tmp_path, lab, status="done")
     eng = data.db.one("SELECT * FROM engagements WHERE id='eng'")
     _orch(data)._plan_deterministic("eng", scope, eng)
@@ -98,13 +98,31 @@ def test_run_again_on_a_completed_engagement_plans_fresh_work(tmp_path, lab):
     assert first
     data.db.execute("UPDATE intents SET status='done'")  # everything finished
 
-    # start()'s gate: nothing unfinished, so a Run again plans fresh work
-    assert _orch(data)._reopen_unfinished("eng") is False
-    _orch(data)._plan_deterministic("eng", scope, eng)
+    # start() reads 'done' as "the operator wants a new run", so it plans rather than resumes
+    o = _orch(data)
+    o._run_loop = lambda *a, **k: None  # the decision is what is under test, not the run
+    o.start("eng", "deterministic")
 
-    assert len(_roles(data)) == 2 * len(first)
+    assert len(_roles(data)) == 2 * len(first), "a fresh run did not plan new work"
     assert not data.db.query("SELECT seq FROM events WHERE engagement_id='eng' "
                              "AND kind='plan_resumed'")
+
+
+def test_a_paused_engagement_resumes_through_start(tmp_path, lab):
+    """The same call from 'paused' must continue the plan: this is the real resume path."""
+    data, scope = _app(tmp_path, lab, status="paused")
+    eng = data.db.one("SELECT * FROM engagements WHERE id='eng'")
+    _orch(data)._plan_deterministic("eng", scope, eng)
+    planned = _roles(data)
+    data.db.execute("UPDATE intents SET status='running', claim_token='dead' WHERE role='crawl'")
+
+    o = _orch(data)
+    o._run_loop = lambda *a, **k: None
+    o.start("eng", "deterministic")
+
+    assert _roles(data) == planned, "resuming from 'paused' cloned the plan"
+    assert data.db.query("SELECT seq FROM events WHERE engagement_id='eng' "
+                         "AND kind='plan_resumed'")
 
 
 def _first(data, role):
@@ -172,3 +190,69 @@ def test_completed_work_is_never_reopened(tmp_path, lab):
 
     assert _first(data, "crawl")["status"] == "done"
     assert _first(data, "web_checks")["status"] == "open"
+
+
+def test_a_failed_run_with_every_intent_blocked_is_not_replanned(tmp_path, lab):
+    """A provider outage leaves every intent 'blocked' and nothing open.
+
+    Treating that as "nothing was planned" replanned the whole engagement: measured
+    6 intents -> 12 before this test existed. The blockers are kept (a policy refusal or a
+    target wall is a real answer), but the plan must not be cloned.
+    """
+    data, scope = _app(tmp_path, lab)
+    eng = data.db.one("SELECT * FROM engagements WHERE id='eng'")
+    _orch(data)._plan_deterministic("eng", scope, eng)
+    planned = _roles(data)
+    data.db.execute("UPDATE intents SET status='blocked'")
+
+    assert _orch(data)._reopen_unfinished("eng") is True
+    assert _roles(data) == planned, "a failed run cloned the plan on resume"
+    assert {r["status"] for r in data.db.query(
+        "SELECT status FROM intents WHERE engagement_id='eng'")} == {"blocked"}
+
+
+def test_a_stopped_intent_is_not_treated_as_a_published_plan(tmp_path, lab):
+    """Cancelling marks intents 'stopped': a fresh run after a cancel plans normally."""
+    data, scope = _app(tmp_path, lab)
+    eng = data.db.one("SELECT * FROM engagements WHERE id='eng'")
+    _orch(data)._plan_deterministic("eng", scope, eng)
+    data.db.execute("UPDATE intents SET status='stopped'")
+
+    assert _orch(data)._reopen_unfinished("eng") is False
+
+
+def test_resume_route_does_not_pre_flip_status(tmp_path, lab):
+    """The API /resume route must leave the status for start() to read.
+
+    It used to set status='running' before start() ran, which made every continuation look
+    like a fresh run: `start()` could never see 'paused' and replanned the whole engagement.
+    A unit test that drives start() directly cannot catch that regression, so this drives the
+    real route and asserts the state it hands over.
+    """
+    from fastapi.testclient import TestClient
+
+    from libella.api import create_api
+
+    data, scope = _app(tmp_path, lab, status="paused")
+    data.db.execute(
+        "INSERT INTO intents(id, engagement_id, role, objective, status, claim_token, created_at) "
+        "VALUES('c1','eng','crawl',?, 'running', 'deadworker', 0)", (f"Crawl {lab}",))
+    seen = {}
+
+    def fake_guarded(orch, eid, mode):
+        # what start() will observe as the pre-run status
+        seen["status"] = data.db.one("SELECT status FROM engagements WHERE id='eng'")["status"]
+        seen["claim"] = data.db.one(
+            "SELECT claim_token FROM intents WHERE id='c1'")["claim_token"]
+
+    data._run_guarded = fake_guarded
+    client = TestClient(create_api(data), headers={"Authorization": f"Bearer {data.token}"})
+    resp = client.post("/api/engagements/eng/resume", json={"mode": "deterministic"})
+    assert resp.status_code == 200, resp.text
+    for _ in range(100):
+        if "status" in seen:
+            break
+        import time as _t
+        _t.sleep(0.02)
+    assert seen["status"] == "paused", f"route pre-flipped the status to {seen['status']!r}"
+    assert seen["claim"] == "deadworker", "the dead worker's claim was already cleared"

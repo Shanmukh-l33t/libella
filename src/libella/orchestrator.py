@@ -89,15 +89,18 @@ class Orchestrator:
         if not self._window_allows(engagement_id, eng):
             return
         self.gate = self._gate_for(scope)
+        # A continuation ('paused', or 'running' left behind by a crashed worker) must resume
+        # the existing plan; a deliberate run from 'done'/'failed'/'draft' is a fresh plan.
+        # This distinction has to be read BEFORE the status is updated below, and /resume
+        # must not pre-flip it (it used to, which made every continuation look fresh).
+        continuation = eng["status"] in ("paused", "running")
         self.db.execute("UPDATE engagements SET status='running', started_at=? WHERE id=?",
                         (time.time(), engagement_id))
         self.db.emit(engagement_id, "engagement_started", {"mode": mode})
-        # A resumed run continues its own plan. Re-planning on every start duplicated the
-        # whole intent set per restart (in every mode), which also defeated the
-        # duplicate-work guard: it compares against intents already marked done, so a clone
-        # of a still-open intent reads as new work. Re-opens what a dead worker left
-        # 'running' so resume redoes that step instead of recording it as in flight.
-        resumed = self._reopen_unfinished(engagement_id)
+        # Re-planning on every start duplicated the whole intent set per restart (in every
+        # mode), which also defeated the duplicate-work guard: it compares against intents
+        # already marked done, so a clone of a still-open intent read as new work.
+        resumed = self._reopen_unfinished(engagement_id) if continuation else False
         if not resumed:
             if mode == "agent":
                 self._plan_agent(engagement_id, scope, eng)
@@ -110,24 +113,33 @@ class Orchestrator:
     def _reopen_unfinished(self, engagement_id: str) -> bool:
         """True when the engagement already has planned work: resume, do not replan.
 
-        Covers every in-flight status, not only 'open'. A run that was interrupted while
-        REPORTING has no open intent but must not be replanned either: its findings and
-        evidence are final and re-planning would re-scan a target already assessed. Repeated
-        resumes must be idempotent: the second call finds the same unfinished set and adds
-        nothing.
+        "Published" is the test, not "unfinished". A restart must continue an existing plan
+        whatever state its intents are in, because the alternative is cloning the whole plan
+        and paying for a second investigation. Two cases make this subtle:
+
+        * A run killed mid-flight leaves intents 'running' (re-opened below, since the
+          claim token belongs to a dead worker) and possibly 'blocked'.
+        * A run that FAILED leaves every intent 'blocked' (agent_run_failed, provider
+          outage). There is then no open intent at all, and an earlier version of this gate
+          treated that as "nothing planned" and replanned: measured 6 intents -> 12.
+
+        Only a run that produced NO intents is a fresh plan. A blocker that was not the
+        worker dying is still independent of intent status: a resume must not re-run work
+        a policy refusal or an inclusive target wall genuinely blocked, so 'blocked' stays
+        blocked and only the dead worker's leases are reopened.
         """
-        pending = self.db.query(
-            "SELECT id FROM intents WHERE engagement_id=? AND status IN ('open','running')",
+        published = self.db.query(
+            "SELECT id FROM intents WHERE engagement_id=? AND status != 'stopped'",
             (engagement_id,))
-        if not pending:
+        if not published:
             return False
         self.db.execute(
             "UPDATE intents SET status='open', claim_token=NULL, finished_at=NULL "
             "WHERE engagement_id=? AND status='running'", (engagement_id,))
         self.db.emit(engagement_id, "plan_resumed",
-                     {"open_intents": len(pending),
-                      "detail": f"{len(pending)} intent(s) already planned and unfinished: "
-                                f"continuing them instead of cloning the plan"})
+                     {"planned_intents": len(published),
+                      "detail": f"{len(published)} intent(s) already planned: continuing the "
+                                f"existing plan instead of cloning it"})
         return True
 
     def _check_mode(self, mode: str):
@@ -510,6 +522,21 @@ class Orchestrator:
         self.db.emit(engagement_id, "engagement_finished", {"status": status, "detail": detail})
         # a specialist registered but never reached by this run expires with it
         specialists.expire_unrun(self.db, engagement_id)
+        # A terminal engagement must not carry a dead worker's bookkeeping: an unsettled
+        # reservation keeps counting against max_usd, and an agent run left 'running' makes
+        # a finished investigation look like it is still in flight.
+        leaked = self.db.execute(
+            "UPDATE budget_ledger SET state='released', settled_at=? "
+            "WHERE engagement_id=? AND state='reserved'", (time.time(), engagement_id)).rowcount
+        orphaned = self.db.execute(
+            "UPDATE agent_runs SET status='interrupted', finished_at=? "
+            "WHERE engagement_id=? AND status='running'", (time.time(), engagement_id)).rowcount
+        if leaked or orphaned:
+            self.db.emit(engagement_id, "worker_state_released",
+                         {"reservations_released": leaked, "agent_runs_interrupted": orphaned,
+                          "detail": "leftovers of a worker that did not finish were closed at "
+                                    "termination so the ledger counts no phantom spend and no "
+                                    "investigation reads as still running"})
         if status in ("done", "budget_exhausted", "window_closed"):
             # independent verification + report always run at termination, so findings
             # are validated and reported even if the investigation budget capped early.

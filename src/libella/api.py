@@ -332,7 +332,8 @@ def create_api(app: App) -> FastAPI:
         t = threading.Thread(target=app._run_guarded,
                              args=(app.orchestrator(), eid, mode), daemon=True)
         app._threads[eid] = t
-        app.db.execute("UPDATE engagements SET status='running' WHERE id=?", (eid,))
+        # status is NOT flipped here: start() reads it to tell a continuation ('paused', or
+        # 'running' left by a crashed worker) from a deliberate fresh run ('done'/'failed')
         t.start()
         return {"resumed": True}
 
