@@ -13,8 +13,9 @@ Credentials are read from the lab modules at runtime, never copied into this fil
 
 Usage: PYTHONPATH=src python benchmarks/acceptance_offence.py <out-dir>
 Starts the labs in-process on ephemeral ports, so nothing is mocked and no fixed
-port is taken. The engagements run concurrently, one thread each, as the product
-runs them; each carries its own 900s budget.
+port is taken. Engagements run one after another: the labs share one interpreter, so
+several concurrent scanners starve them into an eighteen-minute template walk. Each
+engagement carries its own 900s budget.
 """
 import json
 import sys
@@ -33,12 +34,12 @@ from libella import coverage  # noqa: E402
 from libella.api import App  # noqa: E402
 
 
-def _serve(module: str, attr: str = "app", host: str = "127.0.0.1"):
+def _serve(module: str, attr: str = "app"):
     mod = __import__(module, fromlist=[attr])
     # single-threaded, like the labs' own tests: a scan that opens 25 sockets makes
     # werkzeug refuse the surplus, and nuclei then stops the host at its error cap
     # instead of walking 16k requests for a quarter of an hour.
-    srv = make_server(host, 0, getattr(mod, attr))
+    srv = make_server("127.0.0.1", 0, getattr(mod, attr))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     time.sleep(0.3)
     return mod, srv
@@ -65,10 +66,11 @@ def main(out: Path) -> int:
     out.mkdir(parents=True, exist_ok=True)
     jwt_mod, jwt_srv = _serve("labs.jwtlab.app")
     role_mod, role_srv = _serve("labs.rolelab.app")
-    # the OAuth lab binds 0.0.0.0 so its attacker page answers on the 127.0.0.2 alias
-    oauth_mod, oauth_srv = _serve("labs.oauthlab.app", host="0.0.0.0")
+    oauth_mod, oauth_srv = _serve("labs.oauthlab.app")
     oauth = f"http://127.0.0.1:{oauth_srv.server_port}"
     oauth_mod.app.config["BASE"] = oauth
+    # an attacker origin on another loopback address, deliberately NOT an authorized
+    # target: the audit cannot follow the redirect, so the Location header is the proof
     attacker = f"http://127.0.0.2:{oauth_srv.server_port}"
     inj_mod, inj_srv = _serve("labs.injlab.app")
     proto_mod, proto_srv = _serve("labs.protolab.app", "application")
@@ -207,6 +209,13 @@ def main(out: Path) -> int:
                         f"{proto_res['intents'].get('web_protocol_audit')}")
     if not has("eng_proto", "CWE-601"):
         failures.append("the protocol lab produced no CWE-601 host-header finding")
+    for eid, r in results.items():
+        if r["intents"].get("verify") != "done":
+            failures.append(f"{eid}: verification did not complete: "
+                            f"{r['intents'].get('verify')}")
+        unvalidated = [f["cwe"] or f["id"] for f in r["findings"] if f["state"] != "validated"]
+        if unvalidated:
+            failures.append(f"{eid}: findings did not survive independent replay: {unvalidated}")
     if not any(r["wstg"]["with_findings"] for r in results.values()):
         failures.append("the coverage ledger counted no finding against a WSTG test")
 
