@@ -56,6 +56,45 @@ def test_scheme_restriction():
     assert not s.check_url("gopher://127.0.0.1:8801/").allowed
 
 
+def test_websocket_scheme_is_decided_as_its_http_origin():
+    """A ws upgrade is an authorization question about an http(s) destination.
+
+    Refusing the scheme outright (the old behaviour) made every websocket
+    unassessable AND made the egress negative control vacuous: the block came
+    from the scheme gate, so it never distinguished an authorized destination
+    from a forbidden one.
+    """
+    s = Scope(spec())
+    assert s.check_url("ws://127.0.0.1:8801/ws").allowed
+    assert s.check_url("ws://127.0.0.1:8801/ws", category="web").allowed
+    # and the same restrictions still apply to it
+    assert not s.check_url("ws://127.0.0.1:9999/ws").allowed          # port not authorized
+    assert not s.check_url("ws://127.0.0.1:8801/ws", category="code").allowed  # category
+    assert not s.check_url("wss://127.0.0.1:8801/ws").allowed         # wss is https
+    assert not s.check_url("ws://169.254.169.254/ws").allowed         # metadata block
+    # unknown schemes stay refused
+    assert not s.check_url("gopher://127.0.0.1:8801/").allowed
+    assert not s.check_url("ftp://127.0.0.1:8801/").allowed
+
+
+def test_websocket_default_ports_match_the_http_equivalents():
+    """ws defaults to 80 and wss to 443, so no port means the same thing twice."""
+    s80 = Scope({"targets": [{"kind": "url", "value": "http://127.0.0.1"}], "categories": ["web"]})
+    assert s80.check_url("ws://127.0.0.1/ws").allowed
+    assert not s80.check_url("ws://127.0.0.1:8080/ws").allowed
+    s443 = Scope({"targets": [{"kind": "url", "value": "https://127.0.0.1"}], "categories": ["web"]})
+    assert s443.check_url("wss://127.0.0.1/ws").allowed
+    assert not s443.check_url("ws://127.0.0.1/ws").allowed  # 80 is not the authorized port
+
+
+def test_websocket_url_honours_path_exclusions_and_userinfo():
+    s = Scope(spec(exclusions=[{"kind": "url_prefix", "value": "http://127.0.0.1:8801/admin"}]))
+    assert not s.check_url("ws://127.0.0.1:8801/admin/socket").allowed
+    assert s.check_url("ws://127.0.0.1:8801/app/socket").allowed
+    # userinfo in the authority must not make an off-site host look in-scope
+    assert not s.check_url("ws://127.0.0.1:8801@evil.example/ws").allowed
+
+
 def test_category_gate():
     s = Scope(spec(categories=["recon"]))
     assert not s.check_url("http://127.0.0.1:8801/", category="web").allowed

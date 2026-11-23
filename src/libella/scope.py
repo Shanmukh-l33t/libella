@@ -24,6 +24,16 @@ ALWAYS_BLOCKED = [
 TARGET_KINDS = {"url", "domain", "cidr", "ip", "repo", "image", "cloud"}
 EXCLUSION_KINDS = {"url_prefix", "domain", "cidr", "ip"}
 CATEGORIES = {"recon", "web", "api", "infra", "code", "cloud"}
+# A websocket upgrade is the same destination as its http(s) origin: same host,
+# same port, same path, the upgrade is a header. Authorize it under that scheme;
+# the transport itself is untouched (RFC 6455 says ws defaults to 80, wss to 443).
+WS_EQUIVALENT = {"ws": "http", "wss": "https"}
+
+
+def normalize_scheme(scheme: str) -> str:
+    """`ws`/`wss` -> `http`/`https` for authorization decisions; all else unchanged."""
+    s = (scheme or "").lower()
+    return WS_EQUIVALENT.get(s, s)
 
 
 def parse_origin(url: str) -> tuple[str, str, int, str]:
@@ -31,12 +41,14 @@ def parse_origin(url: str) -> tuple[str, str, int, str]:
 
     Normalizing before comparison is what stops `http://in-scope@evil/`,
     port variants, `..` segments and percent-encoded paths from matching a
-    prefix that the raw string only appears to share.
+    prefix that the raw string only appears to share. The scheme is normalized
+    the same way, so a `ws://` URL is matched against the http target that
+    authorizes it instead of failing to compare.
     """
     if not isinstance(url, str):
         raise ValueError("url must be a string")
     p = urlparse(url)
-    scheme = (p.scheme or "").lower()
+    scheme = normalize_scheme(p.scheme or "")
     host = (p.hostname or "").lower().rstrip(".")
     if not host:
         raise ValueError("no host in url")
@@ -255,11 +267,12 @@ class Scope:
             return Decision(False, "url must be a string")
         try:
             p = urlparse(url)
+            scheme = normalize_scheme(p.scheme or "")
             host = p.hostname
-            port = p.port or (443 if p.scheme == "https" else 80)
+            port = p.port or (443 if scheme == "https" else 80)
         except ValueError as e:
             return Decision(False, f"unparseable url: {e}")
-        if p.scheme not in ("http", "https"):
+        if scheme not in ("http", "https"):
             return Decision(False, f"scheme '{p.scheme}' not permitted")
         if not host:
             return Decision(False, "no host in url")

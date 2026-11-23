@@ -6,6 +6,8 @@ function's return value: if the fixture recorded nothing, nothing was contacted.
 127.0.0.2 is a distinct host on Linux loopback, so "another host" is real
 without any external egress.
 """
+import base64
+import hashlib
 import sys
 import threading
 import time
@@ -32,6 +34,7 @@ class _Node:
 
     def __init__(self, host: str, kind: str = "http"):
         self.hits: list[tuple[str, str]] = []
+        self.ws_upgrades: list[str] = []
         self.chunks = 0
         node = self
 
@@ -40,6 +43,21 @@ class _Node:
 
             def log_message(self, *a):
                 pass
+
+            def _websocket(self):
+                """A minimal RFC 6455 handshake, so a real client can complete it."""
+                if "websocket" not in (self.headers.get("Upgrade") or "").lower():
+                    return self._send(400, b"not an upgrade")
+                key = self.headers.get("Sec-WebSocket-Key", "")
+                acc = base64.b64encode(hashlib.sha1(
+                    (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+                node.ws_upgrades.append(self.path)
+                self.wfile.write(("HTTP/1.1 101 Switching Protocols\r\n"
+                                  "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                                  f"Sec-WebSocket-Accept: {acc}\r\n\r\n").encode())
+                self.wfile.write(b"\x81\x02hi")  # one unmasked text frame
+                self.wfile.flush()
+                self.close_connection = True
 
             def _send(self, status, body: bytes, headers=None):
                 self.send_response(status)
@@ -57,6 +75,8 @@ class _Node:
             def do_GET(self):
                 node.hits.append((self.path, self.headers.get("Via") or ""))
                 path = self.path.split("?")[0]
+                if path == "/ws":
+                    return self._websocket()
                 if path == "/redir":
                     out = self.path.split("to=", 1)[1]
                     self._send(302, b"", {"Location": out})
@@ -283,6 +303,99 @@ def test_popup_navigation_to_another_origin_is_refused(engine, app_node, other_n
         page.wait_for_timeout(1500)
         page.close()
     assert other_node.hits == [], f"popup left the policy: {other_node.hits}"
+
+
+def _ws_round_trip(page, urls: list[tuple[str, str]], wait_ms: int = 2500) -> dict:
+    """Open each websocket URL from the page and report what the CLIENT observed."""
+    return page.evaluate("""([urls, waitMs]) => new Promise(res => {
+        const out = {};
+        let left = urls.length;
+        const done = () => { if (--left === 0) res(out); };
+        setTimeout(() => res(out), waitMs + 500);
+        for (const [name, url] of urls) {
+            let ws;
+            try { ws = new WebSocket(url); } catch (e) { out[name] = 'throw'; done(); continue; }
+            ws.onopen = () => { out[name] = 'open'; };
+            ws.onmessage = e => { out[name] = 'msg:' + e.data; done(); ws.close(); };
+            ws.onerror = () => { if (!out[name]) out[name] = 'error'; done(); };
+            ws.onclose = e => { if (!out[name]) out[name] = 'close:' + e.code; done(); };
+        }
+    })""", [[list(u) for u in urls], wait_ms])
+
+
+@browser_only
+def test_websocket_upgrade_is_decided_and_pinned_at_dial_time(engine, app_node, other_node):
+    """Both directions, on real sockets: the authorized upgrade completes, the
+    forbidden one never reaches its reachable fixture.
+
+    A websocket is authorized as the http(s) origin it upgrades from, so the
+    authorized URL here is the page's OWN origin. The forbidden fixture listens
+    on 127.0.0.2 (a real, reachable server) and is outside the engagement, so a
+    hit on it would be an enforcement failure and no hit is proof of a block --
+    not proof that the target was down.
+
+    Chromium tunnels ws/wss through the context proxy with CONNECT, so the proxy
+    records the decision it made and dials the address that decision pinned. The
+    assertions read those records, not the policy function's return value.
+    """
+    db, ev = engine
+    auth_url = app_node.base.replace("http://", "ws://") + "/ws"
+    bad_url = other_node.base.replace("http://", "ws://") + "/ws"
+    with BrowserCrawler(db, ev, _scope(app_node.base), "eng_egress",
+                        max_pages=1, timeout_ms=8000) as crawler:
+        page = crawler._ctx.new_page()
+        page.goto(app_node.base + "/ok", wait_until="domcontentloaded")
+        got = _ws_round_trip(page, [("ok", auth_url), ("bad", bad_url)])
+        seen = list(crawler._ctx.libella_egress_proxy.server.seen)
+        page.close()
+
+    assert got.get("ok") == "msg:hi", f"the authorized websocket never completed: {got}"
+    assert app_node.ws_upgrades == ["/ws"], \
+        f"the authorized fixture saw no upgrade: {app_node.ws_upgrades}"
+    assert got.get("bad") in ("error", "close:1006", "close:1008"), \
+        f"the unauthorized websocket was not refused by the client: {got}"
+    assert other_node.ws_upgrades == [] and other_node.hits == [], \
+        f"a websocket escaped the policy: {other_node.ws_upgrades} {other_node.hits}"
+
+    conn = [s for s in seen if s[0] == "CONNECT"]
+    assert any(s[1] == f"127.0.0.1:{app_node.port}" and s[2] and s[3] == "127.0.0.1"
+               for s in conn), f"the authorized upgrade was not decided by the proxy: {seen}"
+    assert not any(s[1] == f"127.0.0.2:{other_node.port}" and s[2] for s in conn), \
+        f"the proxy allowed an unauthorized websocket: {seen}"
+
+
+@browser_only
+def test_websocket_to_an_unauthorized_port_on_an_authorized_host_is_refused(engine, app_node):
+    """Same host, port not authorized: a URL target authorizes its own port only.
+
+    The authorized websocket is opened in the SAME context and must succeed, so a
+    blanket refusal of every websocket (what the old scope bug did) cannot satisfy
+    this test: the two outcomes have to differ.
+    """
+    db, ev = engine
+    other = _Node("127.0.0.1")  # reachable, same host, different port
+    try:
+        with BrowserCrawler(db, ev, _scope(app_node.base), "eng_egress",
+                            max_pages=1, timeout_ms=8000) as crawler:
+            page = crawler._ctx.new_page()
+            page.goto(app_node.base + "/ok", wait_until="domcontentloaded")
+            got = _ws_round_trip(page, [
+                ("ok", app_node.base.replace("http://", "ws://") + "/ws"),
+                ("p", f"ws://127.0.0.1:{other.port}/ws")])
+            seen = list(crawler._ctx.libella_egress_proxy.server.seen)
+            page.close()
+        assert got.get("ok") == "msg:hi", f"the control websocket failed: {got}"
+        assert other.ws_upgrades == [], f"an unauthorized port was dialed: {other.ws_upgrades}"
+        assert got.get("p") != "msg:hi", got
+        # the attempt reached the POLICY, not a silent browser drop: either the ws
+        # route refused the URL (recorded as egress_denied) or the tunnel was denied
+        seen_refusal = [x for x in seen
+                        if x[0] == "CONNECT" and x[1] == f"127.0.0.1:{other.port}" and not x[2]]
+        denied_events = [e for e in _events(db, "egress_denied") if str(other.port) in e]
+        assert seen_refusal or denied_events, \
+            f"the unauthorized websocket was dropped without a policy decision: {seen}"
+    finally:
+        other.close()
 
 
 # -- scanner subprocesses ----------------------------------------------------

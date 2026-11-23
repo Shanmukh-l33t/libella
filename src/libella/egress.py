@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .assessment_window import stored_stop_refusal
+from .scope import normalize_scheme
 
 PROXY_CAP = 8 * 1024 * 1024  # a proxied response body is capped, not buffered whole
 SOCKET_TIMEOUT = 20
@@ -123,7 +124,7 @@ class Egress:
         if not host:
             return self.deny(host, port, scheme, "no host", tool=tool)
         if scheme in ("ws", "wss"):
-            scheme = "http" if scheme == "ws" else "https"
+            scheme = normalize_scheme(scheme)  # a ws dial is an http(s) destination
         if scheme not in ("http", "https"):
             return self.deny(host, port, scheme, f"scheme '{scheme}' not permitted", tool=tool)
         port = int(port or (443 if scheme == "https" else 80))
@@ -216,15 +217,25 @@ def open_browser_context(browser, egress: Egress, on_request=None, **opts):
     page-level route does not. Service workers would let a page fetch outside
     the route handler, so they are blocked; downloads are refused, so a link a
     page pushes never reaches a non-authorized origin or the disk.
+
+    The context also dials THROUGH the egress proxy, so a websocket upgrade --
+    which `route_web_socket` can only judge by URL -- is decided and connected at
+    the proxy: Chromium tunnels `ws`/`wss` with CONNECT, and the proxy dials the
+    address it decided, not a name the browser resolves again. `bypass`
+    `<-loopback>` keeps loopback targets in that path too.
     """
+    proxy = EgressProxy(egress)
     ctx = browser.new_context(ignore_https_errors=True, service_workers="block",
                               accept_downloads=False,
+                              proxy={"server": proxy.url, "bypass": "<-loopback>"},
                               **{k: v for k, v in opts.items()
-                                 if k not in ("service_workers", "accept_downloads")})
+                                 if k not in ("service_workers", "accept_downloads", "proxy")})
+    ctx.libella_egress_proxy = proxy  # the dialer this context uses; tests read it
+    ctx.on("close", lambda *_: proxy.close())
     ctx.route("**/*", _route_handler(egress, on_request))
     if hasattr(ctx, "route_web_socket"):
-        # a websocket upgrade is a connection of its own: gate it, and connect to
-        # the server only when the policy allows it
+        # a second gate on the upgrade itself: refuse it before the browser opens
+        # the tunnel the proxy would then have to judge
         ctx.route_web_socket("**/*", _websocket_handler(egress))
     return ctx
 
@@ -249,7 +260,16 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
     def do_CONNECT(self):
         host, _, port = self.path.rpartition(":")
+        # A CONNECT tunnel names host:port, not a scheme: Chromium uses it for wss
+        # AND for plain ws. Decide as https, fall back to http, so a destination
+        # authorized for either scheme is reachable while the host/port/ip rules
+        # stay the same for both.
         d = self.server.egress.decide(host.strip("[]"), int(port or 443), "https")
+        if not d.allowed:
+            alt = self.server.egress.decide(host.strip("[]"), int(port or 443), "http")
+            if alt.allowed:
+                d = alt
+        self.server.seen.append(("CONNECT", f"{host}:{port}", d.allowed, d.ip))
         if not d.allowed:
             return self._deny(d)
         try:
@@ -266,6 +286,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         if u.scheme not in ("http", "https") or not u.hostname:
             return self._fail("proxy request must be an absolute http(s) url")
         d = self.server.egress.decide(u.hostname, u.port, u.scheme)
+        self.server.seen.append((self.command, self.path, d.allowed, d.ip))
         if not d.allowed:
             return self._deny(d)
         length = int(self.headers.get("Content-Length") or 0)
@@ -342,6 +363,8 @@ class EgressProxy:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _ProxyHandler)
         self.server.daemon_threads = True
         self.server.egress = egress
+        # every decision this proxy took, in order: (method, target, allowed, dialed ip)
+        self.server.seen = []
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
