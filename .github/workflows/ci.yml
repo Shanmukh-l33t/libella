@@ -41,11 +41,17 @@ jobs:
       # Run them again as root and fail if they skipped instead of proving anything.
       - name: Network confinement proven as root (no silent skips)
         run: |
-          sudo -E python -m pytest tests/test_netns_confinement.py -q -rs | tee /tmp/netns.log
+          set -euo pipefail            # a failing pytest must fail the step, not the tee
+          PY=$(command -v python)
+          sudo -E "$PY" -c "import pytest" || { echo "::error::the venv python cannot import pytest"; exit 1; }
+          sudo -E "$PY" -m pytest tests/test_netns_confinement.py -q -rs > /tmp/netns.log 2>&1 \
+            || { cat /tmp/netns.log; echo "::error::confinement tests failed"; exit 1; }
+          cat /tmp/netns.log
           if grep -qE '^SKIPPED' /tmp/netns.log; then
             echo "::error::confinement tests skipped; the boundary was not exercised"
             exit 1
           fi
+          grep -qE '[0-9]+ passed' /tmp/netns.log || { echo "::error::no passing count: nothing was proven"; exit 1; }
       - name: Integration benchmark (PairLab twins, real execution)
         run: |
           pip install flask requests
