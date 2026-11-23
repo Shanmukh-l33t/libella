@@ -101,7 +101,9 @@ def _nuclei_argv(p: dict, decision) -> list[str]:
     argv = ["nuclei", "-u", target, "-jsonl", "-no-color", "-stats", "-si", "5",
             "-rate-limit", str(p.get("rate_limit", 50)),
             "-timeout", str(p.get("timeout", 10)),
-            "-retries", "0", "-disable-update-check"]
+            "-retries", "0", "-disable-update-check",
+            # callbacks would go to public interactsh hosts the engagement does not authorize
+            "-no-interactsh"]
     if target.startswith(("http://", "https://")):
         # a URL target is not a DNS/TCP/SSL target: those templates dial other ports
         argv += ["-pt", "http"]

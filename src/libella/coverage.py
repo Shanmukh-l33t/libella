@@ -39,11 +39,13 @@ DEPENDENCY_CODES = {"missing_tool", "tool_unavailable", "image_not_local"}
 NOTE_MAX = 2000
 
 # Unit outcome -> the status the ledger shows. Ordered by what wins a merge.
-_PREF = (("blocked_target", "inconclusive"), ("completed", "completed_no_issue"),
+_PREF = (("blocked_target", "inconclusive"), ("partial", "partial_evidence"),
+         ("completed", "completed_no_issue"),
          ("inconclusive", "inconclusive"),
          ("failed", "failed"), ("skipped_policy", "skipped_policy"),
          ("skipped_dependency", "skipped_dependency"), ("attempted", "attempted"))
 _VERB = {"blocked_target": "the target answered with a challenge or the scan stopped early: not assessed",
+         "partial": "executed with a subset of its checks: the excluded subset was never tested",
          "completed": "executed, no finding recorded",
          "inconclusive": "ran partially (timeout/cancel), never completed",
          "failed": "failed",
@@ -61,7 +63,8 @@ def _engagement(db: DB, engagement_id: str):
 
 def _slot(slots: dict, name: str) -> dict:
     return slots.setdefault(name, {"calls": [], "exchanges": [], "intents": [],
-                                   "denied": [], "missing": [], "blocked": []})
+                                   "denied": [], "missing": [], "blocked": [],
+                                   "partial": []})
 
 
 def _unit_slots(db: DB, engagement_id: str, spec: dict) -> dict:
@@ -89,8 +92,15 @@ def _unit_slots(db: DB, engagement_id: str, spec: dict) -> dict:
             for unit in str(payload.get("unit") or "").split(","):
                 if unit.strip():
                     _slot(slots, unit.strip())["denied"].append(e["seq"])
-        elif code == "audit_blocked":
-            # the audit ran but could not test: its completion is not a result
+        elif code == "oast_unsupported":
+            # The unit RAN and its in-band templates are valid results; only the
+            # out-of-band subset was refused by policy. That is partial evidence, not an
+            # unassessed target: calling it inconclusive would understate the work done.
+            _slot(slots, payload.get("unit") or "nuclei_scan")["partial"].append(e["seq"])
+        elif code in ("audit_blocked", "crawl_result_missing"):
+            # the audit ran but could not test: its completion is not a result.
+            # crawl_result_missing is the same class: the inventory it needed was absent,
+            # so the sweep of zero endpoints must never read as assessed.
             unit = payload.get("unit") or roles.get(payload.get("intent_id")) or "web_checks"
             _slot(slots, unit)["blocked"].append(e["seq"])
         elif code in ("target_mitigated", "scan_partial"):
@@ -139,7 +149,8 @@ def _provenance(db: DB, engagement_id: str, spec: dict, findings) -> dict:
 
 
 def _merge(slots: dict, names) -> dict:
-    out = {"calls": [], "exchanges": [], "intents": [], "denied": [], "missing": [], "blocked": []}
+    out = {"calls": [], "exchanges": [], "intents": [], "denied": [], "missing": [],
+           "blocked": [], "partial": []}
     for name in names:
         for key, value in slots.get(name, {}).items():
             out[key] += value
@@ -156,6 +167,8 @@ def _unit_state(s: dict):
         return "skipped_policy"
     if s["blocked"]:
         return "blocked_target"
+    if s["partial"]:
+        return "partial"
     if any((c["scope_decision"] or "") == "executed: ok" for c in s["calls"]) or s["exchanges"]:
         return "completed"
     if missing:

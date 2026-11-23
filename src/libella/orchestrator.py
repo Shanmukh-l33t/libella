@@ -92,13 +92,43 @@ class Orchestrator:
         self.db.execute("UPDATE engagements SET status='running', started_at=? WHERE id=?",
                         (time.time(), engagement_id))
         self.db.emit(engagement_id, "engagement_started", {"mode": mode})
-        if mode == "agent":
-            self._plan_agent(engagement_id, scope, eng)
-        else:
-            self._plan_deterministic(engagement_id, scope, eng)
-            if mode == "llm":
-                self._plan_llm(engagement_id, scope, eng)
+        # A resumed run continues its own plan. Re-planning on every start duplicated the
+        # whole intent set per restart (in every mode), which also defeated the
+        # duplicate-work guard: it compares against intents already marked done, so a clone
+        # of a still-open intent reads as new work. Re-opens what a dead worker left
+        # 'running' so resume redoes that step instead of recording it as in flight.
+        resumed = self._reopen_unfinished(engagement_id)
+        if not resumed:
+            if mode == "agent":
+                self._plan_agent(engagement_id, scope, eng)
+            else:
+                self._plan_deterministic(engagement_id, scope, eng)
+                if mode == "llm":
+                    self._plan_llm(engagement_id, scope, eng)
         self._run_loop(engagement_id, scope, eng, mode)
+
+    def _reopen_unfinished(self, engagement_id: str) -> bool:
+        """True when the engagement already has planned work: resume, do not replan.
+
+        Covers every in-flight status, not only 'open'. A run that was interrupted while
+        REPORTING has no open intent but must not be replanned either: its findings and
+        evidence are final and re-planning would re-scan a target already assessed. Repeated
+        resumes must be idempotent: the second call finds the same unfinished set and adds
+        nothing.
+        """
+        pending = self.db.query(
+            "SELECT id FROM intents WHERE engagement_id=? AND status IN ('open','running')",
+            (engagement_id,))
+        if not pending:
+            return False
+        self.db.execute(
+            "UPDATE intents SET status='open', claim_token=NULL, finished_at=NULL "
+            "WHERE engagement_id=? AND status='running'", (engagement_id,))
+        self.db.emit(engagement_id, "plan_resumed",
+                     {"open_intents": len(pending),
+                      "detail": f"{len(pending)} intent(s) already planned and unfinished: "
+                                f"continuing them instead of cloning the plan"})
+        return True
 
     def _check_mode(self, mode: str):
         """Refuse a run that cannot be what it claims (no silent deterministic fallback)."""
@@ -517,6 +547,7 @@ class Orchestrator:
         from .agent_runtime import AgentRunner, CHARTERS
         role = intent["role"]
         obj = intent["objective"]
+        result: dict = {}
         profile = eng.get("profile") or DEFAULT_PROFILE
         specialist = None
         if role not in CHARTERS and role not in ROLES:
@@ -579,9 +610,9 @@ class Orchestrator:
         if role == "recon":
             self._do_recon(engagement_id, scope, obj, intent["id"])
         elif role == "crawl":
-            self._do_crawl(engagement_id, scope, obj, intent["id"])
+            result = self._do_crawl(engagement_id, scope, obj, intent["id"]) or {}
         elif role == "web_checks":
-            self._do_web_checks(engagement_id, scope, eng, obj, intent["id"])
+            result = self._do_web_checks(engagement_id, scope, eng, obj, intent["id"]) or {}
         elif role == "nuclei_scan":
             self._do_nuclei(engagement_id, scope, obj, intent["id"])
         elif role == "infra_scan":
@@ -615,7 +646,7 @@ class Orchestrator:
             render_report(self.db, self.evidence, engagement_id)
         else:
             raise ValueError(f"unknown role {role}")
-        return "done", {}
+        return "done", result
 
     def _upsert_asset(self, engagement_id, kind, key, value=None, parent=None, by="recon"):
         existing = self.db.one("SELECT id FROM assets WHERE engagement_id=? AND kind=? AND key=?",
@@ -713,9 +744,11 @@ class Orchestrator:
         if result.get("browser_degradation"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",
                                              result["browser_degradation"], ev["id"])
-        self.db.execute("UPDATE intents SET result_json=? WHERE id=?",
-                        (json.dumps({"endpoints": result["endpoints"], "forms": result["forms"],
-                                     "pages": result["pages"]}), intent_id))
+        # returned, not written here: _complete persists the handler's result under the
+        # same lease fence, so a write here was overwritten with {} and every later
+        # web_checks intent found zero endpoints to test.
+        return {"endpoints": result["endpoints"], "forms": result["forms"],
+                "pages": result["pages"]}
 
     def _do_web_checks(self, engagement_id, scope, eng, obj, intent_id):
         url = self._target_from_obj(obj)
@@ -728,11 +761,9 @@ class Orchestrator:
         base = url.rstrip("/")
         if any(self._target_from_obj(p["objective"]) and
                self._target_from_obj(p["objective"]).rstrip("/") == base for p in prior):
-            self.db.execute("UPDATE intents SET result_json=? WHERE id=?",
-                            (json.dumps({"skipped": "already_covered", "url": base}), intent_id))
             self.db.emit(engagement_id, "duplicate_work_prevented",
                          {"intent_id": intent_id, "url": base})
-            return
+            return {"skipped": "already_covered", "url": base}
         checks = WebChecks(self.probe, engagement_id, scope)
         profile = eng.get("profile") or DEFAULT_PROFILE
         skipped: list[str] = []
@@ -757,13 +788,26 @@ class Orchestrator:
                                              f"{s['header']}: {s['value']} (not a finding)", s["evidence_id"])
         # gather endpoints+params from crawl results
         crawl_intents = self.db.query(
-            "SELECT result_json FROM intents WHERE engagement_id=? AND role='crawl' AND result_json IS NOT NULL",
-            (engagement_id,))
+            "SELECT id, result_json FROM intents WHERE engagement_id=? AND role='crawl' "
+            "AND result_json IS NOT NULL", (engagement_id,))
         endpoints, forms = set(), []
         for ci in crawl_intents:
-            res = json.loads(ci["result_json"])
-            endpoints.update(res.get("endpoints", []))
-            forms.extend(res.get("forms", []))
+            try:
+                res = json.loads(ci["result_json"])
+            except ValueError:
+                res = None
+            if not isinstance(res, dict) or "endpoints" not in res:
+                # An absent inventory is not an empty one: say the state is missing so the
+                # ledger records a gap instead of a silent clean sweep of zero endpoints.
+                self.db.emit(engagement_id, "degradation", {
+                    "code": "crawl_result_missing", "intent_id": intent_id, "unit": "web_checks",
+                    "detail": f"crawl intent {ci['id']} holds no endpoint inventory "
+                              f"({(ci['result_json'] or '')[:120]}); its endpoints were never "
+                              f"tested. Re-run the crawl before trusting this engagement's "
+                              f"parameter coverage."})
+                continue
+            endpoints.update(res["endpoints"])
+            forms.extend(res.get("forms") or [])
         for ep in sorted(endpoints):
             if "?" not in ep:
                 # parameter guessing on mined API routes (bounded)
@@ -877,11 +921,27 @@ class Orchestrator:
         self.db.emit(engagement_id, "checks_complete",
                      {"intent_id": intent_id, "candidates": len(candidates),
                       "mitigated": len(checks.mitigated)})
+        return {"candidates": len(candidates), "mitigated": len(checks.mitigated),
+                "skipped": skipped}
 
     def _do_nuclei(self, engagement_id, scope, obj, intent_id):
         url = self._target_from_obj(obj)
         if not url:
             return
+        # nuclei's OAST templates call back to public interactsh servers the engagement does
+        # not authorize (and must not). The egress policy refuses every callback, so those
+        # templates can never fire: disable them and say so, instead of collecting hundreds
+        # of denials and reporting a partial scan as if it were complete.
+        self.pipeline.record_observation(
+            engagement_id, intent_id, "limitation",
+            "nuclei runs with -no-interactsh: interactsh callbacks go to public OAST servers "
+            "this engagement does not authorize and the egress policy correctly refuses them. "
+            "OAST-dependent templates (blind SSRF/RCE/XXE, callback-based) are unsupported here "
+            "and are not counted as tested.")
+        self.db.emit(engagement_id, "degradation", {
+            "code": "oast_unsupported", "unit": "nuclei_scan", "intent_id": intent_id,
+            "detail": "out-of-band templates disabled: their callback destinations are out of "
+                      "scope by policy, so they are recorded unsupported, never silently pass"})
         spec = self.registry.get("nuclei")
         progress: dict = {}
 
@@ -1019,8 +1079,17 @@ class Orchestrator:
 
     def _do_privesc_audit(self, engagement_id, scope, eng, intent_id):
         from .privesc_audit import audit_role_matrix
-        audit_role_matrix(self.db, self.evidence, self.probe, scope, engagement_id,
-                          json.loads(eng["auth_json"]), self.pipeline, intent_id)
+        out = audit_role_matrix(self.db, self.evidence, self.probe, scope, engagement_id,
+                                json.loads(eng["auth_json"]), self.pipeline, intent_id)
+        # the expected-permission verdicts are the point of this audit: persist them so an
+        # analyst can review a judgement, not just the findings it produced
+        authz = out.get("authorization") or {}
+        return {"verdict": out.get("verdict"), "status": out.get("status"),
+                "identities": out.get("identities"), "endpoints": out.get("endpoints"),
+                "candidates": len(out.get("candidates") or []),
+                "authorization": {"model": authz.get("model"),
+                                  "verdicts": authz.get("verdicts"),
+                                  "hypotheses": authz.get("hypotheses")}}
 
     def _do_injection_audit(self, engagement_id, scope, eng, intent_id):
         from .injection_audit import audit_injection

@@ -248,6 +248,16 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # never leave tool traffic in the platform log
         pass
 
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            # The client hung up mid-response. A scanner that times out or aborts its own
+            # request does this constantly; the decision was already made and recorded in
+            # `seen`, and the aggregated tool output is unaffected. Nothing is lost, so this
+            # is not an error: only the reply to a client that stopped listening is.
+            self.close_connection = True
+
     def _deny(self, d: EgressDecision):
         body = f"libella egress denied: {d.reason}".encode()
         self.send_response(403)
