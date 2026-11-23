@@ -459,17 +459,23 @@ def test_scanner_cannot_dial_an_unauthorized_host(runner, fake_tool, app_node, o
     assert any("127.0.0.2" in d for d in denied), denied
 
 
-def test_raw_socket_tool_is_marked_unconfined_not_trusted(runner, fake_tool, app_node, engine):
+def test_raw_socket_tool_is_never_left_silently_unconfined(runner, fake_tool, app_node, engine):
+    """A loopback target cannot be isolated (the namespace has its own loopback): refused, not run."""
     spec = ToolSpec(name="nmap", description="", category="infra", binary=None, timeout_s=30,
                     params={"target": {"type": "string"}}, required=["target"],
                     handler=lambda p, d: [sys.executable, fake_tool, "once", app_node.base + "/ok"])
-    r = runner.run(spec, {"target": "127.0.0.1"}, Scope(
-        {"targets": [{"kind": "url", "value": app_node.base}], "categories": ["infra"]}),
-        "eng_egress", None, target="127.0.0.1", category="infra")
-    assert r["egress"]["level"] == "unconfined", r["egress"]
-    assert r["egress"]["residual"], "an unconfined tool must state its residual"
-    degradation = _events(engine[0], "egress_degradation")
-    assert any("egress_unconfined" in d for d in degradation), degradation
+    scope = Scope({"targets": [{"kind": "url", "value": app_node.base}], "categories": ["infra"]})
+    r = runner.run(spec, {"target": "127.0.0.1"}, scope, "eng_egress", None, target="127.0.0.1",
+                   category="infra")
+    assert r["egress"]["level"] == "fail_closed" and r["ok"] is False, r
+    assert app_node.hits == [], "a raw tool that cannot be confined must not run"
+    assert any("egress_fail_closed" in d for d in _events(engine[0], "egress_degradation"))
+    # the documented explicit opt-out is the only way it runs unconfined, and it says so
+    runner.raw_egress = "unconfined"
+    r = runner.run(spec, {"target": "127.0.0.1"}, scope, "eng_egress", None, target="127.0.0.1",
+                   category="infra")
+    assert r["egress"]["level"] == "unconfined" and r["egress"]["residual"], r["egress"]
+    assert any("egress_unconfined" in d for d in _events(engine[0], "egress_degradation"))
 
 
 def test_cancel_mid_run_stops_proxied_traffic(runner, fake_tool, app_node, engine):

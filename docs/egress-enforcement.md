@@ -59,22 +59,51 @@ connects to `decision.ip`, never to a name the browser resolves again.
 
 - `proxy` — HTTP tools: nuclei, httpx, ffuf, and any future tool that honours the
   proxy environment. Every request is decided at dial time by the proxy.
-- `unconfined` — tools that only speak raw sockets (`nmap`). They stay confined by
-  argv (resolved IP, `authorized_ports`) and the run is marked with an
-  `egress_degradation` event carrying code `egress_unconfined` and the exact residual.
+- `isolated` — tools that only speak raw sockets (`nmap`, `RAW_TOOLS`). They run in a
+  disposable network namespace (`libella.netns.Confinement`) as uid 65534 with no
+  capabilities. The nftables filter is INSIDE the namespace (`policy drop`, accept only
+  the authorized IPv4 addresses x tcp ports, plus established/related), so the tool
+  cannot alter it. The level is reported only after the filter was applied and read
+  back, and the command ran through `ip netns exec`. `egress_degradation` carries code
+  `egress_isolated` and `enforced` = the exact ruleset.
+- `fail_closed` — isolation could not be set up (not root, `ip`/`nft`/`setpriv`
+  missing, target not host-local or loopback, no free /30, filter not verified). The
+  tool is **not run**, the call is audited as refused, and `egress_degradation` carries
+  `egress_fail_closed`. Nothing is claimed as confined.
+- `unconfined` — only on the explicit opt-out `ToolRunner(raw_egress="unconfined")` /
+  `LIBELLA_RAW_EGRESS=unconfined`: argv (resolved IP, `authorized_ports`) is the only
+  boundary. Marked `egress_unconfined` with the residual on every run.
 - `third_party` — passive tools (`subfinder`, `network_effect=False`) that dial
   third-party sources by design. Marked `egress_third_party`; engagement scope
   cannot be applied to destinations the operator never authorized.
 
 ## Residual risks
 
-- **Unproxied subprocess traffic.** A `proxy`-level tool that ignores its proxy
-  environment/flag (raw sockets, UDP, DNS) is not blocked by the platform: the
-  proxy only sees what the tool sends it. `nmap` is the explicit example and is
-  marked unconfined. Closing this needs a network namespace with a route to the
-  proxy, which needs `CAP_NET_ADMIN` on the host side (root) — checked on this
-  host (`unshare -rn` works, but a fresh namespace has no route to the target or
-  the proxy, so applying it to a tool that must reach the target makes it useless).
+- **Raw-socket tools: design chosen and why.** Measured on this host:
+  (a) "namespace holds only a policy proxy" would block nmap outright (it cannot use an
+  HTTP proxy for scanning), so it is not usable for scanners; (b) forwarding does not
+  work reliably here: with `ip_forward=1`, a scoped masquerade table and an accept in a
+  separate forward chain, a namespace connection to 8.8.8.8:53 (which the host itself
+  reaches) timed out, because docker's `FORWARD` `policy drop` is in another owner's
+  table and an accept elsewhere does not override a drop. Making it work means editing
+  `DOCKER-USER`, which Libella must not do. So the namespace has **no forwarding**: its
+  only route is the host end of the veth and it reaches addresses **the host terminates**
+  (lab/host-local targets, measured: eth0's own address connects). The in-namespace
+  filter then admits only the authorized `ip:port`s. A target the host does not terminate
+  (any remote address) or a loopback target fails closed instead of being scanned blind
+  (a remote target would otherwise look `filtered`, indistinguishable from a real
+  firewall). Remote scanning needs either the explicit opt-out or an operator-provided
+  forward path, which is follow-up work.
+- **netns residuals.** TCP only (nmap `-sT`; as uid 65534 it cannot send raw SYNs, and
+  the filter would drop UDP/ICMP/IPv6 anyway). The tool can still talk to every service
+  on the authorized addresses within the authorized ports. The tool shares the host's
+  kernel, so a kernel privilege-escalation bug defeats any namespace. The /30 is chosen
+  at random from 10.254.0.0/16 and skipped if a route overlaps; two overlapping
+  non-route uses of that range (e.g. an address on another interface without a route)
+  are not detected. A hard-killed Libella leaves its `lbns<pid>_*`/`lbh<pid>_*` objects
+  until the next confined run, which reaps those whose pid is dead (`reap_orphans`).
+  Root is required (`CAP_NET_ADMIN`). The engagement-level opt-in lives on the runner
+  (`raw_egress` / env), not in the Scope model (that file is not part of this change).
 - **Websocket pinning (browser path) is closed.** The upgrade is decided by
   `route_web_socket` and again by the context proxy's CONNECT, which dials the
   pinned address; `tests/test_egress_enforcement.py` proves an authorized upgrade
@@ -113,3 +142,13 @@ apply to a websocket URL.
 Every negative here is paired with a positive in the same test, because "zero
 hits" is also what a blanket refusal produces — the vacuous result this suite
 previously had.
+
+`tests/test_netns_confinement.py` — real sockets, a fake raw scanner
+(`tests/fixtures/raw_tool.py`) and accept-level hit logs on three host-local fixtures that
+are all routable from the namespace: authorized `A:pA` is reached (hits >= 1), `A:pB`
+(unauthorized port) and `B:pA` (unauthorized address) get zero hits. Mutations: flush the
+allow rule and the authorized connection fails; delete the filter and both unauthorized
+destinations are reached, so the negatives are not vacuous. No `lbns*`/`lbh*`/`lbn*` object
+survives success, exception, timeout, cancel or a failing tool; the reaper clears a dead
+pid's leftovers; with `ip`/`nft` failing (or a loopback/remote target) the tool is refused
+and never runs; the explicit opt-out is reported `unconfined`.
