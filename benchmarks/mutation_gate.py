@@ -101,6 +101,16 @@ MUTATIONS = [
             if found is not None:
                 return found''', "    return data",
      ["tests/verify", "tests/test_check_preconditions.py"]),
+    ("checks: SSRF needs no foreign-page evidence", "src/libella/checks.py",
+     '''        hit = _foreign_page_marker(body)
+        if not hit:
+            return []''', "        hit = 'marker'  # any body",
+     ["tests/verify/test_ssrf_discovery.py"]),
+    ("checks: SSRF reports on a guarded fetcher", "src/libella/checks.py",
+     '''        benign = self._req(with_param(target, param, "libellaBenign"), tool="ssrf_control")
+        if not benign.get("ok") or _foreign_page_marker(benign["body"] or ""):
+            return []''', "        pass",
+     ["tests/verify/test_ssrf_discovery.py"]),
     ("checks: object enumeration accepts an anonymous read", "src/libella/checks.py",
      '''            if anon["status"] < 400:''', "            if False:",
      ["tests/verify"]),

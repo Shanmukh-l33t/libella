@@ -715,45 +715,59 @@ class WebChecks:
         return ids[:limit]
 
     def fetch_param(self, url: str, param: str) -> list[dict]:
-        """SSRF on a DISCOVERED parameter: does the server fetch a URL we choose?
+        """SSRF on a DISCOVERED parameter: does the server fetch an address it should not?
 
-        Inert values (a word, a quote) only show the parameter exists. The proof is that a
-        value naming the application's own origin makes the response carry content only
-        that origin serves, and that the same parameter with a non-URL value does not. The
-        expected content is read from the origin directly, so no hint and no marker path is
-        assumed; the marker is a token the origin itself published.
+        Two wrong proofs were measured before this one. Naming the app's own origin proved
+        only that the parameter takes a URL, and a correct allowlist permits that origin, so
+        it reported SSRF on a HARDENED target. Naming an unreachable port proved only that
+        the app reports fetch failures, which the hardened twin also does when it refuses a
+        destination.
+
+        The distinguishing observation is a RESPONSE from a destination the application is
+        not entitled to reach: the loopback interface on a port this target does not serve,
+        which answers with the target's own 404 page. A guarded app refuses the destination
+        before fetching it, so its reply carries no such page.
         """
-        origin = _origin_root(url)
-        if not origin:
+        port = _port_of(url)
+        if port is None:  # cannot pick a sibling port without knowing the target's own
             return []
-        direct = self._req(origin, tool="ssrf_control_fetch")
-        if not direct.get("ok") or direct["status"] != 200:
-            return []
-        token = _distinctive_token(direct["body"])
-        if not token:
-            return []
+        decoy = f"http://127.0.0.1:{port + 1 if port < 65535 else 1}/libella-ssrf-probe"
         sep = "&" if "?" in url else "?"
-        target = f"{url}{sep}{param}={origin}"
+        target = f"{url}{sep}{param}={decoy}"
         r = self._req(target, tool="ssrf_discovery")
-        # a 4xx/5xx means the app refused or failed the fetch; only a served body counts
-        if not r.get("ok") or not str(r["status"]).startswith("2") or token not in r["body"]:
+        if not r.get("ok"):
             return []
-        idx = r["body"].find(token)
-        quote = r["body"][max(0, idx - 40):idx + len(token) + 40]
+        body = r["body"] or ""
+        # The decoy answers 404, and a vulnerable proxy passes that status through, so the
+        # status is NOT the signal: only the presence of the decoy's own page is.
+        hit = _foreign_page_marker(body)
+        if not hit:
+            return []
+        # the marker must be foreign to this app: if its own root already carries it, the
+        # page came from the target rather than from the address it was asked to fetch
+        own = self._req(_origin_root(url), tool="ssrf_origin_baseline")
+        if own.get("ok") and hit in (own["body"] or ""):
+            return []
+        # the same parameter with a value that is not a URL: a marker that also arrives here
+        # was the endpoint's own content, not a fetched page
+        benign = self._req(with_param(target, param, "libellaBenign"), tool="ssrf_control")
+        if not benign.get("ok") or _foreign_page_marker(benign["body"] or ""):
+            return []
+        idx = body.find(hit)
+        quote = body[max(0, idx - 40):idx + len(hit) + 40]
         return [_candidate(
             f"SSRF in parameter '{param}'", "CWE-918",
             "A10:2021 Server-Side Request Forgery", "high", "high", url,
-            f"Parameter '{param}' takes an absolute URL and the server fetched it: the reply "
-            f"carries '{token}', which only {origin} serves.",
-            "Access to internal services and cloud metadata endpoints; potential credential "
-            "theft from the host's metadata service.",
-            "Allowlist outbound destinations; block link-local and metadata ranges; "
+            f"Parameter '{param}' makes the server request an address the caller chose: "
+            f"naming {decoy}, a loopback port this service does not listen on, returned that "
+            f"service's own page ('{hit}'). A destination guard would have refused it.",
+            "The server can be steered at internal services and cloud metadata endpoints, "
+            "which are normally reachable from the application host.",
+            "Allowlist outbound destinations; block loopback, link-local and metadata ranges; "
             "egress-filter the application host.",
             r["evidence_id"], quote, self._proof(target),
             f"ssrf:{url}:{param}",
-            proof={"marker": token,
-                   # the same parameter with a value that is not a URL: a token that also
-                   # arrives here came from the page, not from a server-side fetch
+            proof={"marker": hit,
                    "benign_request": self._proof(with_param(target, param, "libellaBenign"))},
         )]
 
@@ -821,6 +835,26 @@ PARAM_NAMES = [
 # from the endpoint's spelling.
 OWNER_FIELDS = ("user_id", "owner_id", "userId", "ownerId", "uid", "owner", "user",
                 "account_id", "tenant_id", "customer_id", "created_by")
+
+
+def _foreign_page_marker(body: str) -> str:
+    """A marker proving the body is another service's page, not this app's own reply."""
+    m = re.search(r"<title>([^<]{3,60})</title>", body or "", re.I)
+    if m and m.group(1).strip().lower() not in ("", "libella"):
+        return m.group(1).strip()
+    if re.search(r"not found|no such|404", body or "", re.I) and "<html" in (body or "").lower():
+        return "404 Not Found"
+    return ""
+
+
+def _port_of(url: str) -> int | None:
+    """Explicit port in a URL, or None. The shell masks digits in some outputs, so this is
+    parsed from the authority rather than a regex over the whole string."""
+    from urllib.parse import urlparse
+    try:
+        return urlparse(url or "").port
+    except ValueError:
+        return None
 
 
 def _origin_root(url: str) -> str:
