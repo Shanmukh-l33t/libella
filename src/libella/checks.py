@@ -89,6 +89,8 @@ class WebChecks:
         names = ", ".join(n for n, _ in missing)
         sev = "medium" if any(s == "medium" for _, s in missing) else "low"
         quote = f"missing: {names}"
+        # "" and "/" are the same document: keying on the raw URL produced two findings for
+        # one missing-header condition when an agent probed both forms.
         return [_candidate(
             f"Missing security headers ({names})", "CWE-693", "A05:2021 Security Misconfiguration",
             sev, "high", url,
@@ -96,7 +98,7 @@ class WebChecks:
             "Increased exposure to clickjacking, MIME sniffing, protocol downgrade, and XSS impact.",
             "Set the missing headers at the server or application layer.",
             r["evidence_id"], quote, self._proof(url),
-            f"headers:{url}", quote_in="header_fact",
+            f"headers:{(url or '').rstrip('/') or url}", quote_in="header_fact",
             controls=[HEADER_CONTROLS[h] for h in SEC_HEADERS
                       if h not in {k.lower() for k in r["headers"]}],
         )]
@@ -276,6 +278,10 @@ class WebChecks:
 
     def ssrf(self, url: str, param: str, internal_url: str, marker: str) -> list[dict]:
         """Prove server-side fetch of an in-scope internal URL by marker reflection."""
+        # An empty marker is vacuously "in" every body, so an unset marker (the agent may
+        # omit it) would report SSRF for any target. Refuse rather than prove nothing.
+        if not (marker or "").strip():
+            return []
         sep = "&" if "?" in url else "?"
         target = f"{url}{sep}{param}={internal_url}"
         r = self._req(target, tool="ssrf_check")
@@ -449,7 +455,15 @@ class WebChecks:
 
     def idor(self, object_url: str, cookie_header: str, foreign_marker: str,
              identity_name: str) -> list[dict]:
-        """Authenticated as identity_name, read an object owned by someone else."""
+        """Authenticated as identity_name, read an object owned by someone else.
+
+        Both halves of the claim must be present: an empty cookie is an unauthenticated
+        request, and an empty foreign_marker is in every body. Either one missing turns the
+        check into a false positive about an access control decision it never tested.
+        """
+        if not (cookie_header or "").strip() or not (foreign_marker or "").strip() \
+                or not (identity_name or "").strip():
+            return []
         r = self._req(object_url, headers={"Cookie": cookie_header}, tool="idor_check")
         if not r.get("ok") or r["status"] != 200 or foreign_marker not in r["body"]:
             return []

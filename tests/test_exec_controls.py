@@ -236,9 +236,33 @@ def test_nuclei_receives_the_declared_rate_not_five_times_it(app, lab):
     scope = Scope(_spec(lab, rate_limit_rps=7))
     eid = _eng(app, _spec(lab, rate_limit_rps=7))
     orch = _bare_orchestrator(app)
-    orch._do_nuclei(eid, scope, f"Template scan {lab}", "i1")
+    eng = app.db.one("SELECT * FROM engagements WHERE id=?", (eid,))
+    orch._do_nuclei(eid, scope, eng, f"Template scan {lab}", "i1")
     (name, params), = orch.runner.calls
     assert name == "nuclei" and params["rate_limit"] == 7, params
+
+
+def test_a_scan_profile_reaches_the_scanner(app, lab):
+    """A focused profile must actually narrow the workload; it used to be unselectable."""
+    spec = _spec(lab)
+    spec["scan_profile"] = {"tags": "cors,exposure", "severity": "high"}
+    eid = _eng(app, spec)
+    orch = _bare_orchestrator(app)
+    eng = app.db.one("SELECT * FROM engagements WHERE id=?", (eid,))
+    orch._do_nuclei(eid, Scope(spec), eng, f"Template scan {lab}", "i1")
+    (name, params), = orch.runner.calls
+    assert name == "nuclei" and params["tags"] == "cors,exposure"
+    assert params["severity"] == "high"
+
+
+def test_without_a_profile_nuclei_keeps_its_default_workload(app, lab):
+    eid = _eng(app, _spec(lab))
+    orch = _bare_orchestrator(app)
+    eng = app.db.one("SELECT * FROM engagements WHERE id=?", (eid,))
+    orch._do_nuclei(eid, Scope(_spec(lab)), eng, f"Template scan {lab}", "i1")
+    (name, params), = orch.runner.calls
+    assert name == "nuclei" and "tags" not in params
+    assert params["severity"] == "medium,high,critical"
 
 
 def test_nmap_is_bounded_by_the_declared_rate(app, lab):

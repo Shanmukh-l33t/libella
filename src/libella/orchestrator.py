@@ -641,7 +641,7 @@ class Orchestrator:
         elif role == "web_checks":
             result = self._do_web_checks(engagement_id, scope, eng, obj, intent["id"]) or {}
         elif role == "nuclei_scan":
-            self._do_nuclei(engagement_id, scope, obj, intent["id"])
+            self._do_nuclei(engagement_id, scope, eng, obj, intent["id"])
         elif role == "infra_scan":
             self._do_infra(engagement_id, scope, obj, intent["id"])
         elif role == "impact_proof":
@@ -951,7 +951,7 @@ class Orchestrator:
         return {"candidates": len(candidates), "mitigated": len(checks.mitigated),
                 "skipped": skipped}
 
-    def _do_nuclei(self, engagement_id, scope, obj, intent_id):
+    def _do_nuclei(self, engagement_id, scope, eng, obj, intent_id):
         url = self._target_from_obj(obj)
         if not url:
             return
@@ -971,6 +971,13 @@ class Orchestrator:
                       "scope by policy, so they are recorded unsupported, never silently pass"})
         spec = self.registry.get("nuclei")
         progress: dict = {}
+        # A scan profile is an operator choice, so it must reach argv: the previous build
+        # always ran the whole medium+ tree, so "focused" was unselectable and every scan
+        # burned its 600s cap. Absent a profile the behaviour is unchanged (comprehensive).
+        profile = (json.loads(eng.get("scope_json") or "{}").get("scan_profile") or {})
+        if profile:
+            self.db.emit(engagement_id, "scan_profile",
+                         {"intent_id": intent_id, "profile": profile})
 
         def on_progress(line: str) -> None:
             sample = PARSERS["nuclei_stats"](line)
@@ -980,9 +987,11 @@ class Orchestrator:
             self.db.emit(engagement_id, "scan_progress",
                          {"tool": "nuclei", "intent_id": intent_id, "url": url, **sample})
 
-        r = self.runner.run(spec, {"target": url, "severity": "medium,high,critical",
-                                   "rate_limit": _declared_rate(scope, NUCLEI_MAX_RATE)},
-                            scope, engagement_id, intent_id, url, "web",
+        params = {"target": url, "severity": profile.get("severity") or "medium,high,critical",
+                  "rate_limit": _declared_rate(scope, NUCLEI_MAX_RATE)}
+        if profile.get("tags"):
+            params["tags"] = profile["tags"]
+        r = self.runner.run(spec, params, scope, engagement_id, intent_id, url, "web",
                             on_progress=on_progress)
         if progress.get("percent") is not None and progress["percent"] < 100:
             # say what was NOT scanned, in the engine's own numbers
