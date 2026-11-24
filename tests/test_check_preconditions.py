@@ -94,11 +94,45 @@ def test_idor_without_an_identity_is_refused(box):
 
 
 def test_idor_with_preconditions_present_still_reports(box):
-    """Positive control: the guard must not stop a genuine ownership finding."""
+    """Positive control: the guard must not stop a genuine finding.
+
+    This fixture answers the same body with and without a cookie, so the evidence supports
+    "no authentication on the route" (CWE-306), not "alice read another user's record".
+    Both are reportable; the check must claim only what its own control showed.
+    """
     c, url = box["checks"], box["url"]
     found = c.idor(url + "/api/profile", "session=abc", "lab@example.invalid", "alice")
-    assert len(found) == 1 and found[0]["cwe"] == "CWE-639"
-    assert "alice" in found[0]["description"]
+    assert len(found) == 1 and found[0]["cwe"] == "CWE-306"
+    assert "without authentication" in found[0]["title"]
+
+
+def test_idor_reports_ownership_when_anonymous_access_is_refused(tmp_path):
+    """The ownership claim requires its own control: anonymous must be REFUSED."""
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            authed = "session=abc" in self.headers.get("Cookie", "")
+            body = b'{"email":"other@example.invalid","user_id":2}'
+            self.send_response(200 if authed else 401)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body if authed else b"unauthorized")
+
+        def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        Thread(target=server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{server.server_port}"
+        db = DB(tmp_path / "d.sqlite")
+        evidence = EvidenceStore(db, tmp_path / "ev")
+        scope = Scope({"targets": [{"kind": "url", "value": url}], "categories": ["web"],
+                       "rate_limit_rps": 100})
+        probe = HttpProbe(db, evidence)
+        found = WebChecks(probe, "eng", scope).idor(
+            url + "/api/profile", "session=abc", "other@example.invalid", "alice", 1)
+        db.close()
+        assert len(found) == 1 and found[0]["cwe"] == "CWE-639", found
+        assert found[0]["proof"]["owner_value"] == 2
 
 
 def test_missing_header_findings_dedupe_the_root_document(box):

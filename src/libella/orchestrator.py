@@ -54,6 +54,39 @@ class ConcurrencyGate:
             self._sem.release()
 
 
+def _object_collections(checks, endpoints, base: str) -> list[str]:
+    """Discovered collections that serve an object by id, found by asking, not by name.
+
+    A collection is a discovered path (no query) that answers one bare request and then a
+    single-record document at ``/<n>``. The suffix is not assumed: it is whatever the
+    first probe shows, so ``/api/orders`` and ``/rest/invoices`` are treated alike.
+    """
+    out = []
+    root = base.rstrip("/")
+    for ep in endpoints:
+        if "?" in ep or not ep.startswith(root) or ep.rstrip("/") == root:
+            continue
+        if ep.endswith((".js", ".css", ".ico", ".png", ".jpg", ".svg", ".json")):
+            continue
+        for oid in (1, 2):
+            r = checks._req(f"{ep.rstrip('/')}/{oid}", tool="collection_probe")
+            if r.get("ok") and r["status"] == 200 and _looks_like_one_record(r["body"]):
+                out.append(ep)
+                break
+    return out
+
+
+def _looks_like_one_record(body: str) -> bool:
+    """A single JSON object (not a list, not an HTML page) is an object resource."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        return True
+    return isinstance(data, dict) and bool(data)
+
+
 def _declared_rate(scope: Scope, ceiling: int) -> int:
     """Pass the declared rate, clamped to the tool's own conservative ceiling."""
     return max(1, min(ceiling, int(scope.rate_limit_rps)))
@@ -882,6 +915,25 @@ class Orchestrator:
         from .checks import COMMON_PARAM_ENDPOINTS, COMMON_API_PATHS
         from urllib.parse import urlparse, parse_qs
         base = url.rstrip("/")
+        # Every discovered endpoint is asked which parameters it reacts to, so the checks
+        # stop depending on an operator hint naming the endpoint and its parameter. The
+        # fixed list below stays as a fallback for paths a crawl never linked.
+        for ep in sorted(endpoints):
+            if "?" in ep or ep.endswith((".js", ".css", ".ico", ".png", ".jpg", ".svg")):
+                continue
+            if not scope.check_url(ep).allowed:
+                continue
+            for p in checks.live_params(ep, limit=4):
+                if allow("reflected_xss"):
+                    candidates += checks.reflected_xss(ep, p)
+                if allow("sqli"):
+                    candidates += checks.sqli(ep, p)
+                if allow("ssti"):
+                    candidates += checks.ssti(ep, p)
+                if allow("path_traversal"):
+                    candidates += checks.path_traversal(ep, p)
+                if allow("open_redirect"):
+                    candidates += checks.open_redirect(ep, p)
         for ep in COMMON_PARAM_ENDPOINTS:
             full = base + ep
             if not scope.check_url(full).allowed:
@@ -925,7 +977,16 @@ class Orchestrator:
                             obj_url = h["url_template"].format(id=oid)
                             if scope.check_url(obj_url).allowed:
                                 candidates += checks.idor(obj_url, cookie_header,
-                                                          h["foreign_marker"], ident["username"])
+                                                          h["foreign_marker"], ident["username"],
+                                                          ident.get("uid"))
+                # Without a hint, walk object ids under the collections the crawl actually
+                # found: the operator should not have to name an endpoint for the engine to
+                # notice that /api/<collection>/{id} serves other users' records.
+                if cookie_header and allow("idor"):
+                    for coll in _object_collections(checks, sorted(endpoints), base):
+                        candidates += checks.object_enumeration(
+                            coll, cookie_header, ident["username"], ident.get("uid"),
+                            ids=range(1, 4))
             except httpx.HTTPError:
                 pass
             finally:

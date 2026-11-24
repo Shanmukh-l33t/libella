@@ -83,6 +83,9 @@ class FindingPipeline:
         proof_ev = self.evidence.put_json(engagement_id, {
             "proof_request": cand.get("proof_request"),
             "quote": cand.get("quote"), "quote_in": cand.get("quote_in", "body"),
+            # what the check established, as typed prerequisites (proof.py): the verifier
+            # refuses promotion when these are absent instead of guessing them
+            "proof": cand.get("proof") or {},
             # the status the proof was captured at: a retest may only say "fixed"
             # from a response in the same class, or a block page reads as remediation
             "proof_status": self._proof_status(ev_ids),

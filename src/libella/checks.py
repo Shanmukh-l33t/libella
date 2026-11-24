@@ -3,10 +3,12 @@
 Each check returns candidate findings with a replayable proof_request and
 a verbatim quote. Nothing here trusts scanner banners or model prose.
 """
+import json
 import re
 import uuid
 
 from .controls import COOKIE_CONTROLS, HEADER_CONTROLS
+from .proof import canonical_document, with_param
 from .tools.http_probe import HttpProbe
 
 CANARY = "libella" + uuid.uuid4().hex[:6]
@@ -36,13 +38,17 @@ SEC_HEADERS = {
 
 def _candidate(title, cwe, owasp, severity, confidence, endpoint, description,
                impact, remediation, evidence_id, quote, proof_request, dedup_key,
-               quote_in="body", controls=()):
+               quote_in="body", controls=(), proof=None):
     return {
         "title": title, "cwe": cwe, "owasp": owasp, "severity": severity,
         "confidence": confidence, "endpoint": endpoint, "description": description,
         "impact": impact, "remediation": remediation,
         "evidence_ids": [evidence_id], "quote": quote, "quote_in": quote_in,
         "proof_request": proof_request, "dedup_key": dedup_key,
+        # what this check actually established, as typed prerequisites (proof.py).
+        # A finding whose contract is incomplete is refused by the verifier, never
+        # filled in with a guessed value.
+        "proof": {**({"assertion": description}), **(proof or {})},
         # structured control ids this candidate asserts failed (controls.py)
         "controls": sorted(set(controls)),
     }
@@ -98,9 +104,11 @@ class WebChecks:
             "Increased exposure to clickjacking, MIME sniffing, protocol downgrade, and XSS impact.",
             "Set the missing headers at the server or application layer.",
             r["evidence_id"], quote, self._proof(url),
-            f"headers:{(url or '').rstrip('/') or url}", quote_in="header_fact",
+            f"headers:{canonical_document(url)}", quote_in="header_fact",
             controls=[HEADER_CONTROLS[h] for h in SEC_HEADERS
                       if h not in {k.lower() for k in r["headers"]}],
+            proof={"document": canonical_document(url),
+                   "controls": [h for h in SEC_HEADERS if h not in {k.lower() for k in r["headers"]}]},
         )]
 
     def cookie_flags(self, url: str, method="GET", body=None, headers=None) -> list[dict]:
@@ -136,6 +144,7 @@ class WebChecks:
                     {"method": method, "url": url, "body": body, "headers": headers},
                     f"cookie:{url}:{name}", quote_in="cookie_fact",
                     controls=[COOKIE_CONTROLS[p] for p in problems],
+                    proof={"cookie": name, "missing": problems},
                 ))
         return out
 
@@ -188,6 +197,8 @@ class WebChecks:
                 "Context-aware output encoding; apply a strict Content-Security-Policy.",
                 r["evidence_id"], payload, self._proof(target),
                 f"xss:{url}:{param}",
+                proof={"signal": "reflection",
+                       "benign_request": self._proof(with_param(target, param, "libella-benign"))},
             )]
         return []
 
@@ -210,6 +221,10 @@ class WebChecks:
                 "Use parameterized queries / prepared statements; least-privilege DB account.",
                 r["evidence_id"], quote, self._proof(base + "'"),
                 f"sqli:{url}:{param}",
+                proof={"signal": "error_signature",
+                       # same parameter, a benign value: a server that fails on anything
+                       # raises the same signature without any injection
+                       "benign_request": self._proof(base + "1")},
             )]
         return []
 
@@ -230,6 +245,10 @@ class WebChecks:
             "Parameterized queries; least-privilege DB account.",
             r["evidence_id"], quote, self._proof(target),
             f"sqli:{url}:{param}",
+            proof={"signal": "union_marker",
+                   # the operator-supplied marker must not appear for a value that is not
+                   # an injection: otherwise the marker was the page's own content
+                   "benign_request": self._proof(with_param(target, param, "libellaBenign"))},
         )]
 
     def path_traversal(self, url: str, param: str) -> list[dict]:
@@ -297,6 +316,13 @@ class WebChecks:
             "Allowlist outbound destinations; block link-local/metadata ranges; egress filtering.",
             r["evidence_id"], quote, self._proof(target),
             f"ssrf:{url}:{param}",
+            proof={"marker": marker,
+                   # the marker must arrive only when the server fetched the internal
+                   # resource: ask the same endpoint for the application's own root, which
+                   # cannot contain it. A control that still names the internal URL proves
+                   # nothing, because the server fetches it either way.
+                   "benign_request": self._proof(
+                       with_param(target, param, _origin_root(internal_url)))},
         )]
 
     def sensitive_paths(self, base_url: str) -> list[dict]:
@@ -450,11 +476,19 @@ class WebChecks:
                     {"method": "POST", "url": login_url, "body": body,
                      "headers": {"Content-Type": "application/x-www-form-urlencoded"}},
                     f"authbypass:{login_url}",
+                    proof={"signal": "error_signature",
+                           # the same form with a wrong password: a login that succeeds for
+                           # anything is not evidence the injection worked
+                           "benign_request": {
+                               "method": "POST", "url": login_url,
+                               "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                               "body": f"{username_field}=libellaNoUser&"
+                                       f"{password_field}=libellaWrongPass"}},
                 )]
         return []
 
     def idor(self, object_url: str, cookie_header: str, foreign_marker: str,
-             identity_name: str) -> list[dict]:
+             identity_name: str, identity_value=None) -> list[dict]:
         """Authenticated as identity_name, read an object owned by someone else.
 
         Both halves of the claim must be present: an empty cookie is an unauthenticated
@@ -469,6 +503,26 @@ class WebChecks:
             return []
         idx = r["body"].find(foreign_marker)
         quote = r["body"][max(0, idx - 30):idx + len(foreign_marker) + 30]
+        anon = self._req(object_url, tool="idor_check_anon")
+        if anon.get("ok") and anon["status"] < 400 and foreign_marker in anon["body"]:
+            # The same record is served with NO credential, so the route applies no
+            # session check at all. Reporting "alice read bob's object" would describe an
+            # identity comparison that never happened: this is missing authentication.
+            return [_candidate(
+                f"Object endpoint serves another user's record without authentication "
+                f"({object_url.split('://')[-1]})", "CWE-306",
+                "API2:2023 Broken Authentication", "high", "high", object_url,
+                f"GET {object_url} with no credential returned a record belonging to "
+                f"someone else ({foreign_marker}), so the route checks neither session nor "
+                f"ownership. Every record of this type is readable by anyone who can reach "
+                f"the service.",
+                "Unauthenticated disclosure of other users' records; bulk enumeration of the "
+                "collection and the personal data in it.",
+                "Require authentication on the route, then enforce object-level ownership "
+                "before serving a record.",
+                anon["evidence_id"], quote, self._proof(object_url),
+                f"noauth:{object_url}",
+            )]
         return [_candidate(
             f"IDOR/BOLA: {identity_name} can read another user's object", "CWE-639",
             "A01:2021 Broken Access Control", "high", "high", object_url,
@@ -478,7 +532,104 @@ class WebChecks:
             r["evidence_id"], quote,
             self._proof(object_url, headers={"Cookie": cookie_header}),
             f"idor:{object_url}:{identity_name}",
+            proof={"identity": {"name": identity_name, "value": identity_value},
+                   "owner_field": _owner_of(r["body"])[0], "owner_value": _owner_of(r["body"])[1],
+                   "benign_request": {"method": "GET", "url": object_url}},
         )]
+
+    def object_enumeration(self, collection_url: str, cookie_header: str,
+                           identity_name: str, identity_value, ids=range(1, 6),
+                           tool: str = "object_enum") -> list[dict]:
+        """Find another identity's object by walking ids under a DISCOVERED collection.
+
+        Nothing here is target-specific: the owner field is read from the served record,
+        the claim needs the owner to differ from the caller, and anonymous access to the
+        same object must be refused. An operator hint names the ids; this derives them.
+        """
+        if not (cookie_header or "").strip() or not (identity_name or "").strip() \
+                or identity_value in (None, ""):
+            return []
+        for oid in ids:
+            url = f"{collection_url.rstrip('/')}/{oid}"
+            r = self._req(url, headers={"Cookie": cookie_header}, tool=tool)
+            if not r.get("ok") or r["status"] != 200:
+                continue
+            owner_field, owner = _owner_of(r["body"])
+            if owner is None or str(owner) == str(identity_value):
+                continue
+            anon = self._req(url, tool=f"{tool}_anon")
+            if not anon.get("ok"):
+                continue
+            if anon["status"] < 400:
+                # Readable with no credential at all. That is a real defect, but it is NOT
+                # an ownership failure: no authorization decision was made, so reporting
+                # "alice read bob's order" would describe an identity check that never ran.
+                quote = f'"{owner_field}":{json.dumps(owner)}'
+                if owner != identity_value and quote in anon["body"]:
+                    return [_candidate(
+                        f"Object endpoint serves another user's record without authentication "
+                        f"({url.split('://')[-1]})", "CWE-306",
+                        "API2:2023 Broken Authentication", "high", "high", url,
+                        f"GET {url} with no credential returned object {oid}, whose "
+                        f"'{owner_field}' is {owner}. The route applies no session or "
+                        f"ownership check at all, so every record of this type is readable "
+                        f"by anyone who can reach the service.",
+                        "Unauthenticated disclosure of other users' records; enables bulk "
+                        "enumeration of the whole collection.",
+                        "Require authentication on the route and enforce object ownership "
+                        "before serving a record.",
+                        anon["evidence_id"], quote, self._proof(url), f"noauth:{collection_url}")
+                    ]
+                continue
+            quote = f'"{owner_field}":{json.dumps(owner)}'
+            if quote not in r["body"]:
+                continue
+            return [_candidate(
+                f"IDOR/BOLA: '{identity_name}' reads another user's object at "
+                f"{url.split('://')[-1]}", "CWE-639",
+                "API1:2023 Broken Object Level Authorization", "high", "high", url,
+                f"Identity {identity_name} (id {identity_value}) read object {oid}, whose "
+                f"'{owner_field}' is {owner}; the same request without the credential "
+                f"returned {anon['status']}. Object ids are sequential, so every record of "
+                f"this type is enumerable.",
+                "Horizontal privilege escalation: any authenticated user can read every "
+                "record of this type by changing the id.",
+                "Enforce object-level ownership (or tenancy) on every object read; do not "
+                "rely on unguessable ids.",
+                r["evidence_id"], quote,
+                self._proof(url, headers={"Cookie": cookie_header}),
+                f"bola:{collection_url.rstrip('/')}",
+                proof={"identity": {"name": identity_name, "value": identity_value},
+                       "owner_field": owner_field, "owner_value": owner,
+                       # the same object with no credential: a denial is what proves the
+                       # record is protected and the read was an authorization failure
+                       "benign_request": {"method": "GET", "url": url}},
+            )]
+        return []
+
+    def live_params(self, url: str, names=None, limit: int = 4) -> list[str]:
+        """Which query parameters this endpoint actually reacts to.
+
+        Declared hints are not available on an unfamiliar target, and a fixed endpoint
+        list only finds the parameters someone thought of. This asks the endpoint: send a
+        benign value, keep the parameter when the response changes in a way the value
+        alone does not explain (status, length, or a different document).
+        """
+        base = url.split("?")[0]
+        bare = self._req(base, tool="param_discovery")
+        if not bare.get("ok"):
+            return []
+        found = []
+        for name in (names or PARAM_NAMES):
+            if len(found) >= limit:
+                break
+            probe = self._req(f"{base}?{name}=libellaProbe", tool="param_discovery")
+            if not probe.get("ok"):
+                continue
+            if probe["status"] != bare["status"] or abs(
+                    len(probe["body"]) - len(bare["body"])) > len("libellaProbe") * 2:
+                found.append(name)
+        return found
 
 
 # Common parameterized endpoints probed during parameter mining (generic patterns).
@@ -489,3 +640,41 @@ COMMON_PARAM_ENDPOINTS = [
     "/greet?name=world",
 ]
 COMMON_API_PATHS = ["/api/profile", "/api/users", "/api/orders", "/api/config"]
+
+# Names worth probing on a discovered endpoint: the vocabulary applications use for the
+# values these checks attack (a query, a filter, a file, a destination, an object id).
+# Ordered by how often they carry user input, not by any one fixture's spelling.
+PARAM_NAMES = [
+    "q", "query", "search", "filter", "category", "type", "sort", "order", "id", "ids",
+    "name", "file", "path", "url", "uri", "dest", "destination", "next", "redirect",
+    "return", "returnUrl", "callback", "user", "username", "page", "limit", "offset",
+]
+
+# Fields a served record uses to name its owner. Read from the response, never assumed
+# from the endpoint's spelling.
+OWNER_FIELDS = ("user_id", "owner_id", "userId", "ownerId", "uid", "owner", "user",
+                "account_id", "tenant_id", "customer_id", "created_by")
+
+
+def _origin_root(url: str) -> str:
+    """scheme://host/ of a URL: the app's own root, with no path or query."""
+    m = re.match(r"^(https?://[^/?#]+)", url or "")
+    return (m.group(1) + "/") if m else ""
+
+
+def _owner_of(body: str) -> tuple[str | None, object]:
+    """(field, value) naming the record's owner in a JSON body, or (None, None)."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return None, None
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = next((v for v in data["data"].values() if isinstance(v, dict)), data)
+    if isinstance(data, list):
+        data = data[0] if len(data) == 1 and isinstance(data[0], dict) else None
+    if not isinstance(data, dict):
+        return None, None
+    for field in OWNER_FIELDS:
+        if field in data and data[field] not in (None, "", {}):
+            return field, data[field]
+    return None, None

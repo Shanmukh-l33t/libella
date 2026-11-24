@@ -9,6 +9,7 @@ import re
 import time
 from urllib.parse import urlparse
 
+from . import proof
 from .assessment_window import stored_window_refusal
 from .db import DB, new_id
 from .evidence import EvidenceStore
@@ -35,6 +36,39 @@ HEADER_NAME_MAP = {
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _control_request(benign: dict) -> dict:
+    """The negative control as a replayable request: same route, no credential."""
+    pr = {"method": benign.get("method", "GET"), "url": benign["url"]}
+    for key in ("body", "headers"):
+        if benign.get(key):
+            # drop the capability being tested, keep the request otherwise identical
+            pr[key] = ({k: v for k, v in benign[key].items()
+                        if k.lower() not in ("cookie", "authorization")}
+                       if key == "headers" else benign[key])
+    return pr
+
+
+def _json_field(body: str, field: str):
+    """Owner field from a response body: top level, one-record list, or GraphQL data.
+
+    Absent means the body does not state an owner, which is a refusal to judge: the
+    caller must not substitute the endpoint, a title, or a model's prose for it.
+    """
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        for value in data["data"].values():  # {"data": {"user": {"id": 2}}}
+            if isinstance(value, dict) and field in value:
+                return value[field]
+    if isinstance(data, dict):
+        return data.get(field)
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        return data[0].get(field)  # one-record envelope: {"items":[{"user_id":2}]}
+    return None
 
 
 def _looks_blocked(r: dict) -> str | None:
@@ -109,17 +143,154 @@ class Verifier:
         quote = spec.get("quote") or ""
         quote_in = spec.get("quote_in", "body")
         reproduced, detail = self._compare(quote, quote_in, r)
-        verdict = "reproduced" if reproduced else "not_reproduced"
-        self._record(finding_id, attempt, "replay", r["exchange_id"], verdict, detail)
+        if not reproduced:
+            self._record(finding_id, attempt, "replay", r["exchange_id"], "not_reproduced", detail)
+            if f["state"] == "validated":
+                self._demote(finding_id, "replay failed to reproduce")
+            return {"verdict": "not_reproduced", "detail": detail,
+                    "replay_exchange_id": r["exchange_id"], "finding_id": finding_id,
+                    "state": f["state"]}
+        # The quote came back. That alone is NOT the claim: the contract says what the
+        # observation has to mean, and its controls say what would also be true if the
+        # weakness were absent. Reproducing the same flawed test twice proves only that
+        # the test is repeatable -- the exact failure that let an empty-marker SSRF and a
+        # public-page IDOR reach 'validated'.
+        kind = proof.kind_for(f["cwe"])
+        gaps = proof.missing(kind, spec.get("proof"), pr, f["title"] or "")
+        if gaps:
+            return self._record(finding_id, attempt, "proof_contract", r["exchange_id"],
+                                "unsupported",
+                                f"observation reproduced ({detail}) but the proof contract for "
+                                f"{kind} is incomplete: missing {', '.join(gaps)}. A repeated "
+                                f"observation without these prerequisites does not establish "
+                                f"the weakness, so it is not confirmed.")
+        ok, why = self._corroborate(engagement_id, scope, kind, spec.get("proof") or {}, r,
+                                    pr, quote)
+        if not ok:
+            return self._record(finding_id, attempt, "proof_contract", r["exchange_id"],
+                                "unsupported",
+                                f"observation reproduced ({detail}) but the differential does "
+                                f"not support the claim: {why}")
+        self._record(finding_id, attempt, "replay", r["exchange_id"], "reproduced", detail)
         try:
-            if reproduced:
-                self.pipeline.transition(finding_id, "validated", reason="independent replay reproduced")
-            elif f["state"] == "validated":
-                self.pipeline.transition(finding_id, "observed", reason="replay failed to reproduce")
+            self.pipeline.transition(finding_id, "validated", reason="independent replay reproduced")
         except ValueError:
             pass  # verdict is recorded; the state machine may not allow the move
-        return {"verdict": verdict, "detail": detail, "replay_exchange_id": r["exchange_id"],
-                "finding_id": finding_id, "state": "validated" if reproduced else f["state"]}
+        return {"verdict": "reproduced", "detail": detail, "replay_exchange_id": r["exchange_id"],
+                "finding_id": finding_id, "state": "validated"}
+
+    def _demote(self, finding_id: str, reason: str):
+        try:
+            self.pipeline.transition(finding_id, "observed", reason=reason)
+        except ValueError:
+            pass
+
+    def _corroborate(self, engagement_id, scope, kind: str, contract: dict, r: dict,
+                     pr: dict, quote: str = "") -> tuple[bool, str]:
+        """Does the observation mean what the finding claims? One control per class.
+
+        Each check asks the question that separates the weakness from the benign
+        explanation for the same response: the resource is public, the marker is the
+        target's own text, the payload was simply echoed, the document is another page.
+        """
+        if kind == proof.AUTHORIZATION:
+            return self._corroborate_authz(engagement_id, scope, contract, r)
+        if kind == proof.SSRF:
+            return self._corroborate_ssrf(engagement_id, scope, contract, pr)
+        if kind in (proof.SQL_ERROR, proof.BLIND_COMMAND) or \
+                contract.get("signal") == "union_marker":
+            return self._corroborate_injection(engagement_id, scope, contract, r, quote)
+        if kind == proof.HEADERS:
+            want, got = proof.canonical_document(contract.get("document")), \
+                proof.canonical_document(pr.get("url"))
+            if want and want != got:
+                return False, f"proof document {want} is not the assessed resource {got}"
+            lowered = {k.lower() for k in (r.get("headers") or {})}
+            present = [c for c in contract.get("controls") or () if c.lower() in lowered]
+            return (not present), (f"controls already present on replay: {present}" if present
+                                   else "control ids still absent from the served response")
+        if kind == proof.SESSION:
+            jars = [v for k, v in (r.get("headers") or {}).items() if k.lower() == "set-cookie"]
+            name = contract["cookie"]
+            jar = next((c for c in jars if c.split("=", 1)[0].strip() == name), None)
+            if jar is None:
+                return False, f"cookie '{name}' is not set by the replayed response"
+            still = [f for f in contract["missing"] if f.lower() not in jar.lower()]
+            return (len(still) == len(contract["missing"])), \
+                f"flags now present on '{name}': {sorted(set(contract['missing']) - set(still))}"
+        return True, ""
+
+    def _corroborate_authz(self, engagement_id, scope, contract: dict, r: dict) -> tuple[bool, str]:
+        """An access-control claim needs BOTH: another owner's record, and a denial without the identity."""
+        identity = contract.get("identity") or {}
+        name = identity.get("name") or ""
+        mine = str(identity.get("value"))
+        if contract.get("privilege"):
+            # function/role-level: the claim is that a caller without the privilege got the
+            # data, so the differential is the same request with no identity at all
+            return self._authz_control(engagement_id, scope, contract, name, "privilege")
+        field = contract["owner_field"]
+        owner = _json_field(r.get("body") or "", field)
+        if owner is None:
+            return False, f"the replayed body carries no '{field}' field, so ownership is unshown"
+        if str(owner) == mine:
+            return False, (f"'{field}' is {owner!r}, the requesting identity itself: this is the "
+                           f"caller's own object, not another user's")
+        if str(owner) != str(contract["owner_value"]):
+            return False, (f"'{field}' is {owner!r} but the recorded owner was "
+                           f"{contract['owner_value']!r}: the object answered differently")
+        ok, why = self._authz_control(engagement_id, scope, contract, name, "ownership")
+        if not ok:
+            return False, why
+        return True, f"{name} read {owner}'s record; {why}"
+
+    def _authz_control(self, engagement_id, scope, contract: dict, name: str,
+                       what: str) -> tuple[bool, str]:
+        """The same request with no credential must be refused for the claim to hold."""
+        benign = contract["benign_request"]
+        b = self._replay(engagement_id, scope, _control_request(benign), "verifier_control")
+        if not b.get("ok"):
+            return False, f"the unauthenticated control request failed ({b.get('error')})"
+        if b.get("mitigated"):
+            return False, "the control request hit a challenge page, so the denial is unshown"
+        if b["status"] < 400:
+            return False, (f"the same request WITHOUT {name}'s credential answered {b['status']}: "
+                           f"the resource is readable anonymously, so no access-control decision "
+                           f"(by {what}) was demonstrated")
+        return True, f"anonymous got {b['status']}"
+
+    def _corroborate_ssrf(self, engagement_id, scope, contract: dict, pr: dict) -> tuple[bool, str]:
+        """The marker must come from the server-side fetch, not from the target's own text."""
+        marker = contract["marker"]
+        benign = contract["benign_request"]
+        b = self._replay(engagement_id, scope, _control_request(benign), "verifier_control")
+        if not b.get("ok"):
+            return False, f"the control request failed ({b.get('error')})"
+        if b.get("mitigated"):
+            return False, "the control request hit a challenge page"
+        if marker in (b.get("body") or ""):
+            return False, (f"the marker {marker!r} also appears when the parameter carries no "
+                           f"internal URL: the response is not evidence of a server-side fetch")
+        return True, "marker present only when the parameter names the internal URL"
+
+    def _corroborate_injection(self, engagement_id, scope, contract: dict, r: dict,
+                              quote: str) -> tuple[bool, str]:
+        """The claimed signal must be absent when the parameter carries a benign value."""
+        if contract.get("signal") == "reflection":
+            # the payload came back verbatim in an HTML response: that is the finding
+            return True, "payload reflected verbatim; unescaped output is the claim"
+        benign = contract["benign_request"]
+        b = self._replay(engagement_id, scope, _control_request(benign), "verifier_control")
+        if not b.get("ok"):
+            return False, f"the control request failed ({b.get('error')})"
+        if b.get("mitigated"):
+            return False, "the control request hit a challenge page"
+        body = b.get("body") or ""
+        signal = _norm(quote or contract.get("marker") or "")
+        if signal and signal in _norm(body):
+            return False, (f"the claimed signal {quote[:60]!r} also appears for the benign value: "
+                           f"the response does not distinguish the injected input")
+        return True, f"benign control answered {b['status']} without the claimed signal"
 
     def _replay(self, engagement_id: str, scope, pr: dict, tool: str) -> dict:
         """Replay a proof over the transport that captured it (browser when challenged)."""

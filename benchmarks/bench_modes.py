@@ -175,11 +175,21 @@ def run_mode(mode, twin, hints, data_root, *, llm=None, nuclei_profile="focused"
         started = time.time()
         if mode == "C":
             prof = NUCLEI_PROFILES[nuclei_profile]
+            # the scanner's OWN workload counters: a profile that reaches argv but selects
+            # the same template tree is indistinguishable from no profile in any result
+            from libella.orchestrator import PARSERS
+            samples: list = []
+
+            def on_progress(line: str) -> None:
+                sample = PARSERS["nuclei_stats"](line)
+                if sample and sample["percent"] is not None:
+                    samples.append(sample)
+
             r = app.runner.run(app.registry.get("nuclei"),
                                {"target": base, "severity": prof["severity"],
                                 "tags": prof["tags"], "rate_limit": 20},
-                               Scope(scope_spec), eid, None, base, "web")
-            from libella.orchestrator import PARSERS
+                               Scope(scope_spec), eid, None, base, "web",
+                               on_progress=on_progress)
             for rec in PARSERS["nuclei"](r.get("stdout") or ""):
                 app.pipeline.submit_candidate(eid, {
                     "title": f"[nuclei] {rec.get('name') or rec.get('template_id')}",
@@ -195,8 +205,18 @@ def run_mode(mode, twin, hints, data_root, *, llm=None, nuclei_profile="focused"
                     "proof_request": {"method": "GET", "url": rec.get("matched_at") or base},
                     "dedup_key": f"nuclei:{rec.get('template_id')}:{rec.get('matched_at')}",
                 }, None)
+            last = samples[-1] if samples else {}
             extra = {"nuclei_ok": r.get("ok"), "nuclei_error": r.get("error"),
                      "nuclei_profile": prof,
+                     "nuclei_argv": (json.loads(app.evidence.read(r["artifact_id"]))["argv"]
+                                     if r.get("artifact_id") else None),
+                     "nuclei_saturated": any("saturated" in (s.get("error") or "") for s in samples),
+                     "nuclei_samples": len(samples),
+                     "nuclei_counters": {"templates_selected": last.get("templates"),
+                                         "requests": last.get("requests"),
+                                         "total_requests": last.get("total_requests"),
+                                         "percent_last": last.get("percent"),
+                                         "errors": last.get("errors")},
                      "nuclei_runtime_s": round((r.get("duration_ms") or 0) / 1000, 1)}
             app.db.execute("UPDATE engagements SET status='done', finished_at=? WHERE id=?",
                            (time.time(), eid))
