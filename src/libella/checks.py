@@ -981,15 +981,49 @@ def _normalise_document(body: str) -> str:
 
 
 def _content_differs(a: str, b: str) -> bool:
-    """Do two successful responses carry different CONTENT (not just different length)?"""
-    na, nb = _normalise_document(a), _normalise_document(b)
+    """Do two successful responses carry different CONTENT, beyond echoing the payload?
+
+    The echo has to be excluded, and this was measured on a real app: Juice Shop's
+    /rest/user/whoami?callback= is a JSONP endpoint that reflects the value it was given,
+    so `...' AND '1'='1` comes back as `...AND11` and `...' AND '1'='2` as `...AND12`. Both
+    answer 200 with the same object and differ only by the digits the echo carried. That
+    was reported as SQL injection and VALIDATED, which is the worst shape of error here.
+
+    The record's own content is compared with the echoed fragment removed: a real boolean
+    injection changes the data the endpoint returns, not the name it wraps it in.
+    """
+    na, nb = _normalise_document(_strip_echo(a)), _normalise_document(_strip_echo(b))
     if not na or not nb:
         return False                      # nothing comparable to differ
     if na == nb:
         return False
-    # require a real content difference: a shared skeleton with different record counts is
-    # exactly the signal, so compare the token sets rather than only the strings
-    return _shingles(na) != _shingles(nb)
+    # the difference must be in the CONTENT, so require more than a couple of differing
+    # characters: a wrapper name is short, a row set is not
+    ta, tb = _shingles(na), _shingles(nb)
+    changed = ta.symmetric_difference(tb)
+    if len(changed) >= 3:
+        return True
+    # A repeated-element change (one more <li>, one more row in the same shape) differs in
+    # COUNT rather than vocabulary. Normalised lengths separate those, and a small numeric
+    # drift alone does not: three characters of difference is a wrapper name, not a row.
+    return abs(len(na) - len(nb)) >= 8
+
+
+def _strip_echo(body: str) -> str:
+    """Remove the payload fragments a reflecting endpoint writes back.
+
+    A parameter echoed into JSON, JSONP or HTML tells us nothing about a query, so the
+    attack's own tokens are deleted before two responses are compared. Only the ATTACK is
+    removed: the document's structure and its own values stay, because a real boolean
+    injection changes those.
+    """
+    text = body or ""
+    # the injected expression, in the spellings a server or a sanitiser leaves behind
+    text = re.sub(r"libella\s*'?\s*AND\s*'1'\s*=\s*'[12]", "", text, flags=re.I)
+    text = re.sub(r"libella\s*AND\s*1[12]", "", text, flags=re.I)
+    text = re.sub(r"libella", "", text, flags=re.I)
+    text = re.sub(r"\bAND\s*1[12]\b", "", text)
+    return text
 
 
 def _same_document(a: str, b: str) -> bool:
