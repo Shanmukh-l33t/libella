@@ -3,7 +3,7 @@ import { Gauge, Wrench, X } from "lucide-react";
 import { post, qs } from "../api";
 import type { Engagement, ToolCall, ToolInfo, ToolReadiness, ToolReadinessReport } from "../types";
 import { useApi } from "../lib/hooks";
-import { fmtDuration, fmtTime } from "../lib/format";
+import { callVerdict, fmtDuration, fmtTime } from "../lib/format";
 import { Badge, Button, Card, CodeBlock, EmptyState, ErrorNote, JsonViewer, Select, Table, TableSkeleton } from "../components/ui";
 
 // A readiness badge must never read "ready" for a degraded tool.
@@ -201,7 +201,7 @@ export default function Tools() {
                         <td><span className="font-mono text-xs font-medium">{c.tool}</span></td>
                         <td><span className="block max-w-[160px] truncate font-mono text-2xs text-ink-700 sm:max-w-[300px]" title={c.target || ""}>{c.target || "—"}</span></td>
                         <td>{c.scope_decision
-                          ? <Badge tone={c.scope_decision.startsWith("refused") ? "critical" : "success"}>{c.scope_decision.startsWith("refused") ? "refused" : "allowed"}</Badge>
+                          ? <Badge tone={callVerdict(c.scope_decision).tone}>{callVerdict(c.scope_decision).label}</Badge>
                           : <span className="text-ink-300">—</span>}</td>
                         <td className="text-right tabular-nums"><span className={c.exit_code ? "text-sev-high" : "text-ink-700"}>{c.exit_code ?? "—"}</span></td>
                         <td className="text-right tabular-nums text-ink-700">{fmtDuration(c.duration_ms)}</td>

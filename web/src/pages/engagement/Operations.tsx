@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { ChevronRight, ClipboardList } from "lucide-react";
 import type { AgentRun, Hypothesis, Intent, InvestigationStep, ToolCall } from "../../types";
 import { useApi } from "../../lib/hooks";
-import { ACTION_KIND, fmtDuration, fmtTime, hypothesisTone, intentTone, money, runTone, title } from "../../lib/format";
+import { ACTION_KIND, fmtDuration, fmtTime, callVerdict, hypothesisTone, intentTone, money, runTone, title } from "../../lib/format";
 import { Badge, Card, CodeBlock, EmptyState, ErrorNote, Table, TableSkeleton, cx } from "../../components/ui";
 
 const KIND_TONE: Record<string, string> = {
@@ -190,7 +190,7 @@ export default function Operations({ eid, live }: { eid: string; live: number })
                       <td><span className="block max-w-[320px] truncate font-mono text-xs text-ink-700" title={c.target || ""}>{c.target || "—"}</span></td>
                       <td>
                         {c.scope_decision
-                          ? <Badge tone={c.scope_decision.startsWith("refused") ? "critical" : "success"}>{c.scope_decision.startsWith("refused") ? "refused" : "allowed"}</Badge>
+                          ? <Badge tone={callVerdict(c.scope_decision).tone}>{callVerdict(c.scope_decision).label}</Badge>
                           : <span className="text-ink-300">—</span>}
                       </td>
                       <td className="text-right tabular-nums">

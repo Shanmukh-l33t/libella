@@ -40,22 +40,31 @@ export default function Engagement() {
   const feed = useRef(new Map<number, Event>());
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    get<Event[]>(`/api/engagements/${id}/events?since=0`)
-      .then((rows) => {
-        if (!alive) return;
-        for (const r of rows) feed.current.set(r.seq, r);
-        setEvents([...feed.current.values()].sort((a, b) => b.seq - a.seq).slice(0, 400));
-        setSince(rows.length ? Math.max(...rows.map((r) => r.seq)) : 0);
-      })
-      .catch(() => setSince(0));
-    return () => { alive = false; };
+  // The feed is always read from the persisted event log (cursor = last seq held), never built from
+  // stream frames: the stream names events by kind and a client list of kinds is never complete, so
+  // a stream-built feed silently dropped kinds that a reload then showed.
+  const fill = useCallback((alive: () => boolean = () => true): Promise<void> => {
+    const last = Math.max(0, ...feed.current.keys());
+    return get<Event[]>(`/api/engagements/${id}/events?since=${last}`).then((rows) => {
+      if (!alive()) return;
+      for (const r of rows) feed.current.set(r.seq, r);
+      setEvents([...feed.current.values()].sort((a, b) => b.seq - a.seq).slice(0, 400));
+      setSince((v) => v ?? Math.max(0, ...feed.current.keys()));
+      if (rows.length >= 500) return fill(alive); // the endpoint pages at 500
+      return undefined;
+    });
   }, [id]);
 
-  const pushEvent = useCallback((kind: string, payload: any, seq: number) => {
-    feed.current.set(seq, { seq, kind, payload });
-    setEvents([...feed.current.values()].sort((a, b) => b.seq - a.seq).slice(0, 400));
+  useEffect(() => {
+    let alive = true;
+    feed.current = new Map();
+    setSince(null);
+    fill(() => alive).catch(() => setSince((v) => v ?? 0));
+    return () => { alive = false; };
+  }, [id, fill]);
+
+  const pushEvent = useCallback((kind: string) => {
+    fill().catch(() => {});
     // A preview emits this event itself; refetching it grows the evidence store forever.
     if (kind === "report_rendered") return;
     // Lifecycle changes refresh at once: a debounce timer can be throttled to once a
@@ -72,16 +81,18 @@ export default function Engagement() {
       setLive((v) => v + 1);
       eng.reload();
     }, 600);
-  }, [eng]);
+  }, [eng, fill]);
 
   // Coming back to the tab must show current state, not whatever the throttled timers last fetched.
   useEffect(() => {
-    const onVisible = () => { if (document.visibilityState === "visible") { setLive((v) => v + 1); eng.reload(); } };
+    const onVisible = () => { if (document.visibilityState === "visible") { fill().catch(() => {}); setLive((v) => v + 1); eng.reload(); } };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [eng]);
+  }, [eng, fill]);
 
   const connected = useStream(id, since, pushEvent);
+  // A reconnect (offline, sleep) must catch up on what the dropped stream missed.
+  useEffect(() => { if (connected) { fill().catch(() => {}); setLive((v) => v + 1); eng.reload(); } }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 

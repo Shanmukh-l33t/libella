@@ -194,7 +194,9 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         return f["state"] in CONFIRMED_STATES
 
     confirmed = [f for f in findings if _verified(f)]
-    refused = [t for t in tool_calls if (t["scope_decision"] or "").startswith("refused")]
+    # a missing binary or a bad argv is "not run", not a scope refusal
+    refused = [t for t in tool_calls if (t["scope_decision"] or "").startswith("refused")
+               and not re.match(r"refused: (missing binary|argv build error|bad argv)", t["scope_decision"])]
 
     report = {
         "engagement": {"id": eng["id"], "name": _safe(eng["name"]), "status": eng["status"],

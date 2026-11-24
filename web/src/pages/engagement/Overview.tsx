@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import type { Asset, Engagement, Event, Finding, Intent, ToolCall } from "../../types";
 import { useApi } from "../../lib/hooks";
-import { SEV_COLOR, SEV_ORDER, fmtTime, title } from "../../lib/format";
+import { SEV_COLOR, SEV_ORDER, fmtTime, isScopeRefusal, title } from "../../lib/format";
 import { Badge, Card, EmptyState, ErrorNote, Skeleton, Stat, cx } from "../../components/ui";
 import TargetCredentials from "../../components/TargetCredentials";
 
@@ -79,7 +79,7 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
     return c;
   }, [findings.data]);
   const confirmed = (findings.data || []).filter((f) => ["validated", "reported", "retested_persists"].includes(f.state)).length;
-  const refusals = (calls.data || []).filter((t) => (t.scope_decision || "").startsWith("refused")).length;
+  const refusals = (calls.data || []).filter((t) => isScopeRefusal(t.scope_decision)).length;
   const degradations = useMemo(
     () => events.filter((ev) => ev.kind === "degradation" || ev.kind === "engagement_failed").slice(0, 5),
     [events],
