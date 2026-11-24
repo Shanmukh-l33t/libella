@@ -726,7 +726,7 @@ def _origin_root(url: str) -> str:
 
 
 def is_collection(body: str) -> bool:
-    """Does this response publish a list of records? Then the path is a collection."""
+    """Does this response publish a list of records that each carry an id?"""
     try:
         data = json.loads(body)
     except (ValueError, TypeError):
@@ -734,7 +734,7 @@ def is_collection(body: str) -> bool:
     if isinstance(data, dict):
         data = next((v for v in data.values() if isinstance(v, list)), None)
     return bool(isinstance(data, list) and data
-                and all(isinstance(row, dict) and "id" in row for row in data))
+                and all(isinstance(row, dict) and isinstance(row.get("id"), int) for row in data))
 
 
 def _record_ids(body: str, limit: int = 5) -> list[int]:
@@ -761,17 +761,37 @@ def _record_ids(body: str, limit: int = 5) -> list[int]:
     return out
 
 
-def _owner_of(body: str) -> tuple[str | None, object]:
-    """(field, value) naming the record's owner in a JSON body, or (None, None)."""
+def record_of(body: str) -> dict | None:
+    """The record in a response body, unwrapping the envelope a JSON API wraps it in.
+
+    {"invoice": {...}}, {"data": {"user": {...}}} and a bare {...} are all one record; a
+    list of them is a collection, not a record. Without this the ownership check read the
+    ENVELOPE, found no owner field, and reported "ownership unshown" for a served invoice.
+    """
     try:
         data = json.loads(body)
     except (ValueError, TypeError):
-        return None, None
-    if isinstance(data, dict) and isinstance(data.get("data"), dict):
-        data = next((v for v in data["data"].values() if isinstance(v, dict)), data)
+        return None
     if isinstance(data, list):
-        data = data[0] if len(data) == 1 and isinstance(data[0], dict) else None
+        return data[0] if len(data) == 1 and isinstance(data[0], dict) else None
     if not isinstance(data, dict):
+        return None
+    # The record is the innermost object that carries an "id": an envelope key that happens
+    # to be named "user" (GraphQL's {"data": {"user": {...}}}) is a wrapper, not the record.
+    if "id" in data:
+        return data
+    for value in data.values():
+        if isinstance(value, dict):
+            found = record_of(json.dumps(value))
+            if found is not None:
+                return found
+    return data if any(f in data for f in OWNER_FIELDS) else None
+
+
+def _owner_of(body: str) -> tuple[str | None, object]:
+    """(field, value) naming the record's owner in a JSON body, or (None, None)."""
+    data = record_of(body)
+    if data is None:
         return None, None
     for field in OWNER_FIELDS:
         if field in data and data[field] not in (None, "", {}):
