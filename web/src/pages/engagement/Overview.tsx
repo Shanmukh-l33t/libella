@@ -62,7 +62,7 @@ function detail(kind: string, p: Record<string, any>) {
   return p.name || p.status || "";
 }
 
-export default function Overview({ eid, eng, live, events }: { eid: string; eng: Engagement; live: number; events: Event[] }) {
+export default function Overview({ eid, eng, live, events, degradations }: { eid: string; eng: Engagement; live: number; events: Event[]; degradations: Event[] }) {
   const assets = useApi<Asset[]>(`/api/engagements/${eid}/assets?live=${live}`);
   const findings = useApi<Finding[]>(`/api/engagements/${eid}/findings?live=${live}`);
   const intents = useApi<Intent[]>(`/api/engagements/${eid}/intents?live=${live}`);
@@ -80,10 +80,8 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
   }, [findings.data]);
   const confirmed = (findings.data || []).filter((f) => ["validated", "reported", "retested_persists"].includes(f.state)).length;
   const refusals = (calls.data || []).filter((t) => isScopeRefusal(t.scope_decision)).length;
-  const degradations = useMemo(
-    () => events.filter((ev) => ev.kind === "degradation" || ev.kind === "engagement_failed").slice(0, 5),
-    [events],
-  );
+  // Oldest first, from the whole persisted log (not the capped feed); a long run must not hide one.
+  const shownDegradations = degradations.slice(0, 5);
   // Real progress, straight from the scanner's own stats line (nuclei -stats JSON).
   const scan = useMemo(() => {
     const ev = events.find((e) => e.kind === "scan_progress");
@@ -122,7 +120,7 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
           </div>
         </div>
       )}
-      {degradations.map((d) => (
+      {shownDegradations.map((d) => (
         <div key={d.seq} className="flex gap-2 rounded border border-[#FEDF89] bg-[#FFFAEB] px-4 py-3 text-sm">
           <AlertTriangle size={15} className="mt-0.5 shrink-0 text-[#B54708]" />
           <div>
@@ -133,6 +131,11 @@ export default function Overview({ eid, eng, live, events }: { eid: string; eng:
           </div>
         </div>
       ))}
+      {degradations.length > shownDegradations.length && (
+        <div className="rounded border border-[#FEDF89] bg-[#FFFAEB] px-4 py-2.5 text-xs text-[#B54708]">
+          {degradations.length - shownDegradations.length} more coverage limits recorded; the Coverage page and the report list them all.
+        </div>
+      )}
       {errors.map((e) => <ErrorNote key={e} error={e} />)}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">

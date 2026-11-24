@@ -7,6 +7,7 @@ import { useApi, useStream } from "../lib/hooks";
 import { elapsed, fmtTime, money, statusTone, title } from "../lib/format";
 import { Badge, Button, ErrorNote, Modal, Select, Skeleton, Tabs, cx, useToast } from "../components/ui";
 import Overview from "./engagement/Overview";
+import { feedView } from "../lib/feed";
 import Operations from "./engagement/Operations";
 import AssetsTab from "./engagement/Assets";
 import GraphTab from "./engagement/Graph";
@@ -28,6 +29,7 @@ export default function Engagement() {
   const toast = useToast();
 
   const [events, setEvents] = useState<Event[]>([]);
+  const [degradations, setDegradations] = useState<Event[]>([]);
   const [since, setSince] = useState<number | null>(null);
   const [live, setLive] = useState(0);
   const [mode, setMode] = useState(() => {
@@ -48,7 +50,9 @@ export default function Engagement() {
     return get<Event[]>(`/api/engagements/${id}/events?since=${last}`).then((rows) => {
       if (!alive()) return;
       for (const r of rows) feed.current.set(r.seq, r);
-      setEvents([...feed.current.values()].sort((a, b) => b.seq - a.seq).slice(0, 400));
+      const view = feedView(feed.current.values());
+      setEvents(view.events);
+      setDegradations(view.degradations);
       setSince((v) => v ?? Math.max(0, ...feed.current.keys()));
       if (rows.length >= 500) return fill(alive); // the endpoint pages at 500
       return undefined;
@@ -197,7 +201,7 @@ export default function Engagement() {
         { id: "report", label: "Report" },
       ]} />
 
-      {tab === "overview" && <Overview eid={id} eng={e} live={live} events={events} />}
+      {tab === "overview" && <Overview eid={id} eng={e} live={live} events={events} degradations={degradations} />}
       {tab === "operations" && <Operations eid={id} live={live} />}
       {tab === "assets" && <AssetsTab eid={id} live={live} />}
       {tab === "traffic" && <TrafficTab eid={id} live={live} />}
