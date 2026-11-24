@@ -65,7 +65,10 @@ def score(findings: list) -> dict:
     for seed in GT["seeded_findings"]:
         path = seed["endpoint"].split("?")[0]
         for f in confirmed:
-            if f["cwe"] == seed["cwe"] and (path in (f["endpoint"] or "") or
+            # cwe_also exists for a seed whose evidence supports a second, more precise
+            # class: /api/orders/<id> applies no session check, so CWE-306 is what the
+            # observation shows and CWE-639 would describe a comparison that never ran
+            if f["cwe"] in (seed["cwe"], *seed.get("cwe_also", ())) and (path in (f["endpoint"] or "") or
                                             (f["endpoint"] or "") in seed["endpoint"]):
                 detected.append(seed["id"])
                 hit_ids.add(f["id"])
