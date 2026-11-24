@@ -129,24 +129,51 @@
    "exchanges": [
     "path_probe"
    ],
-   "why": "probes .env/.git/backup files, /actuator, /server-status and /debug for reachable source, debug and monitoring surfaces",
+   "why": "probes .env/.git/backup files, /actuator, /server-status and /debug for reachable source, debug and monitoring surfaces; each finding carries the control id of the path that answered, so a debug page is never evidence about source metadata",
    "requirements": {
     "V13.4.1": {
      "strength": "direct",
      "cwe": [
       "CWE-200"
+     ],
+     "controls": [
+      "exposure.vcs_metadata"
      ]
     },
     "V13.4.2": {
      "strength": "partial",
      "cwe": [
       "CWE-200"
+     ],
+     "controls": [
+      "exposure.debug_endpoint"
      ]
     },
     "V13.4.5": {
-     "strength": "direct",
+     "strength": "partial",
      "cwe": [
       "CWE-200"
+     ],
+     "controls": [
+      "exposure.monitoring_endpoint"
+     ]
+    },
+    "V13.4.3": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-548"
+     ],
+     "controls": [
+      "exposure.directory_listing"
+     ]
+    },
+    "V15.3.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ],
+     "controls": [
+      "exposure.excess_fields"
      ]
     }
    }
@@ -190,7 +217,10 @@
   {
    "unit": "sqli",
    "exchanges": [
-    "sqli_check"
+    "sqli_check",
+    "sqli_bool_true",
+    "sqli_bool_false",
+    "sqli_bool_true_repeat"
    ],
    "why": "error-based injection probe on one parameter of one endpoint",
    "requirements": {
@@ -294,7 +324,8 @@
   {
    "unit": "ssrf",
    "exchanges": [
-    "ssrf_check"
+    "ssrf_check",
+    "ssrf_discovery"
    ],
    "why": "operator-declared internal URL must be fetched by the application and its marker returned",
    "requirements": {
@@ -309,14 +340,18 @@
   {
    "unit": "idor",
    "exchanges": [
-    "idor_check"
+    "idor_check",
+    "idor_check_anon",
+    "object_enum",
+    "object_enum_anon"
    ],
-   "why": "authenticated read of another identity's object by id, compared with the expected denial",
+   "why": "authenticated read of another identity's object by id, compared with the expected denial; also the unauthenticated variant (the same record served with no credential), by id walk or a declared id",
    "requirements": {
     "V8.2.2": {
      "strength": "direct",
      "cwe": [
-      "CWE-639"
+      "CWE-639",
+      "CWE-306"
      ]
     },
     "V8.4.1": {
@@ -473,7 +508,7 @@
      ]
     },
     "V12.1.2": {
-     "strength": "direct",
+     "strength": "indirect",
      "cwe": [
       "CWE-327"
      ]
@@ -503,7 +538,7 @@
      ]
     },
     "V12.1.2": {
-     "strength": "direct",
+     "strength": "indirect",
      "cwe": [
       "CWE-327"
      ]
@@ -527,7 +562,7 @@
      ]
     },
     "V12.1.2": {
-     "strength": "direct",
+     "strength": "indirect",
      "cwe": [
       "CWE-327"
      ]
@@ -580,6 +615,32 @@
    "union": [
     "api_audit"
    ]
+  },
+  {
+   "unit": "privesc_audit",
+   "exchanges": [
+    "role_login",
+    "role_matrix",
+    "role_matrix_anon",
+    "authz_oracle"
+   ],
+   "why": "logs every declared identity in and compares each identity's access to each endpoint (GET) with the expected-authorization rule; a blocked sweep is recorded inconclusive, never as a pass",
+   "requirements": {
+    "V8.2.1": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-285",
+      "CWE-284",
+      "CWE-306"
+     ]
+    },
+    "V8.2.2": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-639"
+     ]
+    }
+   }
   },
   {
    "unit": "authz",

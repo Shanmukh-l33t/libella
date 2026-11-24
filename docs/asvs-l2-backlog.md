@@ -52,10 +52,32 @@ The existing audit modules for JWT, OAuth and session lifecycle are not mapped t
 |---|---|---|
 | Response headers, cookies, CORS, redirects, exposed paths (`security_headers`, `cookie_flags`, `cors`, `open_redirect`, `sensitive_paths`, `zap_baseline`, `ffuf`, `nuclei`) | V3.3.1-2, V3.3.4, V3.4.1-6, V3.5.1-2, V3.7.2, V13.4.1-3, V13.4.5 | HTTP reach in scope |
 | Input-handling probes (`reflected_xss`, `sqli`, `sqli_union`, `ssti`, `path_traversal`, `auth_bypass`, `file_upload`, `ssrf`) | V1.1.2, V1.2.1, V1.2.4, V1.3.2, V1.3.6-7, V5.2.2, V5.3.1-2 | Crawl inventory; profile that permits active checks; existing only, not extended here |
-| Credentialed API/role checks (`idor`, `authz`, `api_audit`) | V8.2.1-2, V8.4.1, V15.3.1, V15.3.3 | Supplied credentials/roles; API category in scope |
+| Credentialed API/role checks (`idor`, `privesc_audit`, `authz`, `api_audit`; `sensitive_paths` for V15.3.1 on the user-collection paths only) | V8.2.1-2, V8.4.1, V15.3.1, V15.3.3 | Supplied credentials/roles; API category in scope |
 | GraphQL (`graphql_audit`) | V4.3.1-2 | GraphQL endpoint present |
 | TLS/infra (`tls_audit`, `infra_scan`, `infra`) | V12.1.1-2, V12.2.2 | TLS port reachable |
 | Source/image (`code_audit`, `container_scan`) | V1.2.5, V1.3.2, V1.5.2, V13.3.1, V13.4.2, V15.2.1 | Repo or image supplied |
+
+## Attribution changes (standards branch)
+
+No ID joined or left the mapped set of 39; these changes make an already-mapped requirement read
+what the engine did. Method, not a compliance statement: a requirement moves only through
+finding -> exchange tool -> unit -> requirement (plus a control id where one check asserts
+several), and a partial check that ran reports `partial_evidence`, never a pass.
+
+- Sub-exchanges now resolve to their unit: `idor_check_anon`, `object_enum`, `object_enum_anon` (idor),
+  `sqli_bool_true/false/true_repeat` (sqli), `ssrf_discovery` (ssrf), `role_login/role_matrix/role_matrix_anon/authz_oracle`
+  (privesc_audit). Before, a finding bound to one of these had no recoverable producer and the requirement
+  read `completed_no_issue` next to an observed finding.
+- `sensitive_paths` findings carry an `exposure.*` control id per path (`controls.EXPOSURE_CONTROLS`). V13.4.1 now needs
+  `vcs_metadata`, V13.4.2 `debug_endpoint`, V13.4.3 `directory_listing` (CWE-548), V13.4.5 `monitoring_endpoint`, V15.3.1
+  `excess_fields`. A debug page no longer fails V13.4.1; a `.env` hit attributes to none of them. Findings stored before
+  this change have no control id and read as unattributed until an analyst links them.
+- `privesc_audit` maps V8.2.1 and V8.2.2 as `partial` (GET only, rule-dependent); a blocked sweep stays `inconclusive`.
+- Strength is judged over the units that ran, not every mapped unit. V12.1.2 is `indirect` for the TLS units (they record the
+  negotiated cipher, not the enabled suites).
+- Still unattributed: `.env` exposure; API2 for the CWE-306 findings of `idor` and `privesc_audit` (they test authentication only
+  on a hit, so mapping the unit would claim a run that did not test it); and every JWT/OAuth/session/injection/protocol audit
+  (backlog sets C and D).
 
 ## Status vocabulary reminder
 

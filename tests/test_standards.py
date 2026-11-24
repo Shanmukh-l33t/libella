@@ -274,9 +274,9 @@ def test_a_finding_only_fails_requirements_its_own_check_maps_to(app):
     # CWE-200 is emitted by both the path probe and the GraphQL audit; a debug
     # endpoint found by the path probe is not GraphQL introspection evidence
     _finding_from(app, "f_debug", "CWE-200", "Debug endpoint exposes configuration",
-                  "path_probe")
+                  "path_probe", controls=("exposure.debug_endpoint",))
     ws = coverage.workspace(app.db, "eng_s", "asvs")
-    assert item(ws, "V13.4.5")["automatic"]["status"] == "finding_verified"
+    assert item(ws, "V13.4.2")["automatic"]["status"] == "finding_verified"
     assert item(ws, "V4.3.2")["automatic"]["status"] not in (
         "finding_verified", "finding_unverified")
 

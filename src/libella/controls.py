@@ -25,7 +25,18 @@ COOKIE_CONTROLS = {"HttpOnly": "cookie.httponly", "Secure": "cookie.secure",
 _HEADER_NAMES = {"CSP": "header.csp", "X-Content-Type-Options": "header.x_content_type_options",
                  "X-Frame-Options": "header.x_frame_options", "HSTS": "header.hsts",
                  "Referrer-Policy": "header.referrer_policy"}
-KNOWN = frozenset(HEADER_CONTROLS.values()) | frozenset(COOKIE_CONTROLS.values())
+# path the exposure probe read -> what its answer asserted. One check, several controls:
+# a debug page is not evidence about source-control metadata, nor a listing about debug.
+EXPOSURE_CONTROLS = {
+    "/.env": "exposure.config_file", "/.git/config": "exposure.vcs_metadata",
+    "/debug": "exposure.debug_endpoint", "/phpinfo.php": "exposure.debug_endpoint",
+    "/server-status": "exposure.monitoring_endpoint",
+    "/actuator/env": "exposure.monitoring_endpoint",
+    "/api/users": "exposure.excess_fields", "/api/v1/users": "exposure.excess_fields",
+    "/uploads/": "exposure.directory_listing",
+}
+KNOWN = (frozenset(HEADER_CONTROLS.values()) | frozenset(COOKIE_CONTROLS.values())
+         | frozenset(EXPOSURE_CONTROLS.values()))
 
 
 def from_quote(quote: str, quote_in: str) -> list:

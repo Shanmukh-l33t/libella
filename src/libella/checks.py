@@ -8,7 +8,7 @@ import re
 import uuid
 from urllib.parse import parse_qsl, urlparse
 
-from .controls import COOKIE_CONTROLS, HEADER_CONTROLS
+from .controls import COOKIE_CONTROLS, EXPOSURE_CONTROLS, HEADER_CONTROLS
 from .proof import canonical_document, with_param
 from .tools.http_probe import HttpProbe
 
@@ -433,7 +433,7 @@ class WebChecks:
                     "Information disclosure aiding further attacks; possible secret exposure.",
                     "Remove or restrict access to the exposed resource.",
                     r["evidence_id"], quote, self._proof(base + path),
-                    f"path:{base}{path}",
+                    f"path:{base}{path}", controls=[EXPOSURE_CONTROLS[path]],
                 ))
         return out
 

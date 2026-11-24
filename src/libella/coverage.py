@@ -252,6 +252,9 @@ def _derive(spec: dict, rid: str, slots: dict, findings, profile: str, categorie
     for state, status in _PREF:
         named = [u for u, s in states.items() if s == state]
         if named:
+            # judge by the units that actually ran: a partial check that ran must not
+            # inherit "direct" from a stronger unit that was mapped but never executed
+            strength = _strength(spec, rid, named)
             reason = f"{', '.join(named)}: {_VERB[state]}"
             if state == "skipped_policy":
                 reason += f" ({profile!r})"

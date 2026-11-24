@@ -89,14 +89,43 @@
   {
    "unit": "idor",
    "exchanges": [
-    "idor_check"
+    "idor_check",
+    "idor_check_anon",
+    "object_enum",
+    "object_enum_anon"
    ],
    "why": "authenticated read of another identity's object by id, compared with the expected denial",
    "requirements": {
     "API1:2023": {
      "strength": "direct",
      "cwe": [
+      "CWE-639",
+      "CWE-306"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "privesc_audit",
+   "exchanges": [
+    "role_login",
+    "role_matrix",
+    "role_matrix_anon",
+    "authz_oracle"
+   ],
+   "why": "identity x endpoint matrix against the expected-authorization rule: object ownership (API1) and function level access (API5), GET only",
+   "requirements": {
+    "API1:2023": {
+     "strength": "partial",
+     "cwe": [
       "CWE-639"
+     ]
+    },
+    "API5:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-285",
+      "CWE-284"
      ]
     }
    }
@@ -104,7 +133,8 @@
   {
    "unit": "ssrf",
    "exchanges": [
-    "ssrf_check"
+    "ssrf_check",
+    "ssrf_discovery"
    ],
    "why": "operator-declared internal URL must be fetched by the application and its marker returned",
    "requirements": {
@@ -151,19 +181,39 @@
    "exchanges": [
     "path_probe"
    ],
-   "why": "reachable debug, monitoring and documentation endpoints are both a misconfiguration and an inventory gap",
+   "why": "reachable debug, monitoring and documentation endpoints are both a misconfiguration and an inventory gap; a user collection that returns credential fields is excessive data exposure (API3)",
    "requirements": {
     "API8:2023": {
      "strength": "partial",
      "cwe": [
       "CWE-200",
       "CWE-548"
+     ],
+     "controls": [
+      "exposure.config_file",
+      "exposure.vcs_metadata",
+      "exposure.debug_endpoint",
+      "exposure.monitoring_endpoint",
+      "exposure.directory_listing"
      ]
     },
     "API9:2023": {
      "strength": "partial",
      "cwe": [
       "CWE-200"
+     ],
+     "controls": [
+      "exposure.debug_endpoint",
+      "exposure.monitoring_endpoint"
+     ]
+    },
+    "API3:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ],
+     "controls": [
+      "exposure.excess_fields"
      ]
     }
    }
