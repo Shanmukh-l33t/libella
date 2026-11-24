@@ -664,6 +664,49 @@ class WebChecks:
                     ids.append(cand)
         return ids[:limit]
 
+    def fetch_param(self, url: str, param: str) -> list[dict]:
+        """SSRF on a DISCOVERED parameter: does the server fetch a URL we choose?
+
+        Inert values (a word, a quote) only show the parameter exists. The proof is that a
+        value naming the application's own origin makes the response carry content only
+        that origin serves, and that the same parameter with a non-URL value does not. The
+        expected content is read from the origin directly, so no hint and no marker path is
+        assumed; the marker is a token the origin itself published.
+        """
+        origin = _origin_root(url)
+        if not origin:
+            return []
+        direct = self._req(origin, tool="ssrf_control_fetch")
+        if not direct.get("ok") or direct["status"] != 200:
+            return []
+        token = _distinctive_token(direct["body"])
+        if not token:
+            return []
+        sep = "&" if "?" in url else "?"
+        target = f"{url}{sep}{param}={origin}"
+        r = self._req(target, tool="ssrf_discovery")
+        # a 4xx/5xx means the app refused or failed the fetch; only a served body counts
+        if not r.get("ok") or not str(r["status"]).startswith("2") or token not in r["body"]:
+            return []
+        idx = r["body"].find(token)
+        quote = r["body"][max(0, idx - 40):idx + len(token) + 40]
+        return [_candidate(
+            f"SSRF in parameter '{param}'", "CWE-918",
+            "A10:2021 Server-Side Request Forgery", "high", "high", url,
+            f"Parameter '{param}' takes an absolute URL and the server fetched it: the reply "
+            f"carries '{token}', which only {origin} serves.",
+            "Access to internal services and cloud metadata endpoints; potential credential "
+            "theft from the host's metadata service.",
+            "Allowlist outbound destinations; block link-local and metadata ranges; "
+            "egress-filter the application host.",
+            r["evidence_id"], quote, self._proof(target),
+            f"ssrf:{url}:{param}",
+            proof={"marker": token,
+                   # the same parameter with a value that is not a URL: a token that also
+                   # arrives here came from the page, not from a server-side fetch
+                   "benign_request": self._proof(with_param(target, param, "libellaBenign"))},
+        )]
+
     def live_params(self, url: str, names=None, limit: int = 4) -> list[str]:
         """Which query parameters this endpoint actually reacts to.
 
@@ -759,6 +802,22 @@ def _record_ids(body: str, limit: int = 5) -> list[int]:
         if len(out) >= limit:
             break
     return out
+
+
+def _distinctive_token(body: str) -> str:
+    """A short string this response carries that a different page would not.
+
+    Taken from the body itself (a heading, a title, a JSON key with a value), so the SSRF
+    proof needs no operator-supplied marker: what the origin publishes is the marker.
+    """
+    for pattern in (r"<h1[^>]*>([^<]{4,40})</h1>", r"<title[^>]*>([^<]{4,40})</title>",
+                    r'"([a-z_]{4,20})":\s*"[^"]{4,40}"', r'"([a-z_]{4,20})":\s*\d'):
+        m = re.search(pattern, body, re.I)
+        if m:
+            token = m.group(1).strip()
+            if token and token.lower() not in ("html", "body", "head", "error", "status"):
+                return token
+    return ""
 
 
 def record_of(body: str) -> dict | None:

@@ -927,6 +927,8 @@ class Orchestrator:
             if not scope.check_url(ep).allowed:
                 continue
             for p in checks.live_params(ep, limit=4):
+                if allow("ssrf"):
+                    candidates += checks.fetch_param(ep, p)
                 if allow("reflected_xss"):
                     candidates += checks.reflected_xss(ep, p)
                 if allow("sqli"):
