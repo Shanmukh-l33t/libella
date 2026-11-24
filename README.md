@@ -4,25 +4,31 @@ Autonomous penetration-testing workbench. Evidence-first, scope-enforced, multi-
 
 Libella plans, executes, verifies, and reports authorized security assessments.
 It is not a chatbot that runs security commands, and not a scanner wrapper.
-Every finding must survive independent replay verification before it is
+Every finding must pass a class-specific replay verification before it is
 called validated. Every network action is checked against an enforceable
 engagement authorization object before it executes.
 
 > For systems you own or are explicitly authorized to test. Libella enforces
 > scope in code, but authorization is your responsibility. See SECURITY.md.
 
-## What makes it different
+## Design choices
+
+These are design choices, not a ranking. No reference platform has been run against
+Libella on a shared benchmark, so no comparative claim is made; CAPABILITY_MATRIX.md
+lists what was found in six other platforms and how each point was checked.
 
 - **Scope is code, not prompt.** Targets, exclusions, ports, categories, time
   window, rate and budget limits live in an engagement authorization object.
   The tool execution layer resolves DNS and checks every target (including
   redirect hops and post-connect peer IPs) before execution. Refusals are
   audited. Prompts derive from the scope object; they never replace it.
-- **Verified means reproduced now.** Candidate findings carry a replayable
-  proof request and a verbatim evidence quote. An independent verifier
-  re-issues the request and compares the fresh response. No replay, no
-  promotion. Scanner banners and version strings are observations, never
-  automatic findings.
+- **Verified means reproduced now, and proved for its class.** Candidate findings
+  carry a replayable proof request and a typed proof contract for their class.
+  The verifier re-issues the request, compares the fresh response, and for each
+  class also runs a differential against a negative control. A reproduced quote
+  alone no longer validates a finding. No replay, no promotion. Scanner banners
+  and version strings are observations, never automatic findings. Out-of-band
+  and smuggling proofs replay as inconclusive by design.
 - **Tamper-evident evidence.** Content-addressed blobs with an append-only
   hash chain. Integrity is re-checked on every read; chain breaks fail closed.
 - **Typed tools, no shell.** Adapters build argv from validated, typed
@@ -39,14 +45,23 @@ engagement authorization object before it executes.
 
 PairLab benchmark (labs/pairlab): a vulnerable/hardened twin app with 16
 seeded vulnerability classes (PL-01..PL-16, 6 negative controls) and
-machine-readable ground truth.
+machine-readable ground truth. Four-way run at `b656a67`:
 
-| Mode | Seeded vulns detected + independently validated | False positives | Duration |
-|---|---|---|---|
-| Vulnerable twin | 16 / 16 | 0 | ~158s (with nuclei) / ~9s (deterministic only) |
-| Hardened twin | 0 (correct) | 0 | ~158s / ~8s |
+| Mode | Vulnerable twin | False positives | Time | Cost |
+|-|-|-|-|-|
+| A native, declared hints | 16/16 confirmed | 0 (hardened twin 0) | ~14.7s | $0 |
+| A native, no hints | 13/16 (missed SQLi category filter, IDOR orders, SSRF) | 0 (hardened twin 0) | ~14.3s | $0 |
+| B agents, no hints | 13/16 genuine, plus 3 incorrect confirmed findings | 3 | ~286s | ~$0.27 |
+| C nuclei only | 0/16, stopped at the 600s cap | 0 | 600s | $0 |
+| D full | 16/16 | 0 (hardened twin 0) | ~615s | $0 |
 
-Evidence hash chains intact across all runs. Reproduce:
+Mode B found no true positive that native mode missed, and was run once on the
+vulnerable twin with one model. The three incorrect findings were fixed at
+`b656a67`. Mode B has not been rerun on the hardened twin or on the verifier
+below. The PairLab gate on the new typed-proof verifier (`973fa33`) is still
+being measured and no number is claimed for it yet.
+
+Evidence hash chains intact across the runs above. Reproduce:
 
 ```bash
 python labs/pairlab/app.py                      # vuln  :8801
@@ -66,7 +81,7 @@ Additional verified benchmarks (v0.2, all with vulnerable/hardened twins):
 | Browser crawl (Playwright) | Juice Shop: 9 rendered pages, 36 runtime API requests, 7 live /rest/ endpoints; screenshot evidence |
 | Container image (trivy) | real local-image scan; version-based CVEs are observations, not confirmed findings |
 
-Measured performance (PairLab, deterministic + nuclei, no LLM): 153.7s wall,
+Measured performance on an earlier head (PairLab, deterministic + nuclei, no LLM): 153.7s wall,
 platform CPU 0.5s, scanner subprocess CPU 19.3s, platform peak RSS 60.4MB.
 Reproduce: `python benchmarks/measure_perf.py`.
 
@@ -158,22 +173,23 @@ security model and known limits.
 
 ## Project status
 
-Working and benchmarked: genuine autonomous specialist agent runtime (ReAct
+Working and benchmarked: an autonomous specialist agent runtime (ReAct
 investigation, hypotheses, evidence-gated conclusions, delegation, cost-aware
-model routing, duplicate-action convergence) achieving 16/16 lab coverage with
-independent validation; deterministic baseline (16/16, 0 FP); scope enforcement;
+model routing, duplicate-action convergence). A v0.4 run reached 16/16 lab
+coverage; at `b656a67` the no-hint agent run found 13/16 genuine and produced
+3 incorrect confirmed findings, which the precondition guards now refuse (not
+rerun). Deterministic baseline: 16/16 with declared hints, 13/16 without, 0 FP; scope enforcement;
 recon; static + authenticated browser crawling; traffic intelligence + authorized
 replay; web (16 classes), OpenAPI API (5), GraphQL (7), TLS, source/supply-chain
 (6 + OSV), AWS cloud posture (moto-verified), container scanning, technology-
 specific modules (WordPress/PHP/Java/ColdFusion/Node/IIS/Apache/Nginx), ZAP
 adapter, plugin/MCP extension framework; deep investigation graph + cross-run
-memory + drift; independent verification + retest; PDF/HTML/DOCX/XLSX/CSV/MD/JSON/SARIF
+memory + drift; replay verification with typed proof contracts + retest; PDF/HTML/DOCX/XLSX/CSV/MD/JSON/SARIF
 reports + remediation tracking + historical comparison; premium operational UI (Command
 Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph,
 read-only Validation workspace, WSTG coverage review).
-913 tests passed, 1 skipped (branch `defensive-readiness`, v0.5.0 in development).
-The PairLab benchmark gate, run separately on the same commit, is 16/16 seeds with
-0 false positives. Browser acceptance journeys (beginner run to Done and PDF,
+1055 tests passed, 1 skipped (ZAP not installed) at `973fa33` (v0.5.0 in development).
+The PairLab gate on the new verifier is pending. Browser acceptance journeys (beginner run to Done and PDF,
 tool readiness, target credentials, execution controls, report recovery) live in
 benchmarks/acceptance_beginner.py and benchmarks/check_*_ui.py; the real-site
 journey is benchmarks/acceptance_keyreed.py (opt-in via LIBELLA_TARGET).

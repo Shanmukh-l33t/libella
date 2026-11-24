@@ -1,5 +1,10 @@
 # Reference trace: how six autonomous pentest platforms work, and what Libella is missing
 
+Correction 2026-11-24: statements of the form "Libella is ahead" or "stronger" in
+this trace were removed because no comparative test exists. One factual error was
+corrected: ARTEX has a dedicated retest agent and a receipt check (section on ARTEX,
+verification). See `CAPABILITY_MATRIX.md` for the current evidence-basis comparison.
+
 Date: 2026-11-21. Base: `f0b4a8d` (branch `defensive-readiness`), worktree
 `libella-ref-trace`, branch `w-reference-trace`.
 
@@ -162,8 +167,9 @@ Two limits of the baseline matter for every comparison below:
   start (`api.py:87-91`); the agent's `run_tool` prompt is hard-coded to five
   binaries (`agent_runtime.py:504`), so even registered plugin tools are
   invisible to it.
-* **Libella is ahead:** PentAGI cannot enforce scope at all; Libella's scope
-  object, policy profiles and per-hop HTTP check already exceed it.
+* **Difference:** no code-level scope enforcement was found in the traced PentAGI
+  paths (scope is prompt text there); Libella has a scope object, policy profiles
+  and a per-hop HTTP check. No comparative test was run.
 
 ### (c) Smallest change, ranked
 
@@ -259,15 +265,16 @@ Two limits of the baseline matter for every comparison below:
   coverage ledger is recomputed post-hoc from DB state (`coverage.py:304`) and
   is honest, but the *agent* is never told what it failed to cover; Strix's
   `finish_scan` returns coverage gaps to the model and the report.
-* **Libella is ahead:** verification. A Strix finding survives on schema
-  validity and a written rationale; a Libella finding must reproduce on replay
-  (`verifier.py:79-122`).
+* **Difference, not a ranking:** verification. Strix checks that cited exchange
+  ids exist in the proxy project and carries counter-evidence and fix-verification
+  as prompt-level skills; Libella replays the proof request (`verifier.py:79-122`).
+  No comparative test was run, so neither is claimed to be more accurate.
 * **Match:** both use lifecycle tools to end a run and refuse plain text as a
   terminal state (`agent_runtime.py:472` vs `core/execution.py:542`).
 
 ### (c) Smallest change, ranked
 
-* **P0 — none** (Strix's weakest area is the one Libella already does best).
+* **P0: none identified** for verification (no comparative test exists).
 * **P1 — persist the ReAct transcript:** a `agent_messages(run_id, seq, role,
   content_json)` table written beside `_step`, and on `AgentRunner.run` seed
   `history` from the last 10 rows when an intent is retried after a crash.
@@ -325,7 +332,11 @@ transport gate.
    `report_finding` demands a reproducible PoC (`agent/promptcatalog.go:60`,
    "strictly forbidden to report as confirmed anything inferred solely from
    version/CVE matching"). The solo agent is told to re-trigger via an
-   independent path (`:44`). A separate verify role does not exist. **[S]**
+   independent path (`:44`). A dedicated retest agent does exist for filed
+   findings (`agent/retester.go`, `server/finding_retests.go`), and a receipt
+   check (`server/finding_verification.go`); both were found in a later read of
+   the `0255f6a` checkout. This trace's earlier statement that no separate verify
+   role exists was wrong for retests. **[S]**
 6. **Incomplete/budget.** A budget ledger with a wrap-up phase.
    `agent/budget.go:36` `Budget{Tokens,Turns}`, `:97` `BudgetLedger`,
    `:164` `BeginWrapup`, `:230` `BudgetWrapupBlocks`; the settlement prompt and
@@ -363,8 +374,11 @@ transport gate.
   its last turns consolidating findings. ARTEX's `BeginWrapup` is the pattern.
 * **Gap:** no lessons/memory injection into the planner; no tool-RAG or
   runtime-editable tool catalog (Libella's plugins are boot-time only).
-* **Match, stronger:** Libella's `Verifier` replays; ARTEX binds recorded
-  traffic and asks the model to self-check.
+* **Difference, not a ranking:** Libella's `Verifier` replays the proof request;
+  ARTEX binds recorded traffic, runs a receipt check (`server/finding_verification.go`,
+  quotes must appear verbatim in a bound response body) and has a dedicated retest
+  agent (`agent/retester.go`, `server/finding_retests.go`) that re-runs a minimal
+  PoC and saves a reproduced, fixed or inconclusive verdict. No comparative test was run.
 * **Match:** both lease intents and keep a coverage ledger; ARTEX's ledger is
   agent-written per surface (`recordCoverage`), Libella's is derived from
   evidence (harder to fake).
@@ -433,8 +447,10 @@ transport gate.
 
 * **Match, weaker:** Libella's deterministic intent roles are also a fixed
   routing table, but the agent layer on top can choose among typed actions.
-* **Libella is far ahead** on scope, tool typing (`ToolSpec` + argv, no shell),
-  verification, and state. HexStrike is a cautionary reference, not a model.
+* **Difference:** Libella uses scope checks, typed tools (`ToolSpec` + argv, no
+  shell), replay verification and a persisted state; none of these was found in
+  the traced HexStrike paths. No comparative test was run. HexStrike is a
+  cautionary reference for the design, not a model.
 * **Gap worth noting:** HexStrike's *tool surface breadth* (156 routes) is
   wider than Libella's adapters. Breadth is not the missing mechanism, but it is
   why the project is popular; Libella's answer should stay typed adapters, not
@@ -512,14 +528,14 @@ transport gate.
   (a new endpoint, a leaked object id). Swarm's `OBJECT_REF` finding type
   (`blackboard/types.go:44-48`) is exactly the "react to a discovery" mechanism
   Libella's `record_observation`/`hypothesis` rows could feed.
-* **Gap:** no oracle layer. Libella's replay verifier is a strong oracle for
-  HTTP facts but has no OOB-callback or timing oracle; Swarm shows how to keep
+* **Gap:** no oracle layer. Libella's replay verifier covers HTTP facts but has no OOB-callback or timing oracle; Swarm shows how to keep
   that cost-bounded.
 * **Gap:** Libella has no report-on-budget path *inside* the agent run; it does
   verify+report after (`orchestrator.py:434`), which is equivalent in outcome
   but loses the agent's own consolidation.
-* **Match, stronger:** Libella's scope check is comparable to Swarm's
-  `Validate`, and its `ALWAYS_BLOCKED` metadata range has no Swarm equivalent.
+* **Match:** Libella's scope check is comparable to Swarm's
+  `Validate`; Libella has an `ALWAYS_BLOCKED` metadata range and no equivalent was
+  found in the traced Swarm paths.
   Libella's subprocess gap is the same one Swarm documents.
 
 ### (c) Smallest change, ranked
@@ -614,8 +630,9 @@ transport gate.
   exists". Libella verifies by replay; Shannon additionally reconciles against a
   second, independent source (SAST) and pins the location. That is a model for
   code-audit findings, which Libella cannot replay.
-* **Libella is ahead:** runtime target scope (Shannon has none) and replay
-  verification.
+* **Difference:** Libella has a runtime target scope check, and none was found in
+  the traced Shannon paths. Verification differs in kind (replay against
+  reconciliation with SAST); no comparative test was run.
 
 ### (c) Smallest change, ranked
 
@@ -646,7 +663,7 @@ Mechanism per platform; "—" means the mechanism is absent in the traced code.
 | New tool at runtime | no (installer adds binaries) | MCP catalog via meta-tools; programmatic register pre-build | DB-bound catalog + tool-RAG; MCP rows | no (route + wrapper) | no (Go registry) | no (per-exec custom tools) | plugin dir at boot; agent sees 5 hard-coded |
 | Memory across agents/restarts | msgchains + pgvector + Graphiti | SQLite session per agent + notes | transcript store + exploration DB + lessons | — | blackboard (PG) + keyword memory | deliverables + git + Temporal history | SQLite rows; conversation not persisted |
 | Plan from standard | — (free text) | skills (markdown) | skills + coverage ledger | hard-coded step lists | OWASP/CWE taxonomy post-hoc | 5 fixed classes + prompts | WSTG 4.2 ledger post-hoc |
-| Finding verification | — | schema + exchange-id validation | traffic binding + self-check | — | oracle/corroboration (bounded) | reconciliation vs SAST + exploit | independent replay |
+| Finding verification | LLM reflector and advice tool, no non-LLM check found | schema + exchange-id validation | traffic binding, receipt check, dedicated retest agent | none found | non-LLM oracles (OOB, differential, timing) behind the verify flag | reconciliation vs SAST + exploit | replay with typed proof contracts |
 | Budget / incomplete | iteration cap + reflector shutdown | budget hooks, coverage gaps | budget ledger + wrap-up | — | pause-on-budget → report | typed partialReasons | verify+report at finish; no wrap-up |
 | Scope at transport | — | prompt + docker caps | **PinnedDialer (dial-time)** | — | ScopedDialContext (Go clients) | — | per-hop HTTP check; subprocess pre-flight only |
 | Drive / resume | React + GraphQL, DB rows | CLI --resume + session | web UI + operator pause | MCP config | Cobra CLI, workspace config | CLI + Temporal resume | FastAPI + React, intent resume |
@@ -665,8 +682,9 @@ Mechanism per platform; "—" means the mechanism is absent in the traced code.
    static scores; it cannot adapt to evidence.
 4. **A verifier that is a second model opinion** (PentAGI's reflector,
    Strix's confidence/counterevidence field, Swarm's paid model verifier when
-   used alone). Useful as triage, not as truth. Swarm is explicit about this and
-   adds oracles; Libella's replay is the stronger primitive.
+   used alone). Useful as triage, not as proof. Swarm is explicit about this and
+   adds non-LLM oracles; Libella replays the proof request. Which is more accurate
+   is untested.
 5. **Removing the scope engine and replacing it with per-target approvals**
    (ARTEX `guard/guard.go:1-6`, "RoE authorization-scope mechanism was
    removed"). Human pinning is a product feature for interactive red teams; an
