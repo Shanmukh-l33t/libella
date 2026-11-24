@@ -60,10 +60,20 @@ def _json_field(body: str, field: str):
         data = json.loads(body)
     except (ValueError, TypeError):
         return None
-    if isinstance(data, dict) and isinstance(data.get("data"), dict):
-        for value in data["data"].values():  # {"data": {"user": {"id": 2}}}
-            if isinstance(value, dict) and field in value:
+    if isinstance(data, dict):
+        # the record may sit one level down under a named envelope:
+        # {"invoice": {...}} and {"data": {"user": {...}}} both occur. Two levels at most,
+        # and the field must belong to the nested record, never the envelope itself.
+        if field in data:
+            return data[field]
+        for value in data.values():
+            if not isinstance(value, dict):
+                continue
+            if field in value:
                 return value[field]
+            for inner in value.values():
+                if isinstance(inner, dict) and field in inner:
+                    return inner[field]
     if isinstance(data, dict):
         return data.get(field)
     if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):

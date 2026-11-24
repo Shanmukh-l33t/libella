@@ -54,7 +54,7 @@ class ConcurrencyGate:
             self._sem.release()
 
 
-def _object_collections(checks, endpoints, base: str) -> list[str]:
+def _object_collections(checks, endpoints, base: str, cookie_header: str = "") -> list[str]:
     """Discovered collections that serve an object by id, found by asking, not by name.
 
     A collection is a discovered path (no query) that answers one bare request and then a
@@ -68,11 +68,14 @@ def _object_collections(checks, endpoints, base: str) -> list[str]:
             continue
         if ep.endswith((".js", ".css", ".ico", ".png", ".jpg", ".svg", ".json")):
             continue
-        for oid in (1, 2):
-            r = checks._req(f"{ep.rstrip('/')}/{oid}", tool="collection_probe")
-            if r.get("ok") and r["status"] == 200 and _looks_like_one_record(r["body"]):
-                out.append(ep)
-                break
+        # A collection is recognised from its own listing, not from a guessed id: probing
+        # "/1" fails on any dataset whose ids do not start at 1 (measured: invoices 5001..),
+        # and a collection that needs a session answers 401 anonymously, which looked
+        # exactly like "this route does not exist".
+        headers = {"Cookie": cookie_header} if cookie_header else None
+        r = checks._req(ep, headers=headers, tool="collection_probe")
+        if r.get("ok") and r["status"] == 200 and checks.is_collection(r["body"]):
+            out.append(ep)
     return out
 
 
@@ -824,7 +827,7 @@ class Orchestrator:
             self.db.emit(engagement_id, "duplicate_work_prevented",
                          {"intent_id": intent_id, "url": base})
             return {"skipped": "already_covered", "url": base}
-        checks = WebChecks(self.probe, engagement_id, scope)
+        checks = WebChecks(self.probe, engagement_id, scope, self.db)
         profile = eng.get("profile") or DEFAULT_PROFILE
         skipped: list[str] = []
 
@@ -983,10 +986,14 @@ class Orchestrator:
                 # found: the operator should not have to name an endpoint for the engine to
                 # notice that /api/<collection>/{id} serves other users' records.
                 if cookie_header and allow("idor"):
-                    for coll in _object_collections(checks, sorted(endpoints), base):
+                    for coll in _object_collections(checks, sorted(endpoints), base,
+                                                    cookie_header):
+                        # ids come from the collection's own listing when it publishes one:
+                        # a sequential guess of 1..3 misses sparse ids (5001, 5002) and any
+                        # dataset that did not start at 1.
                         candidates += checks.object_enumeration(
                             coll, cookie_header, ident["username"], ident.get("uid"),
-                            ids=range(1, 4))
+                            ids=checks.collection_ids(coll, cookie_header))
             except httpx.HTTPError:
                 pass
             finally:

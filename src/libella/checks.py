@@ -6,6 +6,7 @@ a verbatim quote. Nothing here trusts scanner banners or model prose.
 import json
 import re
 import uuid
+from urllib.parse import parse_qsl, urlparse
 
 from .controls import COOKIE_CONTROLS, HEADER_CONTROLS
 from .proof import canonical_document, with_param
@@ -55,8 +56,11 @@ def _candidate(title, cwe, owasp, severity, confidence, endpoint, description,
 
 
 class WebChecks:
-    def __init__(self, probe: HttpProbe, engagement_id: str, scope):
+    def __init__(self, probe: HttpProbe, engagement_id: str, scope, db=None):
         self.probe = probe
+        # optional: reading the engagement's own traffic needs the store, and a check
+        # without it simply has less evidence to work from
+        self.db = db
         self.eng = engagement_id
         self.scope = scope
         self.mitigated: list[str] = []  # challenges seen: those checks are inconclusive
@@ -538,7 +542,7 @@ class WebChecks:
         )]
 
     def object_enumeration(self, collection_url: str, cookie_header: str,
-                           identity_name: str, identity_value, ids=range(1, 6),
+                           identity_name: str, identity_value, ids=None,
                            tool: str = "object_enum") -> list[dict]:
         """Find another identity's object by walking ids under a DISCOVERED collection.
 
@@ -549,7 +553,8 @@ class WebChecks:
         if not (cookie_header or "").strip() or not (identity_name or "").strip() \
                 or identity_value in (None, ""):
             return []
-        for oid in ids:
+        for oid in (ids if ids is not None else self.collection_ids(collection_url,
+                                                                   cookie_header)):
             url = f"{collection_url.rstrip('/')}/{oid}"
             r = self._req(url, headers={"Cookie": cookie_header}, tool=tool)
             if not r.get("ok") or r["status"] != 200:
@@ -607,6 +612,54 @@ class WebChecks:
             )]
         return []
 
+    def observed_param_names(self) -> list[str]:
+        """Query keys and form field names this application has already shown us.
+
+        Empty when no store was supplied: the caller keeps only what it can see.
+        """
+        if self.db is None:
+            return []
+        names: list[str] = []
+        for row in self.db.query(
+                "SELECT url FROM exchanges WHERE engagement_id=? AND url LIKE '%?%' "
+                "ORDER BY created_at DESC LIMIT 400", (self.eng,)):
+            for key, _ in parse_qsl(urlparse(row["url"]).query, keep_blank_values=True):
+                if key and key not in names and len(names) < 20:
+                    names.append(key)
+        for row in self.db.query(
+                "SELECT result_json FROM intents WHERE engagement_id=? AND role='crawl' "
+                "AND result_json IS NOT NULL", (self.eng,)):
+            try:
+                forms = json.loads(row["result_json"]).get("forms") or []
+            except (ValueError, AttributeError):
+                continue
+            for form in forms:
+                for field in (form.get("fields") or []):
+                    name = field.get("name") if isinstance(field, dict) else field
+                    if isinstance(name, str) and name and name not in names and len(names) < 20:
+                        names.append(name)
+        return names
+
+    def collection_ids(self, collection_url: str, cookie_header: str = "",
+                       limit: int = 8) -> list[int]:
+        """Candidate object ids: those the listing publishes, plus their neighbours.
+
+        Reading the ids from the listing is what makes enumeration work when ids do not
+        start at 1 (measured: 5001, 5002 in an app whose lower ids do not exist). The
+        neighbours matter because ONE identity's listing only shows its own records, so
+        another user's id is reachable only by stepping next to a known one.
+        """
+        headers = {"Cookie": cookie_header} if cookie_header else None
+        r = self._req(collection_url, headers=headers, tool="collection_listing")
+        seen = _record_ids(r["body"], 4) if r.get("ok") and r["status"] == 200 else []
+        ids: list[int] = []
+        for base in seen or [1]:
+            for delta in (0, 1, 2, -1):
+                cand = base + delta
+                if cand > 0 and cand not in ids:
+                    ids.append(cand)
+        return ids[:limit]
+
     def live_params(self, url: str, names=None, limit: int = 4) -> list[str]:
         """Which query parameters this endpoint actually reacts to.
 
@@ -620,7 +673,11 @@ class WebChecks:
         if not bare.get("ok"):
             return []
         found = []
-        for name in (names or PARAM_NAMES):
+        # Names the application itself uses come first: a form field or a query key seen
+        # anywhere in this engagement is evidence, where a hand-written list is a guess.
+        evidence = list(names or self.observed_param_names())
+        candidates = evidence + [n for n in PARAM_NAMES if n not in evidence]
+        for name in candidates:
             if len(found) >= limit:
                 break
             probe = self._req(f"{base}?{name}=libellaProbe", tool="param_discovery")
@@ -660,6 +717,42 @@ def _origin_root(url: str) -> str:
     """scheme://host/ of a URL: the app's own root, with no path or query."""
     m = re.match(r"^(https?://[^/?#]+)", url or "")
     return (m.group(1) + "/") if m else ""
+
+
+def is_collection(body: str) -> bool:
+    """Does this response publish a list of records? Then the path is a collection."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(data, dict):
+        data = next((v for v in data.values() if isinstance(v, list)), None)
+    return bool(isinstance(data, list) and data
+                and all(isinstance(row, dict) and "id" in row for row in data))
+
+
+def _record_ids(body: str, limit: int = 5) -> list[int]:
+    """Integer `id` values published by a collection response, in document order."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return []
+    rows = None
+    if isinstance(data, dict):
+        rows = next((v for v in data.values() if isinstance(v, list) and v), None)
+        if rows is None and "id" in data:
+            rows = [data]
+    elif isinstance(data, list):
+        rows = data
+    if not rows:
+        return []
+    out = []
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("id"), int):
+            out.append(row["id"])
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _owner_of(body: str) -> tuple[str | None, object]:

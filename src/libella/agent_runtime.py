@@ -186,7 +186,7 @@ class AgentRunner:
         self.llm = llm
         self.scope = scope
         self.eng = engagement_id
-        self.checks = WebChecks(probe, engagement_id, scope)
+        self.checks = WebChecks(probe, engagement_id, scope, db)
         row = db.one("SELECT profile FROM engagements WHERE id=?", (engagement_id,))
         self.profile = (row or {}).get("profile") or DEFAULT_PROFILE
 
