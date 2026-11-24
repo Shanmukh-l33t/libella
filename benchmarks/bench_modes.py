@@ -189,8 +189,8 @@ def run_mode(mode, twin, hints, data_root, *, llm=None, nuclei_profile="focused"
                     samples.append(sample)
 
             r = app.runner.run(app.registry.get("nuclei"),
-                               {"target": base, "severity": prof["severity"],
-                                "tags": prof["tags"], "rate_limit": 20},
+                               {"target": base, "severity": prof["severity"], "rate_limit": 20,
+                                **({"tags": prof["tags"]} if "tags" in prof else {})},
                                Scope(scope_spec), eid, None, base, "web",
                                on_progress=on_progress)
             for rec in PARSERS["nuclei"](r.get("stdout") or ""):
