@@ -254,7 +254,7 @@ def audit_injection(db, evidence, probe, scope, engagement_id: str, auth_json: d
             extra_ev=(r2.get("evidence_id"),))
 
     def attack_command(spec: dict):
-        b1, _, _, d1 = timed(spec, "127.0.0.1", "injection_cmd_control")
+        b1, burl, bbody, d1 = timed(spec, "127.0.0.1", "injection_cmd_control")
         b2, _, _, d2 = timed(spec, "127.0.0.1", "injection_cmd_control")
         if not (b1.get("ok") and b2.get("ok")):
             limit(f"command-injection baselines at {spec['url']} failed: "
@@ -290,7 +290,9 @@ def audit_injection(db, evidence, probe, scope, engagement_id: str, auth_json: d
                 "Never build a command string from input: use an argument list, and validate "
                 "the value against an allowlist.",
                 r1["evidence_id"], f'"duration_ms": {ms}', proof(spec, url1, body1),
-                f"injection:command:{spec['url']}:{spec['param']}"),
+                f"injection:command:{spec['url']}:{spec['param']}",
+                # a delay can be load: the benign value is the control the verifier replays
+                proof={"signal": "timing", "benign_request": proof(spec, burl, bbody)}),
                 extra_ev=(b1.get("evidence_id"),))
             return
         observe(f"no time-based command injection at {spec['url']} parameter "

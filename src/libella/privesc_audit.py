@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlparse
 from .agent_runtime import _cookie_header
 from .authorization import PLACEHOLDER, PolicyModel, evaluate, from_openapi, from_operator, infer, served_owner
 from .authorization import norm as _norm
-from .checks import _candidate
+from .checks import _candidate, _owner_of
 
 MAX_ENDPOINTS = 40
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
@@ -26,6 +26,21 @@ QUOTE_KEYS = ("title", "name", "username", "email", "user", "report", "note", "b
 # Role ordering for the inversion check; unknown roles are left unranked.
 ROLE_RANK = {"anonymous": 0, "guest": 0, "readonly": 0, "user": 0, "member": 0,
              "staff": 1, "editor": 1, "manager": 1, "admin": 2, "owner": 3, "root": 3}
+
+
+def _contract(identity: str, value, url: str, body: str = "", privilege: str = "") -> dict:
+    """Typed proof (proof.py) for an access-control claim made as `identity`.
+
+    Ownership model: the owner is read from the served body, never assumed. Privilege
+    model: the role whose guard was evaluated. Nothing is defaulted; a gap makes the
+    verifier refuse the finding instead of validating an untested claim.
+    """
+    out = {"identity": {"name": identity, "value": value},
+           "benign_request": {"method": "GET", "url": url}}  # same route, no credential
+    if privilege:
+        return {**out, "privilege": privilege}
+    field, owner = _owner_of(body)
+    return {**out, "owner_field": field, "owner_value": owner}
 
 
 def _path_of(url: str) -> str:
@@ -254,7 +269,8 @@ def _authz_pass(model, eps, rows, identities, sessions, hint_ids, fetch, target,
             "Enforce the stated access rule server-side on every request; deny by default.",
             v["evidence_id"], quote,
             {"method": "GET", "url": v["url"], **({"headers": {"Cookie": v["cookie"]}} if v["cookie"] else {})},
-            f"authz:GET:{_norm(ep['path'])}")
+            f"authz:GET:{_norm(ep['path'])}",
+            proof=_contract(v["identity"], ids.get(v["identity"]), v["url"], v["body"]))
         if c["evidence_id"] and c["evidence_id"] != v["evidence_id"]:
             cand["evidence_ids"].append(c["evidence_id"])
         submit(cand)
@@ -494,7 +510,8 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
                     "Enforce object-level ownership (or tenancy) checks on every object read.",
                     r["evidence_id"], quote,
                     {"method": "GET", "url": url, "headers": {"Cookie": s["cookie"]}},
-                    f"bola:{ep['method']}:{ep['path']}"))
+                    f"bola:{ep['method']}:{ep['path']}",
+                    proof=_contract(reader, ids.get(reader), url, r["body"])))
                 break
 
     # ---- cross-role: the matrix contradicts itself for one role
@@ -518,7 +535,9 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
             "Check the caller's role server-side on every route; deny by default.",
             row["evidence_id"], row["quote"],
             {"method": row["method"], "url": row["url"], "headers": {"Cookie": sessions[row["identity"]]["cookie"]}},
-            f"crossrole:{row['method']}:{row['path']}:{row['identity']}"))
+            f"crossrole:{row['method']}:{row['path']}:{row['identity']}",
+            proof=_contract(row["identity"], ids.get(row["identity"], row["identity"]), row["url"],
+                            privilege=control["role"] or "authenticated")))
 
     _authz_pass(model, eps, rows, identities, sessions, hint_ids, fetch, target, submit,
                 pipeline, engagement_id, intent_id, out, limit)

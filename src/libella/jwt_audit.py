@@ -191,14 +191,15 @@ def audit_jwt(db, evidence, probe, scope, engagement_id: str, auth_json: dict,
         return (bool(r.get("ok")) and not r.get("mitigated") and r["status"] == 200
                 and bool((r["body"] or "").strip()) and r["body"] != anon["body"])
 
-    def submit(title, cwe, owasp, severity, description, impact, remediation, r, dedup, token):
+    def submit(title, cwe, owasp, severity, description, impact, remediation, r, dedup, token,
+               proof=None):
         quote = _quote(r["body"])
         if not quote or quote not in r["body"]:
             return
         cand = _candidate(title, cwe, owasp, severity, "high", url, description, impact,
                           remediation, r["evidence_id"], quote,
                           {"method": "GET", "url": url, "headers": _hdrs(header_name, token)},
-                          dedup)
+                          dedup, proof=proof)
         res = pipeline.submit_candidate(engagement_id, cand, intent_id)
         out["findings"].append({"finding_id": res["id"], "title": title, "cwe": cwe,
                                 "endpoint": url, "deduped": res["deduped"]})
@@ -362,7 +363,12 @@ def audit_jwt(db, evidence, probe, scope, engagement_id: str, auth_json: dict,
                "A user with any account rewrites their own identity or role server-side.",
                "Derive identity and role from a server-side record keyed by sub; never trust "
                "authorization claims in the token.",
-               r, f"jwt-claims:{url}", forged)
+               r, f"jwt-claims:{url}", forged,
+               # privilege model: the forged claim is the privilege; the control is the
+               # same route with no token (submit() already requires it to be refused)
+               proof={"identity": {"name": "token subject", "value": uid},
+                      "privilege": f"{claim}={json.dumps(value)}",
+                      "benign_request": {"method": "GET", "url": url}})
     else:
         observe("claim escalation not provable at " + url
                 + ": re-signed role/scope/user_id claims changed nothing in the response")

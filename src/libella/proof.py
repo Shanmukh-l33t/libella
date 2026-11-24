@@ -45,7 +45,12 @@ CWE_CLASS = {
     "CWE-89": SQL_ERROR, "CWE-78": BLIND_COMMAND,
     "CWE-943": SQL_ERROR,
     "CWE-693": HEADERS,
-    "CWE-614": SESSION, "CWE-1004": SESSION, "CWE-1275": SESSION, "CWE-613": SESSION,
+    "CWE-614": SESSION, "CWE-1004": SESSION, "CWE-1275": SESSION,
+    # CWE-613 (a logout or an expired token that still works) is not a cookie-flag claim:
+    # SESSION would demand cookie+missing flags and read Set-Cookie on the replay, which
+    # a replayed protected page never carries. It stays GENERIC: the audit already holds
+    # the anonymous control (protected URL refused without the credential) before it
+    # submits, and the replay shows the stale credential is still honoured.
 }
 
 
