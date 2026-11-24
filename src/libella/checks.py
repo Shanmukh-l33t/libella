@@ -255,6 +255,53 @@ class WebChecks:
                    "benign_request": self._proof(with_param(target, param, "libellaBenign"))},
         )]
 
+    def sqli_boolean(self, url: str, param: str) -> list[dict]:
+        """Boolean differential: does a true condition change the response vs a false one?
+
+        Error-based detection needs the application to echo its database error, which a
+        hardened error handler removes (measured: a generic 500 page, no signature, so a
+        genuinely injectable filter read as clean). Two payloads that differ only in the
+        truth of their condition do not depend on error text: if the response differs, the
+        value reached the query. Blind, so it is proven by a repeat.
+        """
+        sep = "&" if "?" in url else "?"
+
+        def probe(cond: str, tool: str):
+            return self._req(f"{url}{sep}{param}=libella%27%20AND%20%271%27%3D%27{cond}",
+                             tool=tool)
+
+        true_r = probe("1", "sqli_bool_true")
+        false_r = probe("2", "sqli_bool_false")
+        if not (true_r.get("ok") and false_r.get("ok")):
+            return []
+        if true_r["status"] != false_r["status"]:
+            differ = f"status {true_r['status']} vs {false_r['status']}"
+        elif _shingles(true_r["body"]) != _shingles(false_r["body"]):
+            differ = f"body differs ({len(true_r['body'])} vs {len(false_r['body'])} bytes)"
+        else:
+            return []
+        # a difference must repeat, or it is page churn rather than the injected condition
+        again = probe("1", "sqli_bool_true_repeat")
+        if not again.get("ok") or _shingles(again["body"]) != _shingles(true_r["body"]):
+            return []
+        idx = 0
+        quote = true_r["body"][idx:idx + 80] if true_r["body"] else f"status {true_r['status']}"
+        return [_candidate(
+            f"SQL injection (boolean differential) in parameter '{param}'", "CWE-89",
+            "A03:2021 Injection", "critical", "high", url,
+            f"A true condition changed the response ({differ}) while a false one did not, "
+            f"and the true case reproduced: the value reaches the SQL text.",
+            "Full database read/write depending on privileges; authentication bypass; "
+            "data exfiltration.",
+            "Use parameterized queries / prepared statements; least-privilege DB account.",
+            true_r["evidence_id"], quote, self._proof(true_r["url"] or url),
+            f"sqli:{url}:{param}",
+            proof={"signal": "boolean_differential",
+                   # the false condition is the control: a server that answers every request
+                   # differently fails this, and a static page passes it
+                   "benign_request": self._proof(false_r["url"] or url)},
+        )]
+
     def path_traversal(self, url: str, param: str) -> list[dict]:
         sep = "&" if "?" in url else "?"
         payloads = []
@@ -748,6 +795,17 @@ COMMON_PARAM_ENDPOINTS = [
 ]
 COMMON_API_PATHS = ["/api/profile", "/api/users", "/api/orders", "/api/config"]
 
+# Collections a JSON API commonly publishes, probed whether or not the crawl linked them.
+# A REST collection is rarely linked from an HTML page, so a crawl alone misses it: this
+# is the discovery half, and the object walk is what turns it into a finding.
+COMMON_COLLECTIONS = ["/api/orders", "/api/products", "/api/users", "/api/invoices",
+                      "/api/items", "/v2/invoices"]
+
+# Endpoints that commonly take a URL or a file path. Probing these for a destination
+# parameter is how SSRF is found without an operator naming the endpoint.
+COMMON_FETCH_PATHS = ["/fetch", "/proxy", "/preview", "/tools/preview", "/api/fetch",
+                      "/render", "/image", "/import"]
+
 # Names worth probing on a discovered endpoint: the vocabulary applications use for the
 # values these checks attack (a query, a filter, a file, a destination, an object id).
 # Ordered by how often they carry user input, not by any one fixture's spelling.
@@ -805,6 +863,12 @@ def _record_ids(body: str, limit: int = 5) -> list[int]:
         if len(out) >= limit:
             break
     return out
+
+
+def _shingles(body: str) -> set:
+    """Cheap structural fingerprint: word and tag runs, so byte counts alone cannot fool it."""
+    return set(re.findall(r"[A-Za-z0-9_.:$]{2,}", body or "")) | {
+        str(len(body or ""))}
 
 
 def _owner_quote(body: str, field: str) -> str | None:

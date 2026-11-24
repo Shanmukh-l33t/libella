@@ -268,7 +268,7 @@ class Verifier:
         if kind == proof.SSRF:
             return self._corroborate_ssrf(engagement_id, scope, contract, pr)
         if kind in (proof.SQL_ERROR, proof.BLIND_COMMAND) or \
-                contract.get("signal") == "union_marker":
+                contract.get("signal") in ("union_marker", "boolean_differential"):
             return self._corroborate_injection(engagement_id, scope, contract, r, quote)
         if kind == proof.HEADERS:
             want, got = proof.canonical_document(contract.get("document")), \

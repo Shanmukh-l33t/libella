@@ -890,6 +890,7 @@ class Orchestrator:
                     candidates += checks.reflected_xss(base, p)
                 if allow("sqli"):
                     candidates += checks.sqli(base, p)
+                    candidates += checks.sqli_boolean(base, p)
                 if allow("ssti"):
                     candidates += checks.ssti(base, p)
                 if allow("path_traversal"):
@@ -915,7 +916,8 @@ class Orchestrator:
             h = hints["sqli_union"]
             candidates += checks.sqli_union(h["url"], h["param"], h["payload"], h["marker"])
         # parameter mining on common endpoint patterns
-        from .checks import COMMON_PARAM_ENDPOINTS, COMMON_API_PATHS
+        from .checks import (COMMON_API_PATHS, COMMON_COLLECTIONS, COMMON_FETCH_PATHS,
+                             COMMON_PARAM_ENDPOINTS)
         from urllib.parse import urlparse, parse_qs
         base = url.rstrip("/")
         # Every discovered endpoint is asked which parameters it reacts to, so the checks
@@ -933,6 +935,7 @@ class Orchestrator:
                     candidates += checks.reflected_xss(ep, p)
                 if allow("sqli"):
                     candidates += checks.sqli(ep, p)
+                    candidates += checks.sqli_boolean(ep, p)
                 if allow("ssti"):
                     candidates += checks.ssti(ep, p)
                 if allow("path_traversal"):
@@ -961,6 +964,17 @@ class Orchestrator:
         for ap in COMMON_API_PATHS:
             if allow("cors") and scope.check_url(base + ap).allowed:
                 candidates += checks.cors(base + ap)
+        # Collections and fetch endpoints a crawl does not link: a REST collection has no
+        # anchor, and a fetch endpoint is usually reached by form, not by navigation.
+        for path in COMMON_FETCH_PATHS:
+            full = base + path
+            if not allow("ssrf") or not scope.check_url(full).allowed:
+                continue
+            probe = self.probe.request(engagement_id, scope, full, tool="fetch_probe")
+            if not probe.get("ok") or probe["status"] == 404:
+                continue
+            for p in checks.live_params(full, limit=3):
+                candidates += checks.fetch_param(full, p)
         if allow("file_upload") and scope.check_url(base + "/upload").allowed:
             candidates += checks.file_upload(base + "/upload", base)
         # authenticated checks: login each identity, test auth bypass + IDOR
@@ -988,8 +1002,10 @@ class Orchestrator:
                 # found: the operator should not have to name an endpoint for the engine to
                 # notice that /api/<collection>/{id} serves other users' records.
                 if cookie_header and allow("idor"):
-                    for coll in _object_collections(checks, sorted(endpoints), base,
-                                                    cookie_header):
+                    collections = _object_collections(
+                        checks, sorted(endpoints) + [base + c for c in COMMON_COLLECTIONS],
+                        base, cookie_header)
+                    for coll in collections:
                         # ids come from the collection's own listing when it publishes one:
                         # a sequential guess of 1..3 misses sparse ids (5001, 5002) and any
                         # dataset that did not start at 1.

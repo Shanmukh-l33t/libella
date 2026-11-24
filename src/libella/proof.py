@@ -108,7 +108,8 @@ def missing(kind: str, contract: dict | None, proof_request: dict | None = None,
             gaps.append("marker")
         if not _text(_request(c.get("benign_request")).get("url")):
             gaps.append("benign_request.url")
-    elif kind in (SQL_ERROR, BLIND_COMMAND) or c.get("signal") == "union_marker":
+    elif kind in (SQL_ERROR, BLIND_COMMAND) or c.get("signal") in ("union_marker",
+                                                                   "boolean_differential"):
         # an error signature, a delay or an extracted row can appear without injection:
         # demand the benign control
         if not _text(_request(c.get("benign_request")).get("url")):
