@@ -81,6 +81,21 @@ def _json_field(body: str, field: str):
     return None
 
 
+# A replayed delay counts only if it is this much larger than the benign control's own
+# time, and this much larger in absolute terms: both, so neither a fast server nor a slow
+# box manufactures or destroys a verdict.
+TIMING_FACTOR = 3.0
+TIMING_FLOOR_MS = 1500.0
+
+
+def _duration_of(db: DB, exchange_id: str | None) -> float | None:
+    if not exchange_id:
+        return None
+    row = db.one("SELECT duration_ms FROM exchanges WHERE id=?", (exchange_id,))
+    value = row["duration_ms"] if row else None
+    return float(value) if value is not None else None
+
+
 def _looks_blocked(r: dict) -> str | None:
     """Name the block-page signal in this response, if there is one."""
     lower_headers = {k.lower() for k in r.get("headers", {})}
@@ -152,6 +167,12 @@ class Verifier:
                                 f"application: verification is inconclusive")
         quote = spec.get("quote") or ""
         quote_in = spec.get("quote_in", "body")
+        if quote_in == "duration_ms":
+            # A timing claim quotes a measurement, which no response body carries. It is
+            # reproduced by measuring: the payload request must still be slow against the
+            # benign control replayed in the same run. Without the control there is no
+            # verdict, because a slow box looks exactly like a slow query.
+            return self._verify_timing(engagement_id, scope, f, spec, pr, r, attempt)
         reproduced, detail = self._compare(quote, quote_in, r)
         if not reproduced:
             self._record(finding_id, attempt, "replay", r["exchange_id"], "not_reproduced", detail)
@@ -188,6 +209,45 @@ class Verifier:
             pass  # verdict is recorded; the state machine may not allow the move
         return {"verdict": "reproduced", "detail": detail, "replay_exchange_id": r["exchange_id"],
                 "finding_id": finding_id, "state": "validated"}
+
+    def _verify_timing(self, engagement_id, scope, f: dict, spec: dict, pr: dict,
+                       r: dict, attempt: int) -> dict:
+        """Blind timing (command injection): the delay must reproduce against a control."""
+        contract = spec.get("proof") or {}
+        benign = contract.get("benign_request") or {}
+        if not benign.get("url"):
+            return self._record(f["id"], attempt, "proof_contract", r["exchange_id"],
+                                "unsupported",
+                                "a timing claim needs a benign control replayed in the same "
+                                "run: no control was recorded, so the delay cannot be "
+                                "attributed to the payload")
+        slow = _duration_of(self.db, r["exchange_id"])
+        control = self._replay(engagement_id, scope, _control_request(benign),
+                              "verifier_control")
+        if not control.get("ok"):
+            return self._record(f["id"], attempt, "replay", r["exchange_id"], "inconclusive",
+                                f"the benign control replay failed ({control.get('error')})")
+        base = _duration_of(self.db, control["exchange_id"])
+        if slow is None or base is None:  # pragma: no cover - a recorded exchange has one
+            return self._record(f["id"], attempt, "replay", r["exchange_id"], "inconclusive",
+                                "a replay duration is missing, so the delay is unmeasured")
+        # the payload must still be clearly slower than a benign value in THIS run
+        proven = slow >= max(base * TIMING_FACTOR, base + TIMING_FLOOR_MS)
+        verdict = "reproduced" if proven else "not_reproduced"
+        detail = (f"replay took {slow:.0f} ms against a {base:.0f} ms benign control "
+                  f"(threshold {max(base * TIMING_FACTOR, base + TIMING_FLOOR_MS):.0f} ms)")
+        self._record(f["id"], attempt, "replay_timing", r["exchange_id"], verdict, detail)
+        if not proven:
+            if f["state"] == "validated":
+                self._demote(f["id"], "timing did not reproduce against the control")
+            return {"verdict": verdict, "detail": detail, "finding_id": f["id"],
+                    "state": f["state"]}
+        try:
+            self.pipeline.transition(f["id"], "validated", reason="timing reproduced on replay")
+        except ValueError:
+            pass
+        return {"verdict": verdict, "detail": detail, "finding_id": f["id"],
+                "state": "validated"}
 
     def _demote(self, finding_id: str, reason: str):
         try:

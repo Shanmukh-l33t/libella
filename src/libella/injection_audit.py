@@ -71,6 +71,12 @@ def _quote_in_blob(quote: str, quote_in: str, blob_text: str) -> bool:
     A header quote is rebuilt from the blob's captured response headers, so a
     canary that only appears in the request cannot satisfy it.
     """
+    if quote_in == "duration_ms":
+        # the measurement lives in the recorded duration, not in the body text
+        try:
+            return "duration_ms" in json.loads(blob_text)
+        except (ValueError, KeyError, TypeError):
+            return False
     if quote_in == "header_fact":
         try:
             headers = json.loads(blob_text)["response"]["headers"]
@@ -289,6 +295,8 @@ def audit_injection(db, evidence, probe, scope, engagement_id: str, auth_json: d
                 "Arbitrary command execution with the service account's privileges.",
                 "Never build a command string from input: use an argument list, and validate "
                 "the value against an allowlist.",
+                # a timing claim is not a string in a body: quote the measurement and let
+                # the verifier replay BOTH the payload and the benign control and compare
                 r1["evidence_id"], f'"duration_ms": {ms}', proof(spec, url1, body1),
                 f"injection:command:{spec['url']}:{spec['param']}",
                 # a delay can be load: the benign value is the control the verifier replays

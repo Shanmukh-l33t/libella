@@ -569,8 +569,11 @@ class WebChecks:
                 # Readable with no credential at all. That is a real defect, but it is NOT
                 # an ownership failure: no authorization decision was made, so reporting
                 # "alice read bob's order" would describe an identity check that never ran.
-                quote = f'"{owner_field}":{json.dumps(owner)}'
-                if owner != identity_value and quote in anon["body"]:
+                # the quote must be the bytes the server actually sent: a rebuilt
+                # '"field":value' misses any body that spaces its separators, and the
+                # finding was then skipped as if the record were not there
+                quote = _owner_quote(anon["body"], owner_field) or ""
+                if owner != identity_value and quote:
                     return [_candidate(
                         f"Object endpoint serves another user's record without authentication "
                         f"({url.split('://')[-1]})", "CWE-306",
@@ -586,8 +589,8 @@ class WebChecks:
                         anon["evidence_id"], quote, self._proof(url), f"noauth:{collection_url}")
                     ]
                 continue
-            quote = f'"{owner_field}":{json.dumps(owner)}'
-            if quote not in r["body"]:
+            quote = _owner_quote(r["body"], owner_field) or ""
+            if not quote:
                 continue
             return [_candidate(
                 f"IDOR/BOLA: '{identity_name}' reads another user's object at "
@@ -802,6 +805,16 @@ def _record_ids(body: str, limit: int = 5) -> list[int]:
         if len(out) >= limit:
             break
     return out
+
+
+def _owner_quote(body: str, field: str) -> str | None:
+    """The verbatim slice carrying `field` and its value, as the server wrote it.
+
+    Rebuilding `'"field":value'` assumes compact JSON; many servers emit `: ` and the
+    quote then matches nothing, which silently discarded real findings.
+    """
+    m = re.search(r'"%s"\s*:\s*("?[^,}\]\s"]*"?)' % re.escape(field), body)
+    return m.group(0) if m else None
 
 
 def _distinctive_token(body: str) -> str:

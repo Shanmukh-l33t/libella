@@ -30,14 +30,19 @@ def run_one(mode: str, data_dir: Path) -> dict:
     port = 8801 if mode == "vuln" else 8802
     base = f"http://127.0.0.1:{port}"
     app = App(data_dir / mode)
-    hints = json.loads(json.dumps(HINTS).replace("{port}", str(port)))
+    # --no-hints measures the engine's own discovery: no declared endpoint, parameter,
+    # marker or object id, which is the only way to claim a native capability
+    hints = (json.loads(json.dumps(HINTS).replace("{port}", str(port)))
+             if "--no-hints" not in sys.argv else {})
     scope = {"targets": [{"kind": "url", "value": base}],
              "categories": ["recon", "web", "api", "infra"],
              "rate_limit_rps": 20, "max_concurrency": 4}
     auth = {"identities": [
         {**i, "login_url": base + "/login", "username_field": "username",
          "password_field": "password"} for i in GT["identities"][:2]
-    ], "test_hints": hints}
+    ]}
+    if hints:
+        auth["test_hints"] = hints
     eid = app.db.execute(
         "INSERT INTO engagements(id, name, profile, status, scope_json, auth_json, budgets_json, created_at) "
         "VALUES(?,?,?,?,?,?,?,?)",
