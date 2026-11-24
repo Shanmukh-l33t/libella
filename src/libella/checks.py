@@ -256,13 +256,19 @@ class WebChecks:
         )]
 
     def sqli_boolean(self, url: str, param: str) -> list[dict]:
-        """Boolean differential: does a true condition change the response vs a false one?
+        """Boolean differential on a parameter the app already treats as a query value.
 
-        Error-based detection needs the application to echo its database error, which a
-        hardened error handler removes (measured: a generic 500 page, no signature, so a
-        genuinely injectable filter read as clean). Two payloads that differ only in the
-        truth of their condition do not depend on error text: if the response differs, the
-        value reached the query. Blind, so it is proven by a repeat.
+        Two wrong versions came before this one, both measured on a real app (OWASP Juice
+        Shop, 46 findings of which 45 were this check):
+        1. any body difference counted. `/rest/admin?tag=<x>` answers 500 to malformed input
+           and 200 to well-formed input, so 44 endpoints "differed" with no injection.
+        2. any status difference counted, which is the same error one layer up.
+
+        What actually distinguishes an injectable parameter is that a boolean condition
+        changes the row set an endpoint RETURNS while the endpoint keeps working: both
+        requests must SUCCEED, and their bodies must differ in CONTENT, not merely in error
+        pages or byte count. An endpoint that errors on the payload is not evidence, and an
+        endpoint that answers both payloads identically is not either.
         """
         sep = "&" if "?" in url else "?"
 
@@ -274,23 +280,29 @@ class WebChecks:
         false_r = probe("2", "sqli_bool_false")
         if not (true_r.get("ok") and false_r.get("ok")):
             return []
-        if true_r["status"] != false_r["status"]:
-            differ = f"status {true_r['status']} vs {false_r['status']}"
-        elif _shingles(true_r["body"]) != _shingles(false_r["body"]):
-            differ = f"body differs ({len(true_r['body'])} vs {len(false_r['body'])} bytes)"
-        else:
+        # Both answers must be real 2xx responses: a 500 for either payload means the
+        # endpoint rejected the input, which is the opposite of what injection looks like.
+        # NOTE: _content_differs below also rejects an error page, so this guard is defense
+        # in depth rather than the only line: the test that pins the Juice Shop case passes
+        # with either one present, and the mutation gate keeps the content comparison.
+        if not (str(true_r["status"]).startswith("2") and str(false_r["status"]).startswith("2")):
             return []
-        # a difference must repeat, or it is page churn rather than the injected condition
+        # and the CONTENT must differ: same status, different records. A page that differs
+        # only in length is page churn, and a body that carries no comparable content (an
+        # empty 204, a redirect with no body) cannot show a row-set change at all.
+        if not _content_differs(true_r["body"], false_r["body"]):
+            return []
+        # the true case must repeat identically, so churn and per-request nonces drop out
         again = probe("1", "sqli_bool_true_repeat")
-        if not again.get("ok") or _shingles(again["body"]) != _shingles(true_r["body"]):
+        if not again.get("ok") or not _same_document(again["body"], true_r["body"]):
             return []
-        idx = 0
-        quote = true_r["body"][idx:idx + 80] if true_r["body"] else f"status {true_r['status']}"
+        quote = (true_r["body"] or "")[:80] or f"status {true_r['status']}"
         return [_candidate(
             f"SQL injection (boolean differential) in parameter '{param}'", "CWE-89",
             "A03:2021 Injection", "critical", "high", url,
-            f"A true condition changed the response ({differ}) while a false one did not, "
-            f"and the true case reproduced: the value reaches the SQL text.",
+            f"A true condition and a false one both answered {true_r['status']}, with "
+            f"different content, and the true case reproduced: the value reached the query "
+            f"and changed the rows returned.",
             "Full database read/write depending on privileges; authentication bypass; "
             "data exfiltration.",
             "Use parameterized queries / prepared statements; least-privilege DB account.",
@@ -298,7 +310,7 @@ class WebChecks:
             f"sqli:{url}:{param}",
             proof={"signal": "boolean_differential",
                    # the false condition is the control: a server that answers every request
-                   # differently fails this, and a static page passes it
+                   # with the same document fails this, and so does one that errors on both
                    "benign_request": self._proof(false_r["url"] or url)},
         )]
 
@@ -957,6 +969,32 @@ def _record_ids(body: str, limit: int = 5) -> list[int]:
         if len(out) >= limit:
             break
     return out
+
+
+def _normalise_document(body: str) -> str:
+    """A body with volatile parts removed, for comparing two answers of one endpoint."""
+    text = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "",
+                  body or "", flags=re.I)                 # uuids
+    text = re.sub(r"\b\d{10,}\b", "", text)                # epoch times, ids of a certain size
+    text = re.sub(r"\b[0-9a-f]{32,}\b", "", text, flags=re.I)  # tokens/hashes
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _content_differs(a: str, b: str) -> bool:
+    """Do two successful responses carry different CONTENT (not just different length)?"""
+    na, nb = _normalise_document(a), _normalise_document(b)
+    if not na or not nb:
+        return False                      # nothing comparable to differ
+    if na == nb:
+        return False
+    # require a real content difference: a shared skeleton with different record counts is
+    # exactly the signal, so compare the token sets rather than only the strings
+    return _shingles(na) != _shingles(nb)
+
+
+def _same_document(a: str, b: str) -> bool:
+    """Two answers of the same request: equal once volatile parts are removed."""
+    return _normalise_document(a) == _normalise_document(b)
 
 
 def _shingles(body: str) -> set:

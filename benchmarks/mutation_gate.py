@@ -117,6 +117,10 @@ MUTATIONS = [
      '''    if fmt in ("uri", "url"):
         return True''', "    if False:\n        return True",
      ["tests/verify/test_published_inventory.py"]),
+    ("checks: boolean SQLi accepts an echoed parameter", "src/libella/checks.py",
+     '''        if not _content_differs(true_r["body"], false_r["body"]):
+            return []''', "        pass",
+     ["tests/verify/test_sqli_boolean_real_shapes.py"]),
     ("checks: object enumeration accepts an anonymous read", "src/libella/checks.py",
      '''            if anon["status"] < 400:''', "            if False:",
      ["tests/verify"]),
