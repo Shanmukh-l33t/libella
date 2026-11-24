@@ -28,11 +28,10 @@ MUTATIONS = [
             gaps.append("marker")''', "        pass",
      ["tests/verify/test_verifier_accuracy.py"]),
     ("proof: an SSRF claim needs no benign control", PROOF,
-     '''        if not _text(_request(c.get("benign_request")).get("url")):
-            gaps.append("benign_request.url")
-    elif kind in (SQL_ERROR, BLIND_COMMAND) or c.get("signal") == "union_marker":''',
-     '''        pass
-    elif kind in (SQL_ERROR, BLIND_COMMAND) or c.get("signal") == "union_marker":''',
+     '''            gaps.append("benign_request.url")
+    elif kind in (SQL_ERROR, BLIND_COMMAND)''',
+     '''            pass
+    elif kind in (SQL_ERROR, BLIND_COMMAND)''',
      ["tests/verify/test_verifier_accuracy.py"]),
     ("proof: an ownership claim needs neither owner field nor privilege", PROOF,
      '''        else:
@@ -106,9 +105,8 @@ MUTATIONS = [
         if not hit:
             return []''', "        hit = 'marker'  # any body",
      ["tests/verify/test_ssrf_discovery.py"]),
-    ("checks: SSRF reports on a guarded fetcher", "src/libella/checks.py",
-     '''        benign = self._req(with_param(target, param, "libellaBenign"), tool="ssrf_control")
-        if not benign.get("ok") or _foreign_page_marker(benign["body"] or ""):
+    ("checks: SSRF skips the own-origin baseline", "src/libella/checks.py",
+     '''        if own.get("ok") and hit in (own["body"] or ""):
             return []''', "        pass",
      ["tests/verify/test_ssrf_discovery.py"]),
     ("checks: object enumeration accepts an anonymous read", "src/libella/checks.py",

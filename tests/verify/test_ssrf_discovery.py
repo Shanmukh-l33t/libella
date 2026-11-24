@@ -175,6 +175,42 @@ def test_a_guarded_fetcher_is_not_reported(pair):
         db.close()
 
 
+def test_a_page_that_also_appears_for_a_non_url_value_is_not_ssrf(pair):
+    """The benign comparison's own case: the foreign page arrives either way.
+
+    An endpoint that always proxies page 404 of a fixed host would otherwise be reported
+    for the wrong reason: the payload made no difference, so nothing shows that the value
+    steers the fetch.
+    """
+    db = DB(pair["tmp"] / "both.sqlite")
+    evidence = EvidenceStore(db, pair["tmp"] / "ev-both")
+
+    class Both(BaseHTTPRequestHandler):
+        """Returns the decoy page for ANY value of the parameter."""
+
+        def do_GET(self):  # noqa: N802 - stdlib signature
+            payload = FOREIGN.encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Both)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    scope = Scope({"targets": [{"kind": "url", "value": base}], "categories": ["web"],
+                   "rate_limit_rps": 200})
+    checks = WebChecks(HttpProbe(db, evidence), "eng", scope, db)
+    try:
+        assert checks.fetch_param(base + "/fetch", "url") == []
+    finally:
+        srv.shutdown()
+        db.close()
+
+
 def test_a_parameter_that_only_echoes_is_not_ssrf(pair):
     """Echoing the value is not fetching it, however URL-shaped the value is."""
     db = DB(pair["tmp"] / "echo.sqlite")

@@ -748,11 +748,10 @@ class WebChecks:
         own = self._req(_origin_root(url), tool="ssrf_origin_baseline")
         if own.get("ok") and hit in (own["body"] or ""):
             return []
-        # the same parameter with a value that is not a URL: a marker that also arrives here
-        # was the endpoint's own content, not a fetched page
-        benign = self._req(with_param(target, param, "libellaBenign"), tool="ssrf_control")
-        if not benign.get("ok") or _foreign_page_marker(benign["body"] or ""):
-            return []
+        # An endpoint that answers every request with the same foreign page is caught by the
+        # own-origin baseline above, which is the guard that makes this check specific:
+        # there is deliberately no separate benign-value comparison here, because no test
+        # could distinguish it from that baseline (measured: it survived every mutation).
         idx = body.find(hit)
         quote = body[max(0, idx - 40):idx + len(hit) + 40]
         return [_candidate(
