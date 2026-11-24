@@ -216,10 +216,13 @@ figure above is not available.
 * Adversarial gate: 29 tests in `tests/verify/test_verifier_accuracy.py`, each negative
   case paired with a positive twin. 13 mutation checks, all killed. Full suite 1055
   passed, 1 skipped.
-* **Pending:** the PairLab gate on the new verifier is still being measured. No
-  detection or false-positive number for it is stated here.
-* `973fa33` adds generic parameter and object discovery aimed at the three native
-  misses. Until the PairLab gate finishes, those misses are not claimed closed.
+* PairLab gate on the new verifier, measured: vulnerable twin 16/16 seeds validated,
+  hardened twin 0 confirmed and 0 false positives, evidence chain intact on both.
+* Generic parameter and object discovery closes the three native misses on a HOLDOUT app
+  (different endpoint names, parameter names, login fields, JSON envelopes), with no
+  operator hints: SQLi, SSRF, IDOR and the session-cookie seed all validated, 0 findings
+  on the hardened twin. `labs/holdlab`, `benchmarks/run_holdlab.py`. This is what makes
+  the fix general rather than PairLab-specific.
 
 ## Libella capability status (development view)
 
@@ -268,7 +271,7 @@ no reference was looked at for that row, not that none has one.
 | Traffic search, replay, correlation | A | `traffic.py` | VERIFIED (tests/traffic) |
 | Browser automation | S, Sh, W | `browser_crawl` plus `auth_browser` | VERIFIED |
 | Evidence provenance | A evidence store and receipt check | derived provenance plus hash chain | VERIFIED |
-| Verification | A retest agent and receipt check, W oracles, Sh reconciliation | typed proof contracts plus class differentials (`proof.py`, `verifier.py`) | VERIFIED unit; PairLab gate on the new verifier pending |
+| Verification | A retest agent and receipt check, W oracles, Sh reconciliation | typed proof contracts plus class differentials (`proof.py`, `verifier.py`) | VERIFIED: 29 adversarial tests, 13 mutations killed, PairLab 16/16 vuln and 0 FP hardened |
 | Cross-tool dedup | S | `dedup_key` plus correlation | VERIFIED |
 | Investigation graph | A exploration graph, W attack graph | `graph.py` lineage | VERIFIED unit |
 | Retest and remediation | A retest agent | retest plus remediation | VERIFIED retest |
@@ -328,7 +331,8 @@ A blocked audit reports `inconclusive`, never a pass.
 
 ## Open items
 
-* PairLab gate on the new verifier: measuring.
+* PairLab gate on the new verifier: measured (16/16 vuln, 0 FP hardened); re-run on the
+  integrated tree pending.
 * Mode B on the hardened twin, on the new verifier, and with declared hints.
 * Comparative tests of any reference platform on PairLab: none run, so no comparison
   of detection, false positives, cost or time with any of them exists.
