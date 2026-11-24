@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import __version__
-from . import coverage
+from . import coverage, scan_record
 from .db import DB
 from .evidence import EvidenceStore
 
@@ -104,6 +104,16 @@ def _csv_escape(s: str) -> str:
     return s
 
 
+def captured_checks_md(cov: dict) -> list[str]:
+    samples = cov.get("captured_response_checks", ())
+    if not samples:
+        return []
+    return ["\n### Captured response checks\n",
+            "Sample results are not application-wide verdicts.\n", *[
+        f"- {s['requirement_id']}: {s['outcome']} ({s['evidence_id']}). {s['reason']}" for s in samples
+    ], ""]
+
+
 def _coverage_md(md: list, c: dict) -> None:
     """One standard's ledger: totals, per-chapter table, and what was never tested."""
     cs = c["summary"]
@@ -111,6 +121,7 @@ def _coverage_md(md: list, c: dict) -> None:
     level = f" Level {cs['level']}" if cs.get("level") else ""
     name = str(fw["id"]).removeprefix("OWASP-")  # "WSTG 4.2", "ASVS 5.0.0 Level 2"
     md.append(f"\n## {_md(name)} {_md(fw['version'])}{level} coverage\n")
+    md.extend(captured_checks_md(c))
     md.append("Derived from what this engagement executed, not from what was planned. "
               "A requirement that is not tested is not a pass, and a check that covers only "
               "part of a requirement is reported as partial evidence.\n")
@@ -217,11 +228,15 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
             "framework": cov["framework"], "summary": cov["summary"],
             "categories": [{"id": c["id"], "name": c["name"], "tests": len(c["tests"]),
                             "counts": c["counts"]} for c in cov["categories"]],
+            "captured_response_checks": [s for c in cov["categories"] for t in c["tests"]
+                                         for s in t["automatic"].get("samples", ())],
             "not_tested": [{"id": t["id"], "title": t["title"], "status": t["status"]}
                            for c in cov["categories"] for t in c["tests"]
                            if t["automatic"]["status"] not in coverage.COMPLETED
                            and t["status"] != "covered"],
         }
+    nuclei = scan_record.nuclei_scans(db, engagement_id, _safe)
+    report["scans"] = {"nuclei": nuclei} if nuclei else {}
     report["coverage"] = _ledger(coverage.workspace(db, engagement_id, evidence=evidence))
     # every standard the engagement selected is accounted for in the report itself
     try:
@@ -267,6 +282,7 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         md.append("\n## Coverage limitations (read before trusting 'no findings')\n")
         for d in report["degradations"]:
             md.append(f"- **{_md(d['code'])}**: {_md(redact(str(d['detail'])))}")
+    md.extend(scan_record.scan_md(report["scans"]))
     if agent_runs:
         md.append("\n## Agent runs\n")
         for r in agent_runs:

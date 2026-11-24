@@ -144,6 +144,24 @@ CREATE TABLE IF NOT EXISTS coverage_entries(
   note TEXT, evidence_id TEXT, updated_at REAL,
   PRIMARY KEY(engagement_id, test_id)
 );
+-- The projection and review history commit together, including clears.
+CREATE TRIGGER IF NOT EXISTS coverage_review_insert AFTER INSERT ON coverage_entries BEGIN
+  INSERT INTO events(engagement_id, kind, payload_json, created_at)
+  VALUES(NEW.engagement_id, 'coverage_review', json_object('framework', NEW.framework,
+    'requirement_id', NEW.test_id, 'status', NEW.status, 'note', NEW.note,
+    'evidence_id', NEW.evidence_id), NEW.updated_at);
+END;
+CREATE TRIGGER IF NOT EXISTS coverage_review_update AFTER UPDATE ON coverage_entries BEGIN
+  INSERT INTO events(engagement_id, kind, payload_json, created_at)
+  VALUES(NEW.engagement_id, 'coverage_review', json_object('framework', NEW.framework,
+    'requirement_id', NEW.test_id, 'status', NEW.status, 'note', NEW.note,
+    'evidence_id', NEW.evidence_id), NEW.updated_at);
+END;
+CREATE TRIGGER IF NOT EXISTS coverage_review_delete AFTER DELETE ON coverage_entries BEGIN
+  INSERT INTO events(engagement_id, kind, payload_json, created_at)
+  VALUES(OLD.engagement_id, 'coverage_review', json_object('framework', OLD.framework,
+    'requirement_id', OLD.test_id, 'status', 'unknown'), (julianday('now') - 2440587.5) * 86400);
+END;
 CREATE INDEX IF NOT EXISTS idx_hyp_eng ON hypotheses(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_steps_eng ON investigation_steps(engagement_id, intent_id);
 CREATE INDEX IF NOT EXISTS idx_runs_eng ON agent_runs(engagement_id);

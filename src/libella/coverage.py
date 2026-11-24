@@ -23,6 +23,7 @@ import time
 
 from . import controls, standards
 from .db import DB
+from .standards_review import CACHE_CONTROL, CACHE_PREREQUISITE, CACHE_TEST, cache_samples
 
 DEFAULT = "wstg"
 STATUSES = ("covered", "manual", "unsupported")  # manual review ledger
@@ -196,7 +197,7 @@ def _pointers(slots: dict, units, hits=(), spec=None) -> dict:
     return {"tool_calls": [c["id"] for c in merged["calls"]],
             "exchanges": merged["exchanges"],
             "intents": [i["id"] for i in merged["intents"]],
-            "events": merged["denied"] + merged["missing"],
+            "events": merged["denied"] + merged["missing"] + merged["blocked"] + merged["partial"],
             "findings": [f["id"] for f in hits]}
 
 
@@ -261,6 +262,7 @@ def _derive(spec: dict, rid: str, slots: dict, findings, profile: str, categorie
             return {"status": status, "units": named, "strength": strength,
                     "reason": reason}, pointers
     return {"status": "inconclusive", "units": units, "strength": strength,
+            "unrecorded": True,
             "reason": f"{', '.join(units)}: mapped check never ran in this engagement"}, pointers
 
 
@@ -331,6 +333,23 @@ def link(db: DB, engagement_id: str, framework: str, requirement_id: str, findin
         (engagement_id, framework, requirement_id))}
 
 
+def history(db: DB, eid: str, framework: str, rid: str) -> dict:
+    _engagement(db, eid)
+    standards.requirement(framework, rid)
+    reviews = db.query("SELECT seq, created_at, payload_json FROM events WHERE engagement_id=? "
+                       "AND kind='coverage_review' AND json_extract(payload_json, '$.framework')=? "
+                       "AND json_extract(payload_json, '$.requirement_id')=? ORDER BY seq",
+                       (eid, framework, rid))
+    return {
+        "reviews": [{**json.loads(r["payload_json"]), "seq": r["seq"], "created_at": r["created_at"]}
+                    for r in reviews],
+        "links": db.query("SELECT id, finding_id, action, note, actor, created_at FROM requirement_links "
+                          "WHERE engagement_id=? AND framework=? AND requirement_id=? ORDER BY id",
+                          (eid, framework, rid)),
+        "samples": cache_samples(db, eid) if (framework, rid) == ("asvs", CACHE_CONTROL) else [],
+    }
+
+
 def workspace(db: DB, engagement_id: str, framework: str = DEFAULT, evidence=None) -> dict:
     """Catalog + automatic execution status + recorded review for one engagement."""
     _engagement(db, engagement_id)
@@ -350,11 +369,12 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT, evidence=Non
     recorded = {r["test_id"]: r for r in db.query(
         "SELECT * FROM coverage_entries WHERE engagement_id=? AND framework=?",
         (engagement_id, framework))}
+    samples = cache_samples(db, engagement_id) if framework == "asvs" else []
     statuses = {s: 0 for s in AUTO_STATUSES}
     manual = {s: 0 for s in STATUSES}
     effective = {s: 0 for s in AUTO_STATUSES}
     categories = []
-    total = 0
+    total = attempted = 0
     for group in spec["groups"]:
         rows, counts = [], {s: 0 for s in AUTO_STATUSES}
         for rid in group["requirements"]:
@@ -363,6 +383,16 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT, evidence=Non
             req = spec["requirements"][rid]
             auto, pointers = _derive(spec, rid, slots, findings, profile, scope_categories,
                                      produced_by, links)
+            if framework == "asvs" and rid == CACHE_CONTROL and auto["status"] != "not_applicable":
+                auto.update(test=CACHE_TEST, prerequisite=CACHE_PREREQUISITE, samples=samples)
+                if samples:
+                    concluded = any(s["outcome"] != "inconclusive" for s in samples)
+                    if auto["status"] not in ("finding_verified", "finding_unverified"):
+                        auto.update(status="partial_evidence" if concluded else "inconclusive",
+                                    reason="Captured responses only; see sample outcomes. No application-wide verdict.",
+                                    strength="partial")
+                    pointers["exchanges"] = list(dict.fromkeys(s["exchange_id"] for s in samples))
+                    pointers["events"].extend(s["seq"] for s in samples)
             row = recorded.get(rid) or {}
             review = row["status"] if row.get("status") in STATUSES else None
             entry = {"status": review, "note": row.get("note"),
@@ -370,6 +400,7 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT, evidence=Non
                      "updated_at": row.get("updated_at")} if review else None
             if review:
                 manual[review] += 1
+            attempted += auto["status"] in ATTEMPTED and not auto.get("unrecorded", False)
             statuses[auto["status"]] += 1
             counts[auto["status"]] += 1
             effective[MANUAL_AS.get(review, auto["status"])] += 1
@@ -388,7 +419,7 @@ def workspace(db: DB, engagement_id: str, framework: str = DEFAULT, evidence=Non
         "excluded_by_level": len(spec["order"]) - len(in_scope),
         "applicable": applicable,
         "supported": applicable - effective["requires_manual"] - effective["not_supported"],
-        "attempted": sum(effective[s] for s in ATTEMPTED),
+        "attempted": attempted,
         "completed": completed,
         "partial": effective["partial_evidence"],
         "with_findings": effective["finding_verified"] + effective["finding_unverified"],

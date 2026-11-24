@@ -698,6 +698,25 @@ def create_api(app: App) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
+    @api.post("/api/engagements/{eid}/coverage/asvs/V14.3.2/sample", dependencies=[Depends(auth)])
+    def coverage_cache_sample(eid: str, body: dict):
+        from .standards_review import inspect_cache
+        try:
+            return inspect_cache(app.db, app.evidence, eid, body.get("exchange_id"), body.get("sensitive"))
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @api.get("/api/engagements/{eid}/coverage/{framework}/{requirement_id}/history",
+             dependencies=[Depends(auth)])
+    def coverage_history(eid: str, framework: str, requirement_id: str):
+        from .coverage import history
+        try:
+            return history(app.db, eid, framework, requirement_id)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from None
+
     @api.put("/api/engagements/{eid}/standards", dependencies=[Depends(auth)])
     def set_standards(eid: str, body: dict):
         """Select which standards this engagement is assessed against, and their level.

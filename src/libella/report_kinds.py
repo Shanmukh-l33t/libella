@@ -11,6 +11,8 @@ focused document can never disagree with the technical one.
 import csv
 import io
 
+from . import scan_record
+
 SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 
 
@@ -163,6 +165,10 @@ def coverage_md(report: dict) -> str:
                     "skipped", "not_tested"):
             if key in ss:
                 lines.append(f"| {key.replace('_', ' ')} | {ss[key]} |")
+    from .report import captured_checks_md
+    for std in report.get("standards") or []:
+        lines += captured_checks_md(std)
+    lines += scan_record.scan_md(report.get("scans"))
     lines += ["", "_A completed automated check is not a manual assessment. Read the limitations "
                   "with this table._", ""]
     return "\n".join(lines)

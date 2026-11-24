@@ -986,14 +986,13 @@ class Orchestrator:
                             on_progress=on_progress)
         if progress.get("percent") is not None and progress["percent"] < 100:
             # say what was NOT scanned, in the engine's own numbers
-            why = ("the scan hit its time limit" if r.get("error") and "stopped" not in str(r.get("error"))
-                   else str(r.get("error") or "the scan ended early"))
+            why = "the scan hit its time limit" if r.get("error") == "timeout" else (
+                "the scanner stopped before reporting 100% request progress")
             self.db.emit(engagement_id, "degradation", {
                 "code": "scan_partial", "intent_id": intent_id, "units": ["nuclei"],
-                "detail": f"nuclei covered {progress['percent']}% of its templates "
-                          f"({progress.get('requests')} requests, {progress.get('matched')} matches) "
-                          f"before it stopped: {why}. Results below that point are untested, "
-                          f"not clean."})
+                "detail": f"nuclei last reported {progress['percent']}% request progress "
+                          f"({progress.get('requests')} requests, {progress.get('matched')} matches): {why}. "
+                          "Executed and unfinished template counts are not reported."})
         if not r.get("ok"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",
                                              f"nuclei: {r.get('error')}", r.get("artifact_id"))

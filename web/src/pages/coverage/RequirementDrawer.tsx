@@ -10,7 +10,9 @@ import { put, post } from "../../api";
 import type { Finding } from "../../types";
 import { fmtTime, severityTone, stateTone } from "../../lib/format";
 import { Badge, Button, ErrorNote, Field, Input, Select, Textarea } from "../../components/ui";
-import { HELP, REVIEWS, REVIEW_TONE, TONE, UNTESTED, isPass, type Item, type Mapping, type Review } from "./model";
+import { HELP, REVIEWS, REVIEW_TONE, TONE, UNTESTED, type Item, type Mapping, type Review } from "./model";
+
+import ReviewActivity from "./ReviewActivity";
 
 const REVIEW_HELP: Record<Review, string> = {
   covered: "Reviewed by hand, with evidence from this engagement attached.",
@@ -29,7 +31,10 @@ export default function RequirementDrawer({ eid, fw, item, mapping, findings, on
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // The saved record, so the drawer tells the truth the instant the PUT lands.
-  const [saved, setSaved] = useState(item.manual);
+  const saved = item.manual;
+  const [revision, setRevision] = useState(0);
+  const path = `/api/engagements/${encodeURIComponent(eid)}/coverage/${encodeURIComponent(fw)}/${encodeURIComponent(item.id)}`;
+  const refresh = () => { setRevision((n) => n + 1); onSaved(); };
   const [linkFinding, setLinkFinding] = useState("");
   const [linkAction, setLinkAction] = useState<"add" | "remove">("add");
   const [linkNote, setLinkNote] = useState("");
@@ -48,9 +53,8 @@ export default function RequirementDrawer({ eid, fw, item, mapping, findings, on
     try {
       // The server owns the rules: covered needs this engagement's evidence, manual/unsupported a note.
       await put(`/api/engagements/${encodeURIComponent(eid)}/coverage/${encodeURIComponent(fw)}/${encodeURIComponent(item.id)}`,
-        { status, note: note.trim(), evidence_id: evidenceId.trim() || undefined });
-      setSaved({ status, note: note.trim(), evidence_id: evidenceId.trim() || null, updated_at: Date.now() / 1000 });
-      onSaved();
+        { status, note: note.trim(), evidence_id: status === "covered" ? evidenceId.trim() : undefined });
+      refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -68,7 +72,7 @@ export default function RequirementDrawer({ eid, fw, item, mapping, findings, on
       const last = r.history[r.history.length - 1];
       setLinkResult(`Recorded: ${last?.action} ${last?.finding_id} (${r.history.length} decision${r.history.length === 1 ? "" : "s"} on this requirement).`);
       setLinkNote("");
-      onSaved();
+      refresh();
     } catch (e) {
       setLinkError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -119,6 +123,11 @@ export default function RequirementDrawer({ eid, fw, item, mapping, findings, on
             <p className="mt-1 text-sm leading-relaxed text-ink-900">{item.title}</p>
           </section>
 
+          <section aria-label="Applicability">
+            <h3 className="text-2xs uppercase tracking-wide text-ink-500">Applicability</h3>
+            <p className="text-xs text-ink-700">{auto.status === "not_applicable" ? auto.reason
+              : "In the selected catalog. Confirm that this control applies to the target before drawing a verdict."}</p>
+          </section>
           <section aria-label="How Libella tested it" className="rounded border border-line bg-canvas px-3 py-3">
             <h3 className="text-2xs uppercase tracking-wide text-ink-500">How Libella tested it</h3>
             <p className="mt-1 text-sm text-ink-900">{auto.reason}</p>
@@ -203,6 +212,8 @@ export default function RequirementDrawer({ eid, fw, item, mapping, findings, on
             </section>
           )}
 
+          <ReviewActivity path={path} item={item} revision={revision} onSaved={refresh} />
+
           <section aria-label="Analyst review">
             <h3 className="text-2xs uppercase tracking-wide text-ink-500">Analyst review</h3>
             {saved ? (
@@ -279,12 +290,7 @@ export default function RequirementDrawer({ eid, fw, item, mapping, findings, on
               <div><dt className="inline text-ink-700">events: </dt><dd className="inline">{ev.events.join(", ") || "—"}</dd></div>
             </dl>
           </details>
-          {isPass(auto.status) && (
-            <p className="text-2xs text-ink-500">
-              Recorded as a pass because a directly mapped check executed and recorded no finding.
-              That is a statement about the check, not proof the application is free of the problem.
-            </p>
-          )}
+
         </div>
       </aside>
     </div>

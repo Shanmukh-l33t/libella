@@ -36,12 +36,14 @@ export default function Coverage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const d = ws.data;
+  const d = ws.data?.engagement_id === eid && ws.data.framework.id.toLowerCase().replace(/^owasp-/, "") === fw
+    ? ws.data : null;
+  const opened = d?.categories.flatMap((c) => c.tests).find((t) => t.id === open?.id);
   const needle = search.trim().toLowerCase();
   const filtering = needle !== "" || filter !== "all" || level !== "all" || manualOnly || withEvidence;
 
   const keep = (t: Item) =>
-    (filter === "all" || t.status === filter)
+    (filter === "all" || t.automatic.status === filter || t.manual?.status === filter)
     && (level === "all" || String(t.level ?? "") === level)
     && (!manualOnly || t.automatic.status === "requires_manual")
     && (!withEvidence || hasEvidence(t))
@@ -56,6 +58,7 @@ export default function Coverage() {
   const inScope = chapters.reduce((n, c) => n + c.tests.length, 0);
 
   const setParam = (key: string, value: string) => {
+    setOpen(null);
     const next = new URLSearchParams(params);
     if (value) next.set(key, value); else next.delete(key);
     setParams(next, { replace: true });
@@ -94,7 +97,7 @@ export default function Coverage() {
           executed — intents, tool calls, captured exchanges, degradations and findings. Two records per
           requirement, both always shown: <span className="font-medium text-ink-700">Executed</span> is derived
           from the run, <span className="font-medium text-ink-700">Review</span> is what an operator recorded by
-          hand. Nothing on this page runs a tool.
+          hand. Captured-response checks use existing evidence and do not send target traffic.
         </p>
       </div>
 
@@ -156,8 +159,8 @@ export default function Coverage() {
           <Card title="How to read a status"
             description="A row is never greener than the evidence allows.">
             <ul className="space-y-1.5 text-xs text-ink-700">
-              <li><Badge tone="success">completed_no_issue</Badge> is the only automatic pass, and only when a
-                check <span className="font-medium">directly</span> maps to the requirement and executed.</li>
+              <li><Badge tone="neutral">completed_no_issue</Badge> means a mapped check recorded no issue.
+                It is not a requirement pass.</li>
               <li><Badge tone="info">partial_evidence</Badge> means a mapped check ran but covers only part of the
                 requirement. <span className="font-medium">It is not a pass</span>, and neither is a
                 completed_no_issue from a partial check — the server never records one.</li>
@@ -304,8 +307,8 @@ export default function Coverage() {
         </>
       )}
 
-      {open && eid && (
-        <RequirementDrawer key={`${open.id}-${open.manual?.updated_at || 0}`} eid={eid} fw={fw} item={open}
+      {opened && eid && (
+        <RequirementDrawer key={`${eid}/${fw}/${opened.id}`} eid={eid} fw={fw} item={opened}
           mapping={d?.mapping || {}} findings={findings.data || []}
           onClose={() => setOpen(null)} onSaved={() => ws.reload()} />
       )}

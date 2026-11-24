@@ -21,7 +21,7 @@ export const REVIEWS: Review[] = ["covered", "manual", "unsupported", "unknown"]
 export const TONE: Record<AutoStatus, Tone> = {
   not_applicable: "neutral", not_supported: "warning", requires_manual: "warning",
   skipped_policy: "warning", skipped_dependency: "warning", attempted: "info",
-  inconclusive: "warning", failed: "danger", completed_no_issue: "success",
+  inconclusive: "warning", failed: "danger", completed_no_issue: "neutral",
   partial_evidence: "info", finding_unverified: "info", finding_verified: "danger",
 };
 export const REVIEW_TONE: Record<Review, Tone> = {
@@ -43,8 +43,6 @@ export const HELP: Record<AutoStatus, string> = {
   finding_verified: "A finding from the mapped check was independently replayed.",
 };
 
-/** Only a directly mapped check that executed can pass; a partial one never does. */
-export const isPass = (status: AutoStatus) => status === "completed_no_issue";
 /** Everything an operator must read as "no conclusion". */
 export const UNTESTED: AutoStatus[] = [
   "not_applicable", "not_supported", "requires_manual", "skipped_policy",
@@ -57,7 +55,7 @@ export interface Evidence {
 export interface Item {
   id: string; title: string; status: AutoStatus | Review;
   level?: number | null; section?: string | null; section_title?: string | null;
-  automatic: { status: AutoStatus; reason: string; units: string[]; strength?: string };
+  automatic: { status: AutoStatus; reason: string; units: string[]; strength?: string; test?: string; prerequisite?: string };
   manual: { status: Review; note?: string | null; evidence_id?: string | null; updated_at?: number | null } | null;
   evidence: Evidence;
 }

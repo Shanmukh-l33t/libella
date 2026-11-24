@@ -250,7 +250,7 @@ def test_resume_route_does_not_pre_flip_status(tmp_path, lab):
     resp = client.post("/api/engagements/eng/resume", json={"mode": "deterministic"})
     assert resp.status_code == 200, resp.text
     for _ in range(100):
-        if "status" in seen:
+        if "claim" in seen:
             break
         import time as _t
         _t.sleep(0.02)
