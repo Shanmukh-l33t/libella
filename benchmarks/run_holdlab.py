@@ -67,7 +67,11 @@ def run_one(mode: str, data_dir: Path, links: str) -> dict:
     rows = []
     for seed in GT["seeded_findings"]:
         want = _norm(seed["endpoint"])
-        hits = [f for f in findings if f["cwe"] == seed["cwe"] and _norm(f["endpoint"] or "") == want]
+        hits = [f for f in findings
+                if f["cwe"] == seed["cwe"] and _norm(f["endpoint"] or "") == want
+                # the finding records the endpoint without the query string while the seed
+                # names the parameter, so a CWE match on the same path is the seed hit
+                and seed["endpoint"].split("?")[0] in (f["endpoint"] or "")]
         best = max(hits, key=lambda f: rank.index(f["state"]) if f["state"] in rank else -1,
                    default=None)
         status = "missed" if best is None else (

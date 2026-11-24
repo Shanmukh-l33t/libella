@@ -7,7 +7,6 @@ catalog pages do. Ground truth in ground_truth.json. Lab-only: binds 127.0.0.1, 
 """
 import os
 import sqlite3
-import urllib.parse
 
 import requests
 from flask import Flask, jsonify, request, session

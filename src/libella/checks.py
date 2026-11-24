@@ -709,6 +709,8 @@ PARAM_NAMES = [
     "q", "query", "search", "filter", "category", "type", "sort", "order", "id", "ids",
     "name", "file", "path", "url", "uri", "dest", "destination", "next", "redirect",
     "return", "returnUrl", "callback", "user", "username", "page", "limit", "offset",
+    # values that name a destination or a subject for a server-side action
+    "target", "src", "source", "link", "address", "host", "endpoint", "kind", "tag",
 ]
 
 # Fields a served record uses to name its owner. Read from the response, never assumed
