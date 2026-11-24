@@ -28,20 +28,6 @@ ROLE_RANK = {"anonymous": 0, "guest": 0, "readonly": 0, "user": 0, "member": 0,
              "staff": 1, "editor": 1, "manager": 1, "admin": 2, "owner": 3, "root": 3}
 
 
-def _held_by(body: str, owner) -> tuple[str | None, object]:
-    """(field, value) of the served record that names `owner`, or (None, None)."""
-    data = _json(body)
-    if isinstance(data, dict) and isinstance(data.get("data"), dict):
-        data = next((v for v in data["data"].values() if isinstance(v, dict)), data)
-    if isinstance(data, list) and len(data) == 1:
-        data = data[0]
-    if isinstance(data, dict):
-        for field, value in data.items():
-            if isinstance(value, (str, int)) and str(value).lower() == str(owner).lower():
-                return field, value
-    return None, None
-
-
 def _contract(identity: str, value, url: str, body: str = "", privilege: str = "",
               owner=None) -> dict:
     """Typed proof (proof.py) for an access-control claim made as `identity`.
@@ -55,11 +41,24 @@ def _contract(identity: str, value, url: str, body: str = "", privilege: str = "
            "benign_request": {"method": "GET", "url": url}}  # same route, no credential
     if privilege:
         return {**out, "privilege": privilege}
-    field, held = _held_by(body, owner) if owner is not None else (None, None)
-    if field:  # the record names its owner by name: the caller is compared by name too
+    # the served body names its owner; a body that names the EXPECTED owner directly (the
+    # first value equal to it) covers apps whose owner column is not a conventional name
+    field, held = _owner_of(body)
+    if not field and owner is not None:
+        data = _json(body)
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = next((v for v in data["data"].values() if isinstance(v, dict)), data)
+        if isinstance(data, list) and len(data) == 1:
+            data = data[0]
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if isinstance(value, (str, int)) and str(value).lower() == str(owner).lower():
+                    field, held = key, value
+                    break
+    if field and str(held).lower() == str(owner).lower() and not isinstance(held, int):
+        # the owner is a NAME, so the caller is compared by name: same field, same form
         return {**out, "identity": {"name": identity, "value": identity},
                 "owner_field": field, "owner_value": held}
-    field, held = _owner_of(body)
     return {**out, "owner_field": field, "owner_value": held}
 
 
