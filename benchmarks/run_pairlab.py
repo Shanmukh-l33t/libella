@@ -60,7 +60,8 @@ def run_one(mode: str, data_dir: Path) -> dict:
     for seed in GT["seeded_findings"]:
         path = seed["endpoint"].split("?")[0]
         hit = next((f for f in confirmed
-                    if f["cwe"] == seed["cwe"] and (path in (f["endpoint"] or "") or (f["endpoint"] or "") in seed["endpoint"])), None)
+                    if f["cwe"] in (seed["cwe"], *seed.get("cwe_also", ()))
+                    and (path in (f["endpoint"] or "") or (f["endpoint"] or "") in seed["endpoint"])), None)
         if hit:
             detected.append({"seed": seed["id"], "finding": hit["id"], "title": hit["title"],
                              "state": hit["state"]})

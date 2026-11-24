@@ -68,7 +68,8 @@ def run_one(mode: str, data_dir: Path, links: str) -> dict:
     for seed in GT["seeded_findings"]:
         want = _norm(seed["endpoint"])
         hits = [f for f in findings
-                if f["cwe"] == seed["cwe"] and _norm(f["endpoint"] or "") == want
+                if f["cwe"] in (seed["cwe"], *seed.get("cwe_also", ()))
+                and _norm(f["endpoint"] or "") == want
                 # the finding records the endpoint without the query string while the seed
                 # names the parameter, so a CWE match on the same path is the seed hit
                 and seed["endpoint"].split("?")[0] in (f["endpoint"] or "")]
