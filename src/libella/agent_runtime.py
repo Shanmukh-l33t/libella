@@ -12,16 +12,30 @@ orchestrator: specialists decide and adapt, tools execute, evidence gates truth.
 import json
 import time
 
+from . import specialists
 from .checks import WebChecks
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
-from .llm import LLM, LLMError
+from .llm import LLM, BudgetExceeded, LLMError
+from .policy import DEFAULT_PROFILE, permits
 from .scope import Scope
-from .tools import Registry
+from .tools import Registry, readiness
 from .tools.http_probe import HttpProbe
 from .tools.runner import ToolRunner
 from .verifier import _norm  # one whitespace normalization, shared with replay comparison
+
+# Working memory the model receives per turn: bounded, whatever the engagement size.
+CONTEXT_CHARS = specialists.CONTEXT_CHARS
+PREV_CHARS = 3000
+
+
+def _trim(d: dict, keys, limit: int = CONTEXT_CHARS) -> dict:
+    """Drop tail entries until the JSON fits limit chars: deterministic, no model call."""
+    for key in keys:
+        while d.get(key) and len(json.dumps(d, default=str)) > limit:
+            d[key].pop()
+    return d
 
 # Role charters: responsibility + permitted actions + iteration budget.
 CHARTERS = {
@@ -31,7 +45,8 @@ CHARTERS = {
                    "run_tool (httpx/subfinder/nmap) to discover. Record observations with evidence. "
                    "After a few probes map the surface, call finish with a summary; do not exhaust "
                    "iterations. Hand vulnerability testing to other specialists via delegate.",
-        "actions": ["http_request", "run_tool", "record_observation", "read_context", "delegate", "finish"],
+        "actions": ["http_request", "run_tool", "list_capabilities", "record_observation", "read_context",
+                    "create_specialist", "delegate", "finish"],
         "max_iterations": 8,
     },
     "web": {
@@ -43,8 +58,9 @@ CHARTERS = {
                    "deeper issues with run_check and propose_finding. Record hypotheses for leads. "
                    "After baseline + targeted investigation, call finish with a summary. Do NOT "
                    "repeat actions. Distinguish real vulnerabilities from scanner noise.",
-        "actions": ["http_request", "run_baseline", "run_check", "run_tool", "record_hypothesis", "update_hypothesis",
-                    "record_observation", "propose_finding", "read_context", "delegate", "finish"],
+        "actions": ["http_request", "run_baseline", "run_check", "run_tool", "list_capabilities",
+                    "record_hypothesis", "update_hypothesis", "record_observation", "propose_finding",
+                    "read_context", "create_specialist", "delegate", "finish"],
         "max_iterations": 24,
     },
     "api": {
@@ -56,15 +72,16 @@ CHARTERS = {
                    "objects. Use propose_finding with replayable proof for confirmed issues. After "
                    "covering the endpoints, call finish. Always emit a valid JSON action; never "
                    "reply with plain text.",
-        "actions": ["http_request", "run_baseline", "run_check", "run_tool", "record_hypothesis", "update_hypothesis",
-                    "record_observation", "propose_finding", "read_context", "delegate", "finish"],
+        "actions": ["http_request", "run_baseline", "run_check", "run_tool", "list_capabilities",
+                    "record_hypothesis", "update_hypothesis", "record_observation", "propose_finding",
+                    "read_context", "create_specialist", "delegate", "finish"],
         "max_iterations": 24,
     },
     "authz": {
         "charter": "You are the Authentication & Authorization specialist. Assess permitted auth "
                    "flows, session controls, role separation, multi-user access boundaries. Compare "
                    "expected vs observed access across identities. Evidence-backed findings only.",
-        "actions": ["http_request", "run_check", "record_hypothesis", "update_hypothesis",
+        "actions": ["http_request", "run_check", "list_capabilities", "record_hypothesis", "update_hypothesis",
                     "record_observation", "propose_finding", "read_context", "finish"],
         "max_iterations": 16,
     },
@@ -72,7 +89,7 @@ CHARTERS = {
         "charter": "You are the Infrastructure Security specialist. Examine network exposure, "
                    "service configuration, TLS, admin interfaces, hardening. Use nmap and TLS "
                    "checks. Record observations and evidence-backed findings.",
-        "actions": ["http_request", "run_tool", "run_check", "record_hypothesis",
+        "actions": ["http_request", "run_tool", "run_check", "list_capabilities", "record_hypothesis",
                     "record_observation", "propose_finding", "read_context", "finish"],
         "max_iterations": 14,
     },
@@ -81,8 +98,8 @@ CHARTERS = {
                    "alerts or other agents' claims. Re-examine candidate findings: replay proof "
                    "requests, check evidence actually supports the claim, identify false positives "
                    "and inconclusive results. Update hypothesis status. Be adversarial.",
-        "actions": ["http_request", "run_check", "update_hypothesis", "record_observation",
-                    "read_context", "finish"],
+        "actions": ["http_request", "run_check", "list_capabilities", "update_hypothesis",
+                    "record_observation", "read_context", "finish"],
         "max_iterations": 16,
     },
     "correlator": {
@@ -90,14 +107,14 @@ CHARTERS = {
                    "tools and assets, deduplicate, identify relationships and attack paths grounded "
                    "in evidence. Record hypotheses about chains; never invent exploitability.",
         "actions": ["read_context", "record_hypothesis", "update_hypothesis", "record_observation",
-                    "delegate", "finish"],
+                    "create_specialist", "delegate", "finish"],
         "max_iterations": 12,
     },
     "risk": {
         "charter": "You are the Risk Analysis specialist. Assess contextual impact, confidence, "
                    "and remediation priority for validated findings. Record risk observations; "
                    "do not inflate severity beyond evidence.",
-        "actions": ["read_context", "record_observation", "update_hypothesis", "finish"],
+        "actions": ["read_context", "record_observation", "update_hypothesis", "list_capabilities", "finish"],
         "max_iterations": 10,
     },
 }
@@ -138,7 +155,13 @@ Action args:
 - http_request: {"url","method"?,"headers"?,"body"?}
 - run_baseline: {"url"}  # comprehensive deterministic check battery; run FIRST for coverage
 - run_check: {"check":"xss|sqli|ssti|traversal|redirect|cors|headers|cookies|upload|sensitive_paths|auth_bypass|idor|ssrf","url","param"?,"extra"?}
-- run_tool: {"tool":"nmap|nuclei|httpx|subfinder|ffuf","params":{...}}
+- run_tool: {"tool":"<a tool name from list_capabilities>","params":{...}}
+- list_capabilities: {}  # tools this engagement's profile permits: params, readiness, what each is good for
+- create_specialist: {"slug","expertise","actions":[...],"tools":[...],"budget":{"max_usd"?,"max_duration_s"?,"max_iterations"?,"context_chars"?}}
+  # mint a specialist charter for a technology/domain the built-in roles do not cover
+  # (e.g. coldfusion_config, graphql_schema, pci_payment_flow, llm_app); then delegate to it.
+  # actions must come from: %s; tools names the tools it may launch with run_tool
+  # (registered names, e.g. httpx/subfinder/nuclei); budget is clamped to the engagement's.
 - record_hypothesis: {"statement","kind"?,"asset_id"?}
 - update_hypothesis: {"id","status":"open|supported|refuted|inconclusive","confidence"?}
 - record_observation: {"kind","summary","evidence_id"?,"quote"?}
@@ -164,6 +187,36 @@ class AgentRunner:
         self.scope = scope
         self.eng = engagement_id
         self.checks = WebChecks(probe, engagement_id, scope)
+        row = db.one("SELECT profile FROM engagements WHERE id=?", (engagement_id,))
+        self.profile = (row or {}).get("profile") or DEFAULT_PROFILE
+
+    # ---- policy ----
+
+    def _refused(self, unit: str) -> dict | None:
+        """One gate for every agent action that touches the target."""
+        if permits(unit, self.profile):
+            return None
+        self.db.emit(self.eng, "degradation",
+                     {"code": "policy_restriction", "unit": unit,
+                      "detail": f"agent {unit} needs a higher assessment profile than "
+                                f"{self.profile!r}: policy restriction"})
+        return {"error": f"policy restriction: {unit} is not permitted by the "
+                         f"{self.profile!r} profile"}
+
+    def _budgets(self) -> dict:
+        """Engagement ceilings, parsed once. Absent/corrupt budgets never widen."""
+        row = self.db.one("SELECT budgets_json FROM engagements WHERE id=?", (self.eng,))
+        try:
+            budgets = json.loads((row or {}).get("budgets_json") or "{}")
+        except ValueError:
+            budgets = {}
+        return budgets if isinstance(budgets, dict) else {}
+
+    def _spent_usd(self) -> float:
+        """Engagement spend so far: llm_usage is written by the LLM client per call."""
+        row = self.db.one("SELECT COALESCE(SUM(cost_usd),0) c FROM llm_usage WHERE engagement_id=?",
+                          (self.eng,))
+        return float((row or {}).get("c") or 0.0)
 
     # ---- gated writers ----
 
@@ -210,11 +263,65 @@ class AgentRunner:
         self._step(run_id, intent_id, seq, "hypothesis", statement[:300], hypothesis_id=hid)
         return {"id": hid, "status": "open"}
 
+    # ---- dynamic specialists + capability discovery ----
+
+    def _capabilities(self) -> dict:
+        """What this engagement may run, from the registry the runner actually uses.
+
+        Readiness is the Tool Center's own verdict (loopback fixture, cached), so
+        "installed" here means the same thing it means to an operator. Tool names
+        the profile forbids are not even probed: no surprise subprocesses.
+        """
+        tools = []
+        for spec in self.registry.tools.values():
+            if not permits(spec.name, self.profile):
+                continue
+            # shortcut: the first call per tool runs readiness's loopback fixture probe
+            # (cached 5 min, 30 s cap each); move to a version-only check if an agent
+            # ever calls this on a budget-critical path.
+            row = readiness.check(spec)
+            tools.append({"tool": spec.name, "good_for": spec.description,
+                          "parameters": spec.schema()["parameters"],
+                          "installed": row["level"] != "missing", "level": row["level"],
+                          "degraded": row["degraded"], "limitations": row["limitations"]})
+        return {"profile": self.profile, "tools": tools}
+
+    def _create_specialist(self, args, run_id, intent_id, seq):
+        """Mint a specialist charter from a spec: narrowed actions, named tools, clamped budget."""
+        try:
+            charter = specialists.validate_spec(args, self._budgets(), reserved=frozenset(CHARTERS))
+        except ValueError as e:
+            return {"error": f"specialist refused: {e}"}
+        existing = specialists.get(self.db, self.eng, charter["slug"])
+        if existing is not None:
+            return {"error": f"specialist {charter['slug']!r} is already registered "
+                             f"({existing['state']}); delegate to it instead of re-creating it"}
+        spec = specialists.register(self.db, self.eng, charter, parent_run_id=run_id,
+                                    objective=str(args.get("expertise") or ""))
+        self._step(run_id, intent_id, seq, "specialist",
+                   f"specialist {charter['slug']}: {', '.join(charter['actions'])}")
+        self.db.emit(self.eng, "specialist_created", {
+            "slug": charter["slug"], "actions": charter["actions"], "tools": charter["tools"],
+            "max_iterations": charter["max_iterations"], "budget": charter["budget"],
+            "clamped": charter["clamped"], "created_by": run_id})
+        return {"ok": True, "slug": charter["slug"], "state": spec["state"],
+                "actions": charter["actions"], "tools": charter["tools"],
+                "max_iterations": charter["max_iterations"], "budget": charter["budget"],
+                "clamped": charter["clamped"]}
+
     # ---- action execution (deterministic gate) ----
 
-    def _exec_action(self, action, args, run_id, intent_id, seq, produced):
+    def _exec_action(self, action, args, run_id, intent_id, seq, produced, charter=None):
+        if action == "list_capabilities":
+            return self._capabilities()
+        if action == "create_specialist":
+            return self._create_specialist(args, run_id, intent_id, seq)
         if action == "http_request":
             url = args.get("url", "")
+            method = (args.get("method") or "GET").upper()
+            refused = self._refused("http_write") if method not in ("GET", "HEAD") else None
+            if refused:
+                return refused
             r = self.probe.request(self.eng, self.scope, url, method=args.get("method", "GET"),
                                    headers=args.get("headers"), body=args.get("body"),
                                    tool="agent_http")
@@ -228,6 +335,9 @@ class AgentRunner:
                     "error": r.get("error")}
         if action == "run_baseline":
             url = args.get("url", "").rstrip("/")
+            refused = self._refused("run_baseline")
+            if refused:
+                return refused
             if not self.scope.check_url(url).allowed:
                 return {"error": "out of scope"}
             c = self.checks
@@ -309,6 +419,9 @@ class AgentRunner:
             method = CHECK_METHODS.get(name)
             if not method:
                 return {"error": f"unknown check {name}"}
+            refused = self._refused(method)
+            if refused:
+                return refused
             url = args.get("url", "")
             fn = getattr(self.checks, method)
             try:
@@ -342,7 +455,14 @@ class AgentRunner:
                 spec = self.registry.get(tool)
             except KeyError:
                 return {"error": f"unknown tool {tool}"}
+            refused = self._refused(tool)
+            if refused:
+                return refused
             params = args.get("params", {})
+            tools = (charter or {}).get("tools")
+            if tools is not None and tool not in tools:
+                return {"error": f"tool {tool!r} is not in this charter's tool surface "
+                                 f"{sorted(tools)}; use a permitted tool or ask for a new specialist"}
             target = params.get("target") or params.get("url") or params.get("domain") or ""
             r = self.runner.run(spec, params, self.scope, self.eng, intent_id, target)
             self._step(run_id, intent_id, seq, "tool_call", f"tool {tool} {target}: {r.get('status')}",
@@ -420,8 +540,32 @@ class AgentRunner:
             return {"ok": True, **res}
         if action == "delegate":
             role = args.get("role")
+            specialist = None
             if role not in CHARTERS:
-                return {"error": f"unknown role {role}"}
+                # a specialist must be registered for THIS engagement and still runnable
+                specialist = specialists.get(self.db, self.eng, role)
+                if specialist is None:
+                    return {"error": f"unknown role {role!r}; built-in roles are {sorted(CHARTERS)} "
+                                     f"and a specialist must be created first via create_specialist"}
+                if specialist["state"] not in specialists.RUNNABLE:
+                    return {"error": f"specialist {role!r} is {specialist['state']}, not runnable; "
+                                     f"create a new specialist for further work"}
+                # its actual capabilities must sit inside the engagement's profile
+                denied = specialists.denied_units(specialist["charter"], self.profile)
+                if denied:
+                    self.db.emit(self.eng, "degradation", {
+                        "code": "policy_restriction", "unit": ", ".join(denied),
+                        "specialist": role,
+                        "detail": f"specialist {role!r} needs {', '.join(denied)}, which the "
+                                  f"{self.profile!r} profile forbids: not delegated"})
+                    specialists.transition(self.db, self.eng, role, "failed",
+                                           f"policy restriction: {', '.join(denied)}")
+                    return {"error": f"specialist {role!r} is not permitted by the "
+                                     f"{self.profile!r} profile: {', '.join(denied)}"}
+            else:
+                refused = self._refused(role)  # a built-in role needs its profile
+                if refused:
+                    return refused
             target = args.get("target", "")
             if target:
                 d = self.scope.check_url(target) if "://" in target else self.scope.check_host_port(target, 0)
@@ -434,7 +578,25 @@ class AgentRunner:
                 (iid, self.eng, intent_id, role, args.get("objective", "")[:500], "open", time.time()))
             self._step(run_id, intent_id, seq, "delegation", f"delegate {role}: {args.get('objective','')[:200]}")
             self.db.emit(self.eng, "intent_created", {"intent_id": iid, "role": role, "delegated_by": run_id})
-            return {"ok": True, "intent_id": iid, "role": role}
+            if specialist is None:
+                return {"ok": True, "intent_id": iid, "role": role}
+            # A runtime specialist runs now, under this same controller, on what is
+            # left of the engagement budget (it cannot raise its own ceiling).
+            remaining = float(self._budgets().get("max_usd", 10.0)) - self._spent_usd()
+            if remaining <= 0:
+                return {"ok": True, "intent_id": iid, "role": role,
+                        "error": "engagement budget spent; the specialist was not started"}
+            stored = specialist["charter"]
+            charter = {**stored, "budget": {
+                "max_usd": min(float(stored["budget"].get("max_usd") or remaining), remaining),
+                "max_duration_s": stored["budget"].get("max_duration_s")}}
+            res = self.run({"id": iid, "objective": args.get("objective", ""), "role": role},
+                           role, charter=charter)
+            self.db.execute("UPDATE intents SET status=? WHERE id=?",
+                            ("done" if res["status"] == "completed" else "blocked", iid))
+            produced["evidence"].extend(res["evidence_ids"])
+            produced["findings"].extend(res["findings"])
+            return {"ok": True, "intent_id": iid, "role": role, "specialist": res}
         if action == "read_context":
             return self._context()
         if action == "finish":
@@ -444,20 +606,56 @@ class AgentRunner:
             return {"ok": True, "finish": True, "summary": args.get("summary", "")}
         return {"error": f"unknown action {action}"}
 
-    def _context(self):
-        assets = self.db.query("SELECT kind, key FROM assets WHERE engagement_id=? LIMIT 40", (self.eng,))
+    def _context(self, limit: int | None = None):
+        """Bounded working memory: recent observations verbatim, older ones summarised.
+
+        Deterministic (no extra model call): counts by kind plus a few samples, so a
+        specialist knows what was already seen and does not re-derive it.
+        """
+        assets = self.db.query("SELECT kind, key FROM assets WHERE engagement_id=? "
+                               "ORDER BY last_seen DESC, rowid DESC LIMIT 8", (self.eng,))
         findings = self.db.query("SELECT id, title, severity, state, endpoint FROM findings "
-                                 "WHERE engagement_id=? LIMIT 30", (self.eng,))
+                                 "WHERE engagement_id=? ORDER BY rowid DESC LIMIT 8", (self.eng,))
         hyps = self.db.query("SELECT id, statement, status, confidence FROM hypotheses "
-                             "WHERE engagement_id=? LIMIT 20", (self.eng,))
+                             "WHERE engagement_id=? ORDER BY updated_at DESC LIMIT 8", (self.eng,))
         obs = self.db.query("SELECT kind, summary FROM observations WHERE engagement_id=? "
-                            "ORDER BY created_at DESC LIMIT 20", (self.eng,))
-        return {"assets": assets, "findings": findings, "hypotheses": hyps, "recent_observations": obs}
+                            "ORDER BY created_at DESC, rowid DESC LIMIT 200", (self.eng,))
+        recent = obs[:6]
+        older = obs[6:]
+        by_kind: dict[str, int] = {}
+        for o in older:
+            by_kind[o["kind"]] = by_kind.get(o["kind"], 0) + 1
+        ctx = {
+            "assets": [{"kind": a["kind"], "key": a["key"][:120]} for a in assets],
+            "findings": [{"id": f["id"], "title": (f["title"] or "")[:100], "severity": f["severity"],
+                          "state": f["state"], "endpoint": (f["endpoint"] or "")[:100]} for f in findings],
+            "hypotheses": [{"id": h["id"], "statement": (h["statement"] or "")[:140],
+                            "status": h["status"], "confidence": h["confidence"]} for h in hyps],
+            "recent_observations": [{"kind": o["kind"], "summary": (o["summary"] or "")[:180]}
+                                    for o in recent],
+            "earlier_observations": {
+                "count": len(older),
+                "by_kind": dict(sorted(by_kind.items(), key=lambda kv: -kv[1])[:6]),
+                "samples": [(o["kind"], (o["summary"] or "")[:100]) for o in older[:3]]},
+        }
+        # deterministic trim: the newest evidence-bearing detail outranks the rest
+        return _trim(ctx, ("assets", "findings", "hypotheses", "recent_observations"),
+                     limit or CONTEXT_CHARS)
 
     # ---- the investigation loop ----
 
-    def run(self, intent: dict, role: str) -> dict:
-        charter = CHARTERS.get(role, CHARTERS["web"])
+    def run(self, intent: dict, role: str, charter: dict | None = None) -> dict:
+        """One investigation loop. A registered specialist's row follows the run.
+
+        The role is resolved from the built-in charters or the engagement's own
+        registry, never invented: an unregistered name has no charter and no run.
+        """
+        specialist = None if role in CHARTERS else specialists.get(self.db, self.eng, role)
+        if charter is None:
+            charter = CHARTERS.get(role) or (specialist["charter"] if specialist else None)
+        if charter is None:
+            raise ValueError(f"unknown role {role!r}: not a built-in charter or a specialist "
+                             f"registered for this engagement")
         run_id = new_id("run")
         model = self.llm.model_for(role)
         now = time.time()
@@ -465,7 +663,10 @@ class AgentRunner:
             "INSERT INTO agent_runs(id, engagement_id, intent_id, role, model, status, started_at) "
             "VALUES(?,?,?,?,?,?,?)", (run_id, self.eng, intent["id"], role, model, "running", now))
         self.db.emit(self.eng, "agent_run_started", {"run_id": run_id, "role": role, "model": model})
+        if specialist is not None:
+            specialists.transition(self.db, self.eng, role, "running", f"agent run {run_id} started")
         actions = charter["actions"]
+        context_limit = min(int(charter.get("context_chars") or CONTEXT_CHARS), CONTEXT_CHARS)
         tool_schemas = ""
         if "run_tool" in actions:
             specs = [s.schema() for s in self.registry.tools.values()
@@ -473,17 +674,19 @@ class AgentRunner:
             tool_schemas = ("\n\nrun_tool parameter schemas (use EXACTLY these param names):\n"
                             + json.dumps([{ "tool": s["name"], "parameters": s["parameters"]} for s in specs]))
         system = (charter["charter"] + "\n\n" + self.scope.prompt_block() + "\n\n"
-                  + ACTION_SCHEMA % ", ".join(actions) + tool_schemas)
+                  + ACTION_SCHEMA % (", ".join(actions), ", ".join(specialists.ALLOWED_ACTIONS))
+                  + tool_schemas)
         objective = intent.get("objective", "")
-        budgets = {}
-        eng_row = self.db.one("SELECT budgets_json FROM engagements WHERE id=?", (self.eng,))
-        if eng_row:
-            try:
-                budgets = json.loads(eng_row["budgets_json"] or "{}")
-            except ValueError:
-                budgets = {}
-        max_usd = float(budgets.get("max_usd", 10.0))
+        budgets = self._budgets()
+        max_usd = engagement_usd = float(budgets.get("max_usd", 10.0))
         deadline = time.time() + float(budgets.get("max_duration_s", 3600))
+        # a specialist ceiling is already clamped at creation; re-clamping here keeps
+        # it under the engagement budget even if the stored charter drifted
+        charter_budget = charter.get("budget") or {}
+        if charter_budget.get("max_usd"):
+            max_usd = min(max_usd, float(charter_budget["max_usd"]))
+        if charter_budget.get("max_duration_s"):
+            deadline = min(deadline, time.time() + float(charter_budget["max_duration_s"]))
         produced = {"findings": [], "evidence": []}
         iterations = 0
         tokens_in = tokens_out = 0
@@ -498,14 +701,15 @@ class AgentRunner:
         max_iter = charter["max_iterations"]
         while iterations < max_iter:
             iterations += 1
-            ctx = self._context()
-            workmem = {"objective": objective,
-                       "evidence_collected": produced["evidence"][-12:],
-                       "findings_proposed": produced["findings"][-12:],
-                       "checks_completed": sorted(checks_done),
-                       "assets": ctx["assets"][:20], "hypotheses": ctx["hypotheses"][:10],
-                       "existing_findings": ctx["findings"][:15]}
-            prev = json.dumps(history[-1], default=str)[:5000] if history else "none (first action)"
+            ctx = self._context(context_limit)
+            workmem = {"objective": objective[:400],
+                       "evidence_collected": produced["evidence"][-8:],
+                       "findings_proposed": produced["findings"][-8:],
+                       "checks_completed": sorted(checks_done)[:40], **ctx}
+            workmem = _trim(workmem, ("checks_completed", "evidence_collected", "findings_proposed",
+                                      "assets", "findings", "hypotheses", "recent_observations"),
+                            context_limit)
+            prev = json.dumps(history[-1], default=str)[:PREV_CHARS] if history else "none (first action)"
             covered = len({c.split("|")[0] for c in checks_done})
             converge_hint = (" Coverage of check classes is broad; if the surface is assessed, "
                              "call finish now with a summary." if covered >= 5 else "")
@@ -516,6 +720,12 @@ class AgentRunner:
                       "choose a new endpoint/class or finish." + converge_hint)
             try:
                 out = self.llm.complete(role, system, user, self.eng, json_schema={"type": "object"})
+            except BudgetExceeded as e:
+                # the ledger refused the reservation before the call: stop, never
+                # report the investigation as finished
+                exit_reason = "budget_exhausted"
+                summary = f"Stopped: {e}"
+                break
             except LLMError as e:
                 exit_reason = "model_failed"
                 summary = str(e)
@@ -523,10 +733,15 @@ class AgentRunner:
             tokens_in += out["usage"]["input_tokens"]
             tokens_out += out["usage"]["output_tokens"]
             cost += out["usage"]["cost_usd"]
-            if cost > max_usd or time.time() > deadline:
+            # the engagement ceiling is shared: parents, inline specialists and other
+            # intents all spend from it, so this run's own cost is not the whole bill
+            over_engagement = self._spent_usd() > engagement_usd
+            if cost > max_usd or over_engagement or time.time() > deadline:
                 exit_reason = "budget_exhausted"
                 summary = (f"Stopped: engagement budget reached "
                            f"({cost:.4f} USD of {max_usd:.4f})" if cost > max_usd
+                           else f"Stopped: engagement spend passed {engagement_usd:.4f} USD"
+                           if over_engagement
                            else "Stopped: engagement wall-clock budget reached")
                 break
             parsed = out.get("parsed")
@@ -569,7 +784,7 @@ class AgentRunner:
             # the run: it degrades to an error the model can react to
             try:
                 result = self._exec_action(action, args, run_id, intent["id"], iterations,
-                                           produced)
+                                           produced, charter)
             except Exception as e:
                 result = {"error": f"{type(e).__name__}: {e}"[:300]}
                 self._step(run_id, intent["id"], iterations, "tool_call",
@@ -591,6 +806,13 @@ class AgentRunner:
         self.db.emit(self.eng, "agent_run_finished",
                      {"run_id": run_id, "role": role, "status": status, "exit_reason": exit_reason,
                       "iterations": iterations, "findings": len(produced["findings"]), "cost_usd": round(cost, 4)})
+        if specialist is not None:
+            # the registry follows the run's own verdict: never "completed" for a run
+            # that was stopped (budget, model failure, no action)
+            specialists.transition(self.db, self.eng, role,
+                                   "completed" if status == "completed" else status,
+                                   f"{exit_reason}: {summary or 'no summary'}"[:300])
         return {"run_id": run_id, "role": role, "status": status, "exit_reason": exit_reason,
                 "iterations": iterations, "findings": produced["findings"],
+                "evidence_ids": produced["evidence"],
                 "tokens": tokens_in + tokens_out, "cost_usd": round(cost, 6), "summary": summary}

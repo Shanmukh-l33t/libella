@@ -1,11 +1,12 @@
 # Libella web
 
-React 18 + Vite 5 + TypeScript + Tailwind 3 frontend for the Libella API.
+React 18 + Vite 7 + TypeScript + Tailwind 3 frontend for the Libella API.
+Use Node 22.12 or newer on the Node 22 release line used by CI and Docker.
 
 ## Develop
 
 ```bash
-npm install
+npm ci
 npm run dev          # http://127.0.0.1:5173, proxies /api -> http://127.0.0.1:8787
 ```
 
@@ -20,9 +21,9 @@ written to `localStorage`/`sessionStorage` — so a reload asks for it again.
 npm run build        # writes dist/ and a 404.html copy for SPA deep links
 ```
 
-The backend serves `web/dist` at `/` when it exists. `dist/404.html` lets Starlette's
-`StaticFiles(html=True)` render the SPA for `/engagements/:id` and `/findings/:id`
-refreshes (the response status stays 404, which browsers ignore for rendering).
+The backend serves `web/dist` at `/` when it exists. Refreshing a client route
+such as `/engagements/:id` serves the SPA with HTTP 200. Missing API routes and
+assets still return 404.
 
 SSE uses `EventSource`, which cannot set headers: the client mints a single-use,
 60-second ticket bound to that engagement's stream (`POST /api/ticket` with

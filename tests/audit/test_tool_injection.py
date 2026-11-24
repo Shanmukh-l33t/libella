@@ -46,6 +46,43 @@ def test_host_tool_scopes_the_param_it_scans(runner, lab):
     assert r["ok"] is False and "out_of_scope" in r["error"], r
 
 
+# --- host tools under a port allowlist must be scoped, not blanket-refused ---
+def _scanner(port_param=None):
+    return ToolSpec(name="scanner", description="", category="infra", binary=None, timeout_s=5,
+                    params={"target": {"type": "string"}, "ports": {"type": "string"}},
+                    required=["target"], handler=lambda p, d: ["/bin/true"],
+                    port_param=port_param)
+
+
+def test_declared_port_is_checked_against_allowed_ports(runner, lab):
+    scope = Scope({"targets": [{"kind": "url", "value": lab.base}], "categories": ["infra"],
+                   "allowed_ports": [lab.port]})
+    ok = runner.run(_scanner("ports"), {"target": "127.0.0.1", "ports": str(lab.port)},
+                    scope, "eng_audit", None, target="127.0.0.1", category="infra")
+    assert ok["ok"] is True, ok
+    denied = runner.run(_scanner("ports"), {"target": "127.0.0.1", "ports": "22"},
+                        scope, "eng_audit", None, target="127.0.0.1", category="infra")
+    assert denied["ok"] is False and "out_of_scope" in denied["error"], denied
+
+
+def test_undeclared_port_set_is_refused_under_an_allowlist(runner, lab):
+    scope = Scope({"targets": [{"kind": "url", "value": lab.base}], "categories": ["infra"],
+                   "allowed_ports": [lab.port]})
+    for params in ({"target": "127.0.0.1"},                      # top-ports: unknown set
+                   {"target": "127.0.0.1", "ports": "1-1024"}):  # range: not enumerable
+        r = runner.run(_scanner("ports"), params, scope, "eng_audit", None,
+                       target="127.0.0.1", category="infra")
+        assert r["ok"] is False and "out_of_scope" in r["error"], r
+
+
+def test_portless_host_tool_is_not_refused_by_allowed_ports(runner, lab):
+    scope = Scope({"targets": [{"kind": "url", "value": lab.base}], "categories": ["infra"],
+                   "allowed_ports": [lab.port]})
+    r = runner.run(_scanner(), {"target": "127.0.0.1"}, scope, "eng_audit", None,
+                   target="127.0.0.1", category="infra")
+    assert r["ok"] is True, r
+
+
 # --- category mislabelling must not widen authorization ---------------------
 
 def test_runner_refuses_tool_run_under_foreign_category(runner, lab):
@@ -133,3 +170,41 @@ def test_tool_output_cap_is_bounded(tmp_path, app, lab):
     assert r["ok"] is True, r
     assert len(r["stdout"]) == MAX_OUTPUT
     assert r["truncated"] is True
+
+
+def test_nuclei_url_target_is_restricted_to_http_templates():
+    # a URL target is not a DNS/TCP/SSL target: network templates dial other ports
+    argv = _nuclei_argv({"target": "https://www.keyreed.com/"}, _ok_decision())
+    assert argv[argv.index("-pt") + 1] == "http"
+    assert "-stats" in argv and "-silent" not in argv, argv
+
+
+def test_nuclei_host_target_keeps_the_full_protocol_set():
+    argv = _nuclei_argv({"target": "10.0.0.5"}, _ok_decision())
+    assert "-pt" not in argv, argv
+
+
+def test_nuclei_stats_lines_parse_to_real_progress():
+    from libella.tools.adapters import parse_nuclei_stats
+
+    line = ('{"duration":"0:00:27","errors":"0","hosts":"1","matched":"2","percent":"5",'
+            '"requests":"1026","rps":"37","templates":"7075","total":"17120"}')
+    got = parse_nuclei_stats(line)
+    assert got["percent"] == 5 and got["requests"] == 1026 and got["matched"] == 2
+    assert got["rps"] == 37 and got["templates"] == 7075 and got["elapsed"] == "0:00:27"
+    # engine chatter and findings are not progress samples
+    assert parse_nuclei_stats("[INF] Templates loaded for current scan: 7075") is None
+    assert parse_nuclei_stats('{"template-id":"x","matched-at":"http://a/"}') is None
+
+
+def test_url_target_does_not_authorize_a_top_ports_sweep(runner, lab):
+    # a url target authorizes its origin, not every port on the host: a portless
+    # nmap sweep must be refused, and declaring the authorized port must work
+    scope = _scope(lab.base)
+    port = lab.port
+    sweep = runner.run(_scanner("ports"), {"target": "127.0.0.1"}, scope, "eng_audit", None,
+                       target="127.0.0.1", category="infra")
+    assert sweep["ok"] is False and "authorized ports" in sweep["error"], sweep
+    declared = runner.run(_scanner("ports"), {"target": "127.0.0.1", "ports": str(port)},
+                          scope, "eng_audit", None, target="127.0.0.1", category="infra")
+    assert declared["ok"] is True, declared

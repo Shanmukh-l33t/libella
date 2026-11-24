@@ -10,7 +10,7 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 | Engagement creation with enforceable scope | TESTED | tests/test_scope.py, API validation |
 | Scope enforcement at exec boundary (DNS-resolved, exclusions, ports, categories) | TESTED | tests/audit/test_scope_bypass.py |
 | Redirect-hop scope re-check + peer-IP verification | TESTED | http_probe.py, audit tests |
-| Deterministic assessment pipeline (no LLM) | TESTED | PairLab 13/13 validated, 0 FP |
+| Deterministic assessment pipeline (no LLM) | TESTED | PairLab 16/16 seeds validated, 0 FP |
 | LLM planning mode (typed deltas, compile gate, budgets) | TESTED | benchmarks/run_llm_mode.py: 8/8 testable seeds validated, out-of-scope proposals rejected |
 | Leased intents, fencing, expiry sweep, bounded retries | TESTED | orchestrator.py, audit race tests |
 | Duplicate-work prevention | TESTED | duplicate_work_prevented events |
@@ -87,17 +87,23 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 |---|---|---|
 | Content-addressed evidence + hash chain | TESTED | tamper/chain-break tests |
 | Derived provenance (not model-declared) | TESTED | unbound evidence stays suspected |
-| Independent replay verification | TESTED | 13/13 PairLab validations |
+| Independent replay verification | TESTED | 16/16 PairLab seeds replay-validated |
 | Retest after remediation (fixed/persists/inconclusive) | TESTED | verifier.retest + gate tests |
 | Dedup by root cause | TESTED | pipeline tests |
 | Secret redaction in reports/evidence | TESTED | audit secrets tests |
-| SARIF / JSON / Markdown reports | TESTED | deterministic rendering |
+| Captured session credentials sealed at rest | TESTED | exchanges request/response header columns are Fernet ciphertext; evidence blobs keep redacted headers; replay reads the sealed column. tests/traffic/test_credential_capture.py |
+| SARIF / JSON / Markdown reports | TESTED | deterministic rendering; files replaced atomically, one artifact row per unchanged state (tests/report/test_report_atomic.py) |
+| PDF / HTML / DOCX / XLSX / CSV exports | TESTED | report_formats.py + report_pdf.py; redaction inherited, CSV formula guard; every format downloaded and validated through the built UI (benchmarks/check_report_exports.py, tests/report/test_report_formats.py) |
+| Export failure recovery | TESTED | a failing re-render returns an actionable 500 (named path, previous report untouched) and the Report tab keeps its controls for a retry; every export reopens and a tampered blob shows a broken chain in Chromium (benchmarks/check_report_recovery_ui.py, tests/report/test_report_api.py) |
+| Target API credential diagnostic | NOT SHIPPED | prototype withdrawn pending a server-approved destination boundary |
 
 ## Platform / UX
 
 | Capability | Status | Notes |
 |---|---|---|
 | Web UI (dashboard, wizard, live ops, graph, findings, evidence, settings) | TESTED | web/ built; see screenshots |
+| First-run setup | TESTED | empty workspace → environment and provider checks → tool inventory → draft form, driven in Chromium against a local provider fixture; no assessment is started |
+| Tool version checks | TESTED (API) | authenticated, on-demand check for registered version commands; tests/test_tool_diagnostics.py. Startup/version only, not scanner readiness |
 | SSE live updates with cursor replay | TESTED | |
 | Token auth, loopback default | TESTED | audit API tests |
 | Docker single-container deploy | TESTED | Dockerfile + compose |
@@ -109,7 +115,7 @@ PARTIAL = works with stated limits. PLANNED = not implemented, no claims.
 - Host: Linux x86_64, 6 cores, 15GB RAM. Python 3.12. nuclei 3.x with
   13,808 templates, httpx 1.12.0, nmap, subfinder, ffuf installed.
 - PairLab twins: labs/pairlab/app.py (Flask, localhost). Ground truth:
-  labs/pairlab/ground_truth.json (13 seeds, 6 negative controls).
+  labs/pairlab/ground_truth.json (16 seeds PL-01..PL-16, 6 negative controls).
 - Deterministic-only run: ~8s/engagement. With nuclei: ~155s/engagement.
 - Juice Shop (bkimminich/juice-shop:latest, localhost:3001): 53 assets
   discovered (HTML crawl + JS bundle route mining), 1 validated finding

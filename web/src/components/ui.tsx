@@ -52,11 +52,13 @@ const TONES: Record<Tone, string> = {
   info: "bg-ink-100 text-ink-700 ring-line",
 };
 
-export function Badge({ tone = "neutral", children, dot, className }: { tone?: Tone; children: ReactNode; dot?: boolean; className?: string }) {
+export function Badge({ tone = "neutral", children, dot, className, capitalize = true }: {
+  tone?: Tone; children: ReactNode; dot?: boolean; className?: string; capitalize?: boolean;
+}) {
   return (
     <span className={cx("chip ring-1 ring-inset", TONES[tone], className)}>
       {dot && <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />}
-      <span className="capitalize">{children}</span>
+      <span className={capitalize ? "capitalize" : undefined}>{children}</span>
     </span>
   );
 }

@@ -8,10 +8,13 @@ import Engagements from "./pages/Engagements";
 import NewEngagement from "./pages/NewEngagement";
 import Engagement from "./pages/Engagement";
 import Finding from "./pages/Finding";
+import Validation from "./pages/Validation";
 import Tools from "./pages/Tools";
 import Models from "./pages/Models";
 import Compare from "./pages/Compare";
+import Coverage from "./pages/Coverage";
 import Settings from "./pages/Settings";
+import Setup from "./pages/Setup";
 import { getToken } from "./api";
 
 export default function App() {
@@ -30,12 +33,15 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<CommandCenter />} />
           <Route path="/engagements" element={<Engagements />} />
+          <Route path="/setup" element={<Setup />} />
           <Route path="/engagements/new" element={<NewEngagement />} />
           <Route path="/engagements/:id" element={<Engagement />} />
           <Route path="/findings/:id" element={<Finding />} />
+          <Route path="/validation" element={<Validation />} />
           <Route path="/tools" element={<Tools />} />
           <Route path="/models" element={<Models />} />
           <Route path="/compare" element={<Compare />} />
+          <Route path="/coverage" element={<Coverage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

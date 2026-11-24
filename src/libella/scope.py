@@ -24,6 +24,16 @@ ALWAYS_BLOCKED = [
 TARGET_KINDS = {"url", "domain", "cidr", "ip", "repo", "image", "cloud"}
 EXCLUSION_KINDS = {"url_prefix", "domain", "cidr", "ip"}
 CATEGORIES = {"recon", "web", "api", "infra", "code", "cloud"}
+# A websocket upgrade is the same destination as its http(s) origin: same host,
+# same port, same path, the upgrade is a header. Authorize it under that scheme;
+# the transport itself is untouched (RFC 6455 says ws defaults to 80, wss to 443).
+WS_EQUIVALENT = {"ws": "http", "wss": "https"}
+
+
+def normalize_scheme(scheme: str) -> str:
+    """`ws`/`wss` -> `http`/`https` for authorization decisions; all else unchanged."""
+    s = (scheme or "").lower()
+    return WS_EQUIVALENT.get(s, s)
 
 
 def parse_origin(url: str) -> tuple[str, str, int, str]:
@@ -31,12 +41,14 @@ def parse_origin(url: str) -> tuple[str, str, int, str]:
 
     Normalizing before comparison is what stops `http://in-scope@evil/`,
     port variants, `..` segments and percent-encoded paths from matching a
-    prefix that the raw string only appears to share.
+    prefix that the raw string only appears to share. The scheme is normalized
+    the same way, so a `ws://` URL is matched against the http target that
+    authorizes it instead of failing to compare.
     """
     if not isinstance(url, str):
         raise ValueError("url must be a string")
     p = urlparse(url)
-    scheme = (p.scheme or "").lower()
+    scheme = normalize_scheme(p.scheme or "")
     host = (p.hostname or "").lower().rstrip(".")
     if not host:
         raise ValueError("no host in url")
@@ -208,13 +220,25 @@ class Scope:
             ts, th, tp, tpath = parse_origin(t["value"])
         except ValueError:
             return False
-        if (us, uh, up) != (ts, th, tp):
+        if us != ts or up != tp or not self._same_site(uh, th):
             return False
         base = tpath.rstrip("/")
         return not base or upath == base or upath.startswith(base + "/")
 
+    @staticmethod
+    def _same_site(a: str, b: str) -> bool:
+        """Same web site under the www/apex name, e.g. keyreed.com and www.keyreed.com.
+
+        A URL target that 301s from its apex to its www host (or the reverse) is
+        the same site the operator authorized; refusing the canonical host made a
+        real site unassessable and every follow-up hop an egress denial. Only the
+        exact `www.` prefix is equated: `wwwevil.com` is not `evil.com`.
+        """
+        a, b = a.lower().rstrip("."), b.lower().rstrip(".")
+        return a == b or a.removeprefix("www.") == b.removeprefix("www.")
+
     def _excluded_by_prefix(self, url: str, prefix: str) -> bool:
-        """Path-prefix exclusion, compared on normalized components."""
+        """Path-prefix exclusion, compared on normalized path segments."""
         try:
             _, uh, up, upath = parse_origin(url)
             _, ph, pp, ppath = parse_origin(prefix)
@@ -222,20 +246,33 @@ class Scope:
             return False
         if (uh, up) != (ph, pp):
             return False
-        return upath.startswith(ppath.rstrip("/") or "/")
+        base = ppath.rstrip("/")
+        return not base or upath == base or upath.startswith(base + "/")
 
-    def check_url(self, url: str, category: str = "web") -> Decision:
+    def ip_in_targets(self, ips: list[str]) -> str | None:
+        """The ip/cidr target (if any) that covers one of these resolved addresses.
+
+        Lets a dial-time check ask "did the operator authorize this address, or
+        only a name that now resolves to it?" without re-resolving.
+        """
+        for t in self.targets:
+            if t["kind"] in ("ip", "cidr") and any(self._ip_matches_target(ip, t) for ip in ips):
+                return t["value"]
+        return None
+
+    def check_url(self, url: str, category: str = "web", ips: list[str] | None = None) -> Decision:
         if category not in self.categories:
             return Decision(False, f"category '{category}' not permitted by engagement")
         if not isinstance(url, str):
             return Decision(False, "url must be a string")
         try:
             p = urlparse(url)
+            scheme = normalize_scheme(p.scheme or "")
             host = p.hostname
-            port = p.port or (443 if p.scheme == "https" else 80)
+            port = p.port or (443 if scheme == "https" else 80)
         except ValueError as e:
             return Decision(False, f"unparseable url: {e}")
-        if p.scheme not in ("http", "https"):
+        if scheme not in ("http", "https"):
             return Decision(False, f"scheme '{p.scheme}' not permitted")
         if not host:
             return Decision(False, "no host in url")
@@ -247,13 +284,14 @@ class Scope:
             if ex["kind"] in ("domain",) and self._domain_matches(host, ex):
                 return Decision(False, f"excluded domain {ex['value']}")
         # resolve and check IPs
-        try:
-            literal = ipaddress.ip_address(host)
-            ips = [str(literal)]
-        except ValueError:
-            ips = self._cached_resolve(host)
-            if not ips:
-                return Decision(False, f"DNS resolution failed for {host}")
+        if ips is None:
+            try:
+                literal = ipaddress.ip_address(host)
+                ips = [str(literal)]
+            except ValueError:
+                ips = self._cached_resolve(host)
+                if not ips:
+                    return Decision(False, f"DNS resolution failed for {host}")
         for ex in self.exclusions:
             if ex["kind"] in ("ip", "cidr"):
                 for ip in ips:
@@ -275,19 +313,48 @@ class Scope:
             return Decision(False, f"{host} not in engagement scope", resolved_ips=ips)
         return Decision(True, "in scope", resolved_ips=ips, matched_target=matched)
 
-    def check_host_port(self, host: str, port: int, category: str = "infra") -> Decision:
-        """For non-HTTP tools (nmap etc). Returns resolved IPs to pass to the tool."""
+    def authorized_ports(self, host: str) -> list[int] | None:
+        """Ports a host tool may dial on this host, when the scope enumerates them.
+
+        An explicit allowed_ports always wins. Otherwise url targets for this host
+        authorize their own ports only, so a "top 100 ports" sweep is not authorized.
+        None means the scope places no port restriction on this host.
+        """
+        if self.allowed_ports:
+            return sorted(self.allowed_ports)
+        h = host.lower().rstrip(".")
+        ports = set()
+        for t in self.targets:
+            if t["kind"] != "url":
+                continue
+            try:
+                _, uh, up, _ = parse_origin(t["value"])
+            except ValueError:
+                continue
+            if uh == h:
+                ports.add(up)
+        return sorted(ports) or None
+
+    def check_host_port(self, host: str, port: int | None, category: str = "infra",
+                        ips: list[str] | None = None) -> Decision:
+        """For non-HTTP tools (nmap etc). Returns resolved IPs to pass to the tool.
+
+        port None means the caller asserts no port (a passive or port-less tool);
+        it authorizes the host only and never satisfies allowed_ports for a dial.
+        ips pins the resolution the caller is about to dial; None resolves here.
+        """
         if category not in self.categories:
             return Decision(False, f"category '{category}' not permitted")
-        if self.allowed_ports and port not in self.allowed_ports:
+        if port is not None and self.allowed_ports and port not in self.allowed_ports:
             return Decision(False, f"port {port} not in allowed_ports")
-        try:
-            literal = ipaddress.ip_address(host)
-            ips = [str(literal)]
-        except ValueError:
-            ips = self._cached_resolve(host)
-            if not ips:
-                return Decision(False, f"DNS resolution failed for {host}")
+        if ips is None:
+            try:
+                literal = ipaddress.ip_address(host)
+                ips = [str(literal)]
+            except ValueError:
+                ips = self._cached_resolve(host)
+                if not ips:
+                    return Decision(False, f"DNS resolution failed for {host}")
         for ex in self.exclusions:
             if ex["kind"] in ("ip", "cidr") and any(self._ip_matches_target(ip, ex) for ip in ips):
                 return Decision(False, f"excluded ip/cidr {ex['value']}")
@@ -303,9 +370,15 @@ class Scope:
             if t["kind"] in ("ip", "cidr") and any(self._ip_matches_target(ip, t) for ip in ips):
                 return Decision(True, "in scope", resolved_ips=ips, matched_target=t["value"])
             if t["kind"] == "url":
-                pu = urlparse(t["value"])
-                if pu.hostname and pu.hostname.lower().rstrip(".") == host.lower().rstrip("."):
-                    return Decision(True, "in scope", resolved_ips=ips, matched_target=t["value"])
+                # a url target authorizes that origin, not every port on its host
+                try:
+                    _, uh, up, _ = parse_origin(t["value"])
+                except ValueError:
+                    continue
+                if self._same_site(uh, host) and (port is None or up == port):
+                    why = "in scope" if uh == host.lower().rstrip(".") else \
+                        f"in scope (www/apex alias of {uh})"
+                    return Decision(True, why, resolved_ips=ips, matched_target=t["value"])
         return Decision(False, f"{host} not in engagement scope", resolved_ips=ips)
 
     def check_repo(self, path: str) -> Decision:

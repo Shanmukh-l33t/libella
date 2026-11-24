@@ -32,7 +32,12 @@ def lab():
 
 
 @pytest.fixture
-def client(tmp_path, lab):
+def client(tmp_path, lab, monkeypatch):
+    # A lifecycle test must not depend on which scanners the host happens to have:
+    # with nuclei installed it runs a full template scan (minutes). Absent tools are
+    # recorded as degradations, which is the path CI exercises anyway.
+    import libella.tools.runner as runner
+    monkeypatch.setattr(runner, "resolve_binary", lambda name: None)
     app = App(tmp_path / "data")
     c = TestClient(create_api(app))
     c.headers.update({"Authorization": f"Bearer {app.token}"})
