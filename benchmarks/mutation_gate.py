@@ -109,6 +109,14 @@ MUTATIONS = [
      '''        if own.get("ok") and hit in (own["body"] or ""):
             return []''', "        pass",
      ["tests/verify/test_ssrf_discovery.py"]),
+    ("checks: a published document is not read", "src/libella/checks.py",
+     '''    if isinstance(doc, dict) and isinstance(doc.get("paths"), dict):
+        return doc''', "    return None",
+     ["tests/verify/test_published_inventory.py"]),
+    ("checks: a url-formatted parameter is not a destination", "src/libella/checks.py",
+     '''    if fmt in ("uri", "url"):
+        return True''', "    if False:\n        return True",
+     ["tests/verify/test_published_inventory.py"]),
     ("checks: object enumeration accepts an anonymous read", "src/libella/checks.py",
      '''            if anon["status"] < 400:''', "            if False:",
      ["tests/verify"]),

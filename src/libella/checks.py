@@ -770,6 +770,44 @@ class WebChecks:
                    "benign_request": self._proof(with_param(target, param, "libellaBenign"))},
         )]
 
+    def published_endpoints(self, base: str) -> dict:
+        """Endpoints the APPLICATION describes, from its own OpenAPI/Swagger document.
+
+        This is discovery with evidence: the app states its paths and parameter names, so
+        nothing is guessed and nothing is hardcoded. A parameter whose schema is a URL, or
+        whose name reads like a destination, marks the endpoint as one that fetches.
+        """
+        found = {"source": None, "endpoints": []}
+        for path in ("/openapi.json", "/v3/api-docs", "/swagger.json", "/api-docs",
+                     "/swagger/v1/swagger.json", "/openapi.yaml"):
+            r = self._req(base.rstrip("/") + path, tool="openapi_discovery")
+            if not r.get("ok") or r["status"] != 200:
+                continue
+            spec = _parse_openapi(r["body"])
+            if not spec:
+                continue
+            found["source"] = path
+            for route, ops in (spec.get("paths") or {}).items():
+                if not isinstance(ops, dict):
+                    continue
+                for method, op in ops.items():
+                    if str(method).lower() != "get" or not isinstance(op, dict):
+                        continue
+                    params = [p for p in (op.get("parameters") or [])
+                              if isinstance(p, dict) and p.get("in") in ("query", "path")]
+                    if not params:
+                        continue
+                    url = base.rstrip("/") + route
+                    if any("{" in url.split("?")[0] for _ in [0]) and not params:
+                        continue
+                    found["endpoints"].append({
+                        "url": url.split("{")[0].rstrip("/") if "{" in url else url,
+                        "params": [p["name"] for p in params if p.get("name")],
+                        "takes_url": any(_is_destination(p) for p in params),
+                    })
+            break
+        return found
+
     def live_params(self, url: str, names=None, limit: int = 4) -> list[str]:
         """Which query parameters this endpoint actually reacts to.
 
@@ -844,6 +882,29 @@ def _foreign_page_marker(body: str) -> str:
     if re.search(r"not found|no such|404", body or "", re.I) and "<html" in (body or "").lower():
         return "404 Not Found"
     return ""
+
+
+def _parse_openapi(body: str) -> dict | None:
+    """An OpenAPI/Swagger document, or None. JSON only; YAML needs a parser we do not ship."""
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(doc, dict) and isinstance(doc.get("paths"), dict):
+        return doc
+    return None
+
+
+def _is_destination(param: dict) -> bool:
+    """Does this parameter carry a URL or path the server would fetch or open?"""
+    name = str(param.get("name") or "").lower()
+    schema = param.get("schema") or {}
+    fmt = str((schema.get("format") or "")).lower() if isinstance(schema, dict) else ""
+    if fmt in ("uri", "url"):
+        return True
+    return name in ("url", "uri", "target", "src", "source", "dest", "destination",
+                    "next", "redirect", "redirect_uri", "return", "returnurl", "callback",
+                    "file", "path", "image", "webhook", "endpoint")
 
 
 def _port_of(url: str) -> int | None:

@@ -964,9 +964,26 @@ class Orchestrator:
         for ap in COMMON_API_PATHS:
             if allow("cors") and scope.check_url(base + ap).allowed:
                 candidates += checks.cors(base + ap)
-        # Collections and fetch endpoints a crawl does not link: a REST collection has no
-        # anchor, and a fetch endpoint is usually reached by form, not by navigation.
-        for path in COMMON_FETCH_PATHS:
+        # The application's OWN published description is the real inventory: it names every
+        # endpoint and parameter, where a crawl sees only linked pages and a fixed list sees
+        # only names someone guessed. Read it when it exists.
+        described = checks.published_endpoints(base)
+        for ep in described["endpoints"]:
+            if not scope.check_url(ep["url"]).allowed:
+                continue
+            for p in ep["params"][:4]:
+                if allow("ssrf") and ep["takes_url"]:
+                    candidates += checks.fetch_param(ep["url"], p)
+                if allow("sqli"):
+                    candidates += checks.sqli(ep["url"], p)
+                    candidates += checks.sqli_boolean(ep["url"], p)
+                if allow("reflected_xss"):
+                    candidates += checks.reflected_xss(ep["url"], p)
+                if allow("path_traversal"):
+                    candidates += checks.path_traversal(ep["url"], p)
+                if allow("open_redirect"):
+                    candidates += checks.open_redirect(ep["url"], p)
+        for path in (COMMON_FETCH_PATHS if not described["endpoints"] else ()):
             full = base + path
             if not allow("ssrf") or not scope.check_url(full).allowed:
                 continue

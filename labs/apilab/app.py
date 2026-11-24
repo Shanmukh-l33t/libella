@@ -153,5 +153,13 @@ def profile(uid):
     return jsonify(dict(row))  # vuln: CWE-639 cross-user read
 
 
+@app.get("/openapi.json")
+def openapi_spec():
+    """The lab's own published description, as real APIs serve it in both twins."""
+    import pathlib
+    spec = pathlib.Path(__file__).with_name("openapi.json")
+    return app.response_class(spec.read_text(), mimetype="application/json")
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=PORT, debug=False)
