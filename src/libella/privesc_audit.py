@@ -28,19 +28,39 @@ ROLE_RANK = {"anonymous": 0, "guest": 0, "readonly": 0, "user": 0, "member": 0,
              "staff": 1, "editor": 1, "manager": 1, "admin": 2, "owner": 3, "root": 3}
 
 
-def _contract(identity: str, value, url: str, body: str = "", privilege: str = "") -> dict:
+def _held_by(body: str, owner) -> tuple[str | None, object]:
+    """(field, value) of the served record that names `owner`, or (None, None)."""
+    data = _json(body)
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = next((v for v in data["data"].values() if isinstance(v, dict)), data)
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    if isinstance(data, dict):
+        for field, value in data.items():
+            if isinstance(value, (str, int)) and str(value).lower() == str(owner).lower():
+                return field, value
+    return None, None
+
+
+def _contract(identity: str, value, url: str, body: str = "", privilege: str = "",
+              owner=None) -> dict:
     """Typed proof (proof.py) for an access-control claim made as `identity`.
 
-    Ownership model: the owner is read from the served body, never assumed. Privilege
-    model: the role whose guard was evaluated. Nothing is defaulted; a gap makes the
-    verifier refuse the finding instead of validating an untested claim.
+    Ownership model: the owner is read from the served body (the field naming `owner`
+    when the caller knows who it expected, else a conventional owner field), never
+    assumed. Privilege model: the role whose guard was evaluated. Nothing is defaulted;
+    a gap makes the verifier refuse the finding instead of validating an untested claim.
     """
     out = {"identity": {"name": identity, "value": value},
            "benign_request": {"method": "GET", "url": url}}  # same route, no credential
     if privilege:
         return {**out, "privilege": privilege}
-    field, owner = _owner_of(body)
-    return {**out, "owner_field": field, "owner_value": owner}
+    field, held = _held_by(body, owner) if owner is not None else (None, None)
+    if field:  # the record names its owner by name: the caller is compared by name too
+        return {**out, "identity": {"name": identity, "value": identity},
+                "owner_field": field, "owner_value": held}
+    field, held = _owner_of(body)
+    return {**out, "owner_field": field, "owner_value": held}
 
 
 def _path_of(url: str) -> str:
@@ -270,7 +290,8 @@ def _authz_pass(model, eps, rows, identities, sessions, hint_ids, fetch, target,
             v["evidence_id"], quote,
             {"method": "GET", "url": v["url"], **({"headers": {"Cookie": v["cookie"]}} if v["cookie"] else {})},
             f"authz:GET:{_norm(ep['path'])}",
-            proof=_contract(v["identity"], ids.get(v["identity"]), v["url"], v["body"]))
+            proof=_contract(v["identity"], ids.get(v["identity"]), v["url"], v["body"],
+                            owner=v["object_owner"]))
         if c["evidence_id"] and c["evidence_id"] != v["evidence_id"]:
             cand["evidence_ids"].append(c["evidence_id"])
         submit(cand)
@@ -511,7 +532,7 @@ def audit_role_matrix(db, evidence, probe, scope, engagement_id, auth_json, pipe
                     r["evidence_id"], quote,
                     {"method": "GET", "url": url, "headers": {"Cookie": s["cookie"]}},
                     f"bola:{ep['method']}:{ep['path']}",
-                    proof=_contract(reader, ids.get(reader), url, r["body"])))
+                    proof=_contract(reader, ids.get(reader), url, r["body"], owner=owner)))
                 break
 
     # ---- cross-role: the matrix contradicts itself for one role

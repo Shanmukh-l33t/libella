@@ -310,7 +310,10 @@ def audit_oauth(db, evidence, probe, scope, engagement_id, auth_json, pipeline,
             quote = f'"scope":{json.dumps(granted)}'
         submit(_candidate(
             "OAuth scope escalation: unregistered scope 'admin' granted",
-            "CWE-863", "A01:2021 Broken Access Control", "high", "high", token_url or authorize_url,
+            # CWE-285, not 863: the grant is a token-endpoint privilege assignment, so the
+            # AUTHORIZATION contract (a credentialed read refused anonymously) does not
+            # describe it; the quote is the token response itself
+            "CWE-285", "A01:2021 Broken Access Control", "high", "high", token_url or authorize_url,
             f"The client is registered for '{base_scope}' but requesting '{escalated}' returned a "
             f"token whose granted scope is '{granted}': the server does not restrict the "
             "requested scope to the client's registration.",

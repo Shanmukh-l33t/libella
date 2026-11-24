@@ -113,7 +113,7 @@ ROWS = (
     {"unit": "jwt_audit", "why": "forges tokens against the declared verifier and reports only what the app accepted",
      "wstg": ("WSTG-SESS-01", "WSTG-ATHN-04"), "cwe": ("CWE-347", "CWE-345", "CWE-613")},
     {"unit": "oauth_audit", "why": "redirect_uri bypass matrix, state and PKCE checks against the declared client",
-     "wstg": ("WSTG-ATHN-04", "WSTG-CLNT-04"), "cwe": ("CWE-601", "CWE-352", "CWE-863")},
+     "wstg": ("WSTG-ATHN-04", "WSTG-CLNT-04"), "cwe": ("CWE-601", "CWE-352", "CWE-285")},
     {"unit": "session_audit", "why": "login, fixation, logout invalidation and cookie scope for one identity",
      "wstg": ("WSTG-SESS-03", "WSTG-SESS-06", "WSTG-SESS-02"), "cwe": ("CWE-384", "CWE-613", "CWE-614")},
     {"unit": "privesc_audit", "why": "endpoint x identity matrix; findings only where a control comparison contradicts",

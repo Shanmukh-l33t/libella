@@ -117,7 +117,7 @@ def test_state_and_pkce_absence_only_when_the_grant_completes(results):
 
 def test_scope_escalation_quotes_the_granted_scope(results):
     _, res = results["vuln"]
-    cand = _by_cwe(res, "CWE-863")[0]
+    cand = _by_cwe(res, "CWE-285")[0]
     assert '"scope":"profile admin"' in cand["quote"]
     assert cand["proof_request"]["method"] == "POST"
 
