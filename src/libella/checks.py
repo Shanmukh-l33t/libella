@@ -612,6 +612,10 @@ class WebChecks:
             )]
         return []
 
+    def is_collection(self, body: str) -> bool:
+        """Does this response publish a list of records?"""
+        return is_collection(body)
+
     def observed_param_names(self) -> list[str]:
         """Query keys and form field names this application has already shown us.
 
