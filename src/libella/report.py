@@ -167,6 +167,10 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         "SELECT * FROM events WHERE engagement_id=? AND kind='degradation' ORDER BY seq",
         (engagement_id,))
     tool_calls = db.query("SELECT * FROM tool_calls WHERE engagement_id=?", (engagement_id,))
+    # A tool that is not installed is a COVERAGE limitation, and leaving it out of the
+    # report let an engagement read as fully assessed when a whole phase never ran.
+    missing_tools = sorted({r["tool"] for r in tool_calls
+                            if (r["error"] or "").startswith("missing_tool")})
     agent_runs = db.query(
         "SELECT role, model, status, exit_reason, iterations, cost_usd FROM agent_runs "
         "WHERE engagement_id=? ORDER BY started_at", (engagement_id,))
@@ -215,6 +219,7 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
             "llm_tokens": spend["i"] + spend["o"],
         },
         "findings": [],
+        "missing_tools": missing_tools,
         "degradations": [{"code": _safe(json.loads(d["payload_json"]).get("code")),
                           "detail": _safe(json.loads(d["payload_json"]).get("detail"))}
                          for d in degradations],
@@ -280,8 +285,11 @@ def render_report(db: DB, evidence: EvidenceStore, engagement_id: str,
         md.append(f"- {_md(t['kind'])}: `{_md(t['value'])}`")
     for ex in scope.get("exclusions", []):
         md.append(f"- EXCLUDED {_md(ex['kind'])}: `{_md(ex['value'])}`")
-    if report["degradations"]:
+    if report["degradations"] or report.get("missing_tools"):
         md.append("\n## Coverage limitations (read before trusting 'no findings')\n")
+        for tool in report.get("missing_tools") or []:
+            md.append(f"- **missing_tool**: `{_md(tool)}` is not installed, so every check that "
+                      f"depends on it never ran. Coverage for those units is a gap, not a pass.")
         for d in report["degradations"]:
             md.append(f"- **{_md(d['code'])}**: {_md(redact(str(d['detail'])))}")
     md.extend(scan_record.scan_md(report["scans"]))
