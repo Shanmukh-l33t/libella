@@ -15,7 +15,8 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1"
 MAX_REPLY = 64 * 1024
 
 MESSAGES = {
-    "connected": "The selected model returned a text response. Structured output and tool support were not tested.",
+    "connected": "The selected model returned the JSON object agents need, so agent turns can run.",
+    "text_only": "The model replied, but not with parseable JSON. Chat works; agents need structured output, so they may fail on this endpoint.",
     "invalid_url": "Use an HTTPS base URL without credentials, a query, or a fragment. Plain HTTP is allowed only for a loopback IP.",
     "endpoint_not_allowed": "Ask the server administrator to add this exact base URL to LIBELLA_PROVIDER_TEST_URLS.",
     "key_required": "Enter a provider API key. A saved key is only reused with its original base URL.",
@@ -33,6 +34,22 @@ MESSAGES = {
     "connection_failed": "Could not reach the provider. Check DNS, TLS certificates, and whether the service is running.",
     "busy": "Another provider test is running. Wait for it to finish.",
 }
+
+
+# one prompt for both protocols: the reply proves the endpoint can do what an agent needs
+PROBE_PROMPT = 'Reply with exactly this JSON object and nothing else: {"ok": true}'
+
+
+def _is_json_object(text: str) -> bool:
+    """True when the reply carries a JSON object, tolerating a fenced code block."""
+    body = text.strip()
+    if body.startswith("```"):
+        body = body.split("```")[1] if body.count("```") >= 2 else body
+        body = body.split("\n", 1)[-1] if body.lower().startswith(("json", "javascript")) else body
+    try:
+        return isinstance(json.loads(body.strip()), dict)
+    except (ValueError, RecursionError):
+        return False
 
 
 def normalize_base(value: str) -> str:
@@ -198,7 +215,7 @@ async def _complete_anthropic(base: str, key: str, model: str) -> str:
     headers = {"anthropic-version": "2023-06-01", "content-type": "application/json",
                "x-api-key": key}
     body = {"model": model, "max_tokens": 64,
-            "messages": [{"role": "user", "content": "Reply with OK."}]}
+            "messages": [{"role": "user", "content": PROBE_PROMPT}]}
     async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as client:
         async with client.stream("POST", f"{base}/messages", headers=headers, json=body) as response:
             status = response.status_code
@@ -230,9 +247,11 @@ async def _complete_anthropic(base: str, key: str, model: str) -> str:
     if status != 200:
         return "request_rejected"
     blocks = payload.get("content") if isinstance(payload, dict) else None
-    if isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "text"
-                                        and (b.get("text") or "").strip() for b in blocks):
-        return "connected"
+    if isinstance(blocks, list):
+        text = "".join(b.get("text", "") for b in blocks
+                       if isinstance(b, dict) and b.get("type") == "text")
+        if text.strip():
+            return "connected" if _is_json_object(text) else "text_only"
     return "protocol_mismatch"
 
 
@@ -241,7 +260,7 @@ async def _complete(base: str, key: str, model: str) -> str:
     if key:
         headers["Authorization"] = f"Bearer {key}"
     limit_field = "max_completion_tokens" if base == DEFAULT_URL else "max_tokens"
-    body = {"model": model, "messages": [{"role": "user", "content": "Reply with OK."}], limit_field: 64}
+    body = {"model": model, "messages": [{"role": "user", "content": PROBE_PROMPT}], limit_field: 64}
     async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as client:
         async with client.stream("POST", f"{base}/chat/completions", headers=headers, json=body) as response:
             status = response.status_code
@@ -282,7 +301,9 @@ async def _complete(base: str, key: str, model: str) -> str:
         content = message.get("content")
         if (not message.get("refusal") and choice.get("finish_reason") != "content_filter"
                 and isinstance(content, str) and content.strip()):
-            return "connected"
+            # A text reply is not enough: every agent turn parses a JSON object, so a model
+            # that cannot produce one must not be reported as fully working.
+            return "connected" if _is_json_object(content) else "text_only"
     except (KeyError, IndexError, TypeError, AttributeError):
         pass
     return "protocol_mismatch"

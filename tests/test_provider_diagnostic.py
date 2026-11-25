@@ -14,7 +14,9 @@ from libella.api import App, create_api
 def diagnostic(tmp_path, monkeypatch):
     app = App(tmp_path)
     calls = []
-    reply = [200, {"choices": [{"message": {"content": "OK"}}]}]
+    # the probe now demands a JSON object: agents parse one on every turn, so a plain
+    # "OK" reply is reported as text_only rather than fully working
+    reply = [200, {"choices": [{"message": {"content": '{"ok": true}'}}]}]
     encoding = []
 
     class Handler(BaseHTTPRequestHandler):

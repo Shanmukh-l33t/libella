@@ -24,6 +24,8 @@ from libella.provider_diagnostic import ANTHROPIC_URL, list_models
 from libella.provider_diagnostic import test_connection as probe_provider
 
 GOOD = "sk-ant-test"
+# the diagnostic now demands a JSON object, because every agent turn parses one
+PROBE_TEXT = '{"ok": true}'
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -56,11 +58,13 @@ class Provider(BaseHTTPRequestHandler):
             # requirement, so this discriminates the two without rejecting a valid probe.
             if "max_tokens" not in body or not isinstance(body.get("messages"), list):
                 return self._json(400, {"error": {"type": "invalid_request_error"}})
-            return self._json(200, {"content": [{"type": "text", "text": '{"ok": true}'}],
+            text = (PROBE_TEXT if "ok" in json.dumps(body.get("messages"))
+                    else '{"ok": true}')
+            return self._json(200, {"content": [{"type": "text", "text": text}],
                                     "stop_reason": "end_turn",
                                     "usage": {"input_tokens": 21, "output_tokens": 7}})
         if self.path == "/v1/chat/completions":
-            return self._json(200, {"choices": [{"message": {"content": '{"ok": true}'},
+            return self._json(200, {"choices": [{"message": {"content": PROBE_TEXT},
                                                  "finish_reason": "stop"}],
                                     "usage": {"prompt_tokens": 11, "completion_tokens": 4}})
         return self._json(404, {"error": "no"})
@@ -150,3 +154,29 @@ def test_diagnostic_probe_uses_the_anthropic_shape(provider):
                                            "api_style": "anthropic",
                                            "default_model": "claude-sonnet-4"}))
     assert res["status"] == "connected", res
+
+
+def test_a_text_only_answer_is_not_reported_as_fully_working(provider, monkeypatch):
+    """"connected" must mean agent-ready. A model that answers in prose is `text_only`.
+
+    This is the failure that matters in practice: the connection test says "connected", the
+    operator starts an engagement, and every agent turn then fails on malformed output.
+    """
+    import libella.provider_diagnostic as pd
+
+    async def prose(base, key, model):
+        return "text_only" if not pd._is_json_object("Sure, I am OK.") else "connected"
+
+    monkeypatch.setattr(pd, "_complete", prose)
+    res = asyncio.run(probe_provider({}, {"base_url": provider, "api_key": GOOD,
+                                          "default_model": "gpt-4o-mini"}))
+    assert res["status"] == "text_only"
+    assert "structured output" in res["message"]
+
+
+def test_json_is_recognised_plain_and_fenced():
+    from libella.provider_diagnostic import _is_json_object as ok
+    assert ok('{"ok": true}')
+    assert ok('```json\n{"ok": true}\n```')
+    assert not ok("OK")
+    assert not ok('["ok"]')  # a list is not the object an agent expects
