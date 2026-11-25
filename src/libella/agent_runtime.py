@@ -46,7 +46,7 @@ CHARTERS = {
                    "run_tool (httpx/subfinder/nmap) to discover. Record observations with evidence. "
                    "After a few probes map the surface, call finish with a summary; do not exhaust "
                    "iterations. Hand vulnerability testing to other specialists via delegate.",
-        "actions": ["http_request", "run_tool", "list_capabilities", "record_observation", "read_context",
+        "actions": ["app_context", "http_request", "run_tool", "list_capabilities", "record_observation", "app_context", "read_context",
                     "create_specialist", "delegate", "finish"],
         "max_iterations": 8,
     },
@@ -59,9 +59,9 @@ CHARTERS = {
                    "deeper issues with run_check and propose_finding. Record hypotheses for leads. "
                    "After baseline + targeted investigation, call finish with a summary. Do NOT "
                    "repeat actions. Distinguish real vulnerabilities from scanner noise.",
-        "actions": ["http_request", "run_baseline", "run_check", "run_tool", "list_capabilities",
+        "actions": ["app_context", "http_request", "run_baseline", "run_check", "run_tool", "list_capabilities",
                     "record_hypothesis", "update_hypothesis", "record_observation", "propose_finding",
-                    "read_context", "create_specialist", "delegate", "finish"],
+                    "app_context", "read_context", "create_specialist", "delegate", "finish"],
         "max_iterations": 24,
     },
     "api": {
@@ -73,25 +73,25 @@ CHARTERS = {
                    "objects. Use propose_finding with replayable proof for confirmed issues. After "
                    "covering the endpoints, call finish. Always emit a valid JSON action; never "
                    "reply with plain text.",
-        "actions": ["http_request", "run_baseline", "run_check", "run_tool", "list_capabilities",
+        "actions": ["app_context", "http_request", "run_baseline", "run_check", "run_tool", "list_capabilities",
                     "record_hypothesis", "update_hypothesis", "record_observation", "propose_finding",
-                    "read_context", "create_specialist", "delegate", "finish"],
+                    "app_context", "read_context", "create_specialist", "delegate", "finish"],
         "max_iterations": 24,
     },
     "authz": {
         "charter": "You are the Authentication & Authorization specialist. Assess permitted auth "
                    "flows, session controls, role separation, multi-user access boundaries. Compare "
                    "expected vs observed access across identities. Evidence-backed findings only.",
-        "actions": ["http_request", "run_check", "list_capabilities", "record_hypothesis", "update_hypothesis",
-                    "record_observation", "propose_finding", "read_context", "finish"],
+        "actions": ["app_context", "http_request", "run_check", "list_capabilities", "record_hypothesis", "update_hypothesis",
+                    "record_observation", "propose_finding", "app_context", "read_context", "finish"],
         "max_iterations": 16,
     },
     "infra": {
         "charter": "You are the Infrastructure Security specialist. Examine network exposure, "
                    "service configuration, TLS, admin interfaces, hardening. Use nmap and TLS "
                    "checks. Record observations and evidence-backed findings.",
-        "actions": ["http_request", "run_tool", "run_check", "list_capabilities", "record_hypothesis",
-                    "record_observation", "propose_finding", "read_context", "finish"],
+        "actions": ["app_context", "http_request", "run_tool", "run_check", "list_capabilities", "record_hypothesis",
+                    "record_observation", "propose_finding", "app_context", "read_context", "finish"],
         "max_iterations": 14,
     },
     "verifier": {
@@ -99,15 +99,15 @@ CHARTERS = {
                    "alerts or other agents' claims. Re-examine candidate findings: replay proof "
                    "requests, check evidence actually supports the claim, identify false positives "
                    "and inconclusive results. Update hypothesis status. Be adversarial.",
-        "actions": ["http_request", "run_check", "list_capabilities", "update_hypothesis",
-                    "record_observation", "read_context", "finish"],
+        "actions": ["app_context", "http_request", "run_check", "list_capabilities", "update_hypothesis",
+                    "record_observation", "app_context", "read_context", "finish"],
         "max_iterations": 16,
     },
     "correlator": {
         "charter": "You are the Evidence & Correlation specialist. Connect observations across "
                    "tools and assets, deduplicate, identify relationships and attack paths grounded "
                    "in evidence. Record hypotheses about chains; never invent exploitability.",
-        "actions": ["read_context", "record_hypothesis", "update_hypothesis", "record_observation",
+        "actions": ["app_context", "read_context", "record_hypothesis", "update_hypothesis", "record_observation",
                     "create_specialist", "delegate", "finish"],
         "max_iterations": 12,
     },
@@ -115,7 +115,7 @@ CHARTERS = {
         "charter": "You are the Risk Analysis specialist. Assess contextual impact, confidence, "
                    "and remediation priority for validated findings. Record risk observations; "
                    "do not inflate severity beyond evidence.",
-        "actions": ["read_context", "record_observation", "update_hypothesis", "list_capabilities", "finish"],
+        "actions": ["app_context", "read_context", "record_observation", "update_hypothesis", "list_capabilities", "finish"],
         "max_iterations": 10,
     },
 }
@@ -153,6 +153,9 @@ CHECK_METHODS = {
 ACTION_SCHEMA = """Respond with ONE JSON object only:
 {"thought": "<your reasoning>", "action": "<one of: %s>", "args": {<action args>}}
 Action args:
+- app_context: {"focus"?, "limit"?}  # what is known about a feature/endpoint/resource:
+  # routes, parameters, owners, candidate security questions and the gaps in knowledge.
+  # Ask this FIRST instead of re-deriving what the engine already established.
 - http_request: {"url","method"?,"headers"?,"body"?}
 - run_baseline: {"url"}  # comprehensive deterministic check battery; run FIRST for coverage
 - run_check: {"check":"xss|sqli|ssti|traversal|redirect|cors|headers|cookies|upload|sensitive_paths|auth_bypass|idor|ssrf","url","param"?,"extra"?}
@@ -475,6 +478,21 @@ class AgentRunner:
             return {"ok": r.get("ok"), "status": r.get("status"), "call_id": r.get("call_id"),
                     "artifact_id": r.get("artifact_id"), "parsed": parsed[:50],
                     "error": r.get("error"), "degradation": r.get("degradation")}
+        if action == "app_context":
+            # The agent asks a QUESTION about the application, so it gets the neighbourhood
+            # of what it is investigating rather than a fixed snapshot of everything. This is
+            # the difference between "here is a traffic log" and "here is what I know about
+            # this feature, and here is where my knowledge stops".
+            try:
+                intel = AppIntel(self.db, self.eng)
+                focus = args.get("focus") or ""
+                ctx = intel.context(focus, limit=int(args.get("limit") or 25))
+                self._step(run_id, intent_id, seq, "app_context",
+                           f"application context for {focus or 'the whole application'}: "
+                           f"{len(ctx['items'])} item(s)")
+                return {"ok": True, **ctx}
+            except Exception as e:  # never fatal to an investigation
+                return {"error": f"application model unavailable: {type(e).__name__}: {e}"}
         if action == "record_hypothesis":
             return self._hypothesis(args.get("statement", ""), args.get("kind"),
                                     args.get("asset_id"), intent_id, run_id, seq)

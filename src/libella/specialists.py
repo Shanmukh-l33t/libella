@@ -25,6 +25,7 @@ from .db import new_id
 from .policy import permits
 
 ALLOWED_ACTIONS = (
+    "app_context",  # read the application model: what is known, and where it stops
     "http_request", "run_baseline", "run_check", "run_tool", "record_hypothesis",
     "update_hypothesis", "record_observation", "propose_finding", "read_context",
     "list_capabilities", "finish",
