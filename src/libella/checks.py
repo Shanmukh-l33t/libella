@@ -5,6 +5,7 @@ a verbatim quote. Nothing here trusts scanner banners or model prose.
 """
 import json
 import re
+import urllib.parse
 import uuid
 from urllib.parse import parse_qsl, urlparse
 
@@ -255,7 +256,7 @@ class WebChecks:
                    "benign_request": self._proof(with_param(target, param, "libellaBenign"))},
         )]
 
-    def sqli_boolean(self, url: str, param: str) -> list[dict]:
+    def sqli_boolean(self, url: str, param: str, base_value: str = "") -> list[dict]:
         """Boolean differential on a parameter the app already treats as a query value.
 
         Two wrong versions came before this one, both measured on a real app (OWASP Juice
@@ -272,9 +273,16 @@ class WebChecks:
         """
         sep = "&" if "?" in url else "?"
 
+        # The payload must extend a value the endpoint already accepts. Writing a made-up
+        # value ("libella") matched nothing on a real app, so BOTH conditions returned an
+        # empty result and a genuinely injectable filter read as clean. That is the same
+        # class of error as an empty marker: the test proved nothing while looking thorough.
+        seed = (base_value or "").strip()
+        quoted = urllib.parse.quote(seed, safe="")
+
         def probe(cond: str, tool: str):
-            return self._req(f"{url}{sep}{param}=libella%27%20AND%20%271%27%3D%27{cond}",
-                             tool=tool)
+            return self._req(
+                f"{url}{sep}{param}={quoted}%27%20AND%20%271%27%3D%27{cond}", tool=tool)
 
         true_r = probe("1", "sqli_bool_true")
         false_r = probe("2", "sqli_bool_false")

@@ -37,6 +37,26 @@ def register(api, app, auth):
         except Exception:  # a feature derivation bug must not blank the model
             return []
 
+    # NOTE: /api/engagements/{eid}/hypotheses already exists and returns the agent's
+    # free-text hypotheses. This is the structured security-question pipeline, so it gets
+    # its own path rather than shadowing a live endpoint.
+    @api.get("/api/engagements/{eid}/security-hypotheses", dependencies=[Depends(auth)])
+    def security_hypotheses(eid: str, status: str | None = None):
+        """The security questions this engagement raised, with why and what it needs.
+
+        Read-only: an analyst inspects the reasoning and the prerequisites. Creating one
+        belongs to the planner, so there is no POST that lets an outside caller assert a
+        hypothesis exists.
+        """
+        from .hypotheses import HypothesisStore
+        store = HypothesisStore(app.db, eid)
+        rows = store.all(status)
+        return {"hypotheses": rows, "ranked": store.rank(),
+                "planned": store.plan(),
+                "counts": {s: len([h for h in store.all() if h["status"] == s])
+                           for s in ("blocked", "proposed", "running", "observed",
+                                     "verified", "refuted", "inconclusive")}}
+
     @api.get("/api/engagements/{eid}/application/context", dependencies=[Depends(auth)])
     def application_context(eid: str, focus: str | None = None, limit: int = 25):
         """Exactly what an agent sees for a focus, so an operator can audit that view."""

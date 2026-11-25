@@ -268,3 +268,35 @@ def test_a_running_hypothesis_is_not_planned_twice(journey):
     hid = planned[0]["id"]
     store.attach_intent(hid, "i_running")
     assert hid not in {h["id"] for h in store.plan()}
+
+
+@pytest.mark.parametrize("journey", [True], indirect=True)
+def test_a_stored_endpoint_key_is_not_passed_to_a_check(journey):
+    """Regression: the graph stores "GET <url>", and a check given that key dials nothing.
+
+    Measured on PairLab: three injection hypotheses ran, every request failed to parse, and
+    each was recorded "refuted" - a real weakness reported as clean. This pins the executor
+    stripping the method prefix, by asserting the check actually reaches the application.
+    """
+    _model_from_traffic(journey["app"], journey["base"])
+    auth = {"identities": [{"username": "maya@lab.invalid", "password": "x", "uid": 11,
+                            "login_url": journey["base"] + "/auth/session",
+                            "username_field": "email", "password_field": "password"},
+                           {"username": "noor@lab.invalid", "password": "x", "uid": 12,
+                            "login_url": journey["base"] + "/auth/session",
+                            "username_field": "email", "password_field": "password"}]}
+    H.materialize(journey["app"].db, "eng", auth)
+    store = H.HypothesisStore(journey["app"].db, "eng")
+    authz = [h for h in store.all() if h["class"] == "authorization"]
+    assert authz and authz[0]["endpoint"].startswith("GET ")
+
+    orch = journey["app"].orchestrator()
+    scope = Scope(json.loads(journey["app"].db.one(
+        "SELECT scope_json FROM engagements WHERE id='eng'")["scope_json"]))
+    orch._do_hypothesis_tests("eng", scope, journey["eng"], "", "i_key")
+    # the executor must have reached the app: the anonymous control gets a refusal, which
+    # only happens if the URL it dialled was a real URL
+    urls = [r["url"] for r in journey["app"].db.query(
+        "SELECT url FROM exchanges WHERE engagement_id='eng'")]
+    assert urls, "no request was made at all"
+    assert not any(u.startswith("GET ") for u in urls), [u for u in urls if u.startswith("GET ")]

@@ -30,6 +30,25 @@ interface Gap {
   endpoint?: string;
 }
 
+interface SecurityHypothesis {
+  id: string;
+  class: string;
+  statement: string;
+  property: string;
+  endpoint?: string | null;
+  param?: string | null;
+  resource?: string | null;
+  owner_field?: string | null;
+  status: string;
+  provenance: string;
+  score: number;
+  missing: string[];
+  test: Record<string, unknown>;
+  factors?: Record<string, number>;
+  blocked_reason?: string | null;
+  finding_id?: string | null;
+}
+
 interface ApplicationModel {
   shape: {
     total: number;
@@ -59,6 +78,9 @@ const PROVENANCE_TONE: Record<string, "success" | "warning" | "neutral" | "dange
 
 export default function ApplicationTab({ eid, live }: { eid: string; live: number }) {
   const { data, error, loading } = useApi<ApplicationModel>(`/api/engagements/${eid}/application?live=${live}`);
+  const hyp = useApi<{ ranked: SecurityHypothesis[]; counts: Record<string, number> }>(
+    `/api/engagements/${eid}/security-hypotheses?live=${live}`,
+  );
   const [filter, setFilter] = useState("");
   const [kind, setKind] = useState("all");
 
@@ -181,6 +203,50 @@ export default function ApplicationTab({ eid, live }: { eid: string; live: numbe
                 </div>
                 <p className="mt-1 text-xs text-ink-600">{f.property}</p>
                 <p className="mt-1 text-[11px] text-ink-400">How to test: {f.test}</p>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {!!hyp.data?.ranked.length && (
+        <Card
+          title="Security questions and their tests"
+          description="Derived from the evidence above and ranked deterministically. A question that cannot be tested says what is missing; a question that was answered says so. None of these is a vulnerability until the verifier accepts evidence."
+          padded={false}
+        >
+          <ul className="divide-y divide-ink-100">
+            {hyp.data.ranked.slice(0, 12).map((h) => (
+              <li key={h.id} className="px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={h.class === "authorization" ? "warning" : "neutral"}>{h.class}</Badge>
+                  <Badge tone={h.status === "verified" ? "success" : h.status === "refuted" ? "neutral" : h.status === "blocked" ? "danger" : "warning"}>
+                    {h.status}
+                  </Badge>
+                  <span className="text-xs text-ink-400">score {h.score}</span>
+                  {h.factors && (
+                    <span className="text-[11px] text-ink-300">
+                      {Object.entries(h.factors).map(([k, v]) => `${k} ${v}`).join(" · ")}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-ink-800">{h.statement}</p>
+                <p className="text-[11px] text-ink-500">
+                  {h.endpoint || "no endpoint"}
+                  {h.param ? ` · param ${h.param}` : ""}
+                  {h.resource ? ` · resource ${h.resource}` : ""}
+                  {h.owner_field ? ` · owner ${h.owner_field}` : ""}
+                </p>
+                {!!h.missing.length && (
+                  <p className="text-[11px] text-ink-400">Cannot run yet: needs {h.missing.join(", ")}</p>
+                )}
+                {h.blocked_reason && <p className="text-[11px] text-ink-400">{h.blocked_reason}</p>}
+                {!!Object.keys(h.test || {}).length && (
+                  <p className="text-[11px] text-ink-400">
+                    Test: {String((h.test as Record<string, unknown>).method || "")} —{" "}
+                    {String((h.test as Record<string, unknown>).expect || "")}
+                  </p>
+                )}
               </li>
             ))}
           </ul>

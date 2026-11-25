@@ -861,7 +861,17 @@ class Orchestrator:
         # An agent later reads that model instead of being handed the raw traffic log.
         try:
             intel = Discovery(self.db, engagement_id)
-            intel.ingest_traffic(result.get("api_requests") or [], evidence_id=ev["id"])
+            # The crawl yields TWO inventories, and the model needs both: `api_requests` is
+            # what the browser observed at runtime (JSON APIs, usually empty for an HTML
+            # app) and `endpoints` is every URL the crawl reached, query strings included.
+            # Reading only the first meant PairLab's own /api/products?category= and
+            # /search?q= were invisible to the model, so it raised no hypotheses at all.
+            observed = list(result.get("api_requests") or [])
+            seen = {(r.get("method", "GET"), r.get("url")) for r in observed}
+            for url in result.get("endpoints") or []:
+                if ("GET", url) not in seen:
+                    observed.append({"method": "GET", "url": url, "page": None})
+            intel.ingest_traffic(observed, evidence_id=ev["id"])
             pages = [{"route": p.get("url"), "status": p.get("status")}
                      for p in (result.get("pages") or [])]
             for page in pages:
@@ -1181,10 +1191,16 @@ class Orchestrator:
         endpoint, param = h.get("endpoint"), h.get("param")
         if not endpoint:
             return []
+        # The stored endpoint is the graph KEY ("GET <url>"), which is unique per method.
+        # A check needs the URL itself: passing the key made every request unparseable, so
+        # the tests ran, failed to dial, and reported "no evidence" for a real weakness.
+        endpoint = endpoint.split(" ", 1)[1] if " " in endpoint and endpoint.split(" ", 1)[0]             in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD") else endpoint
         if h["class"] == "ssrf" and param:
             return checks.fetch_param(endpoint, param)
         if h["class"] == "injection" and param:
-            return checks.sqli_boolean(endpoint, param) + checks.sqli(endpoint, param)
+            base_value = (h.get("test") or {}).get("base_value", "")
+            return (checks.sqli_boolean(endpoint, param, base_value)
+                    + checks.sqli(endpoint, param))
         if h["class"] == "authorization" and h.get("resource"):
             cookie, uid, name = _identity_for(checks, auth, scope)
             if not cookie:

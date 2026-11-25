@@ -211,7 +211,11 @@ class HypothesisStore:
     def record_outcome(self, hid: str, verdict: str, detail: str = "",
                        finding_id: str | None = None) -> None:
         """After execution: the outcome the EVIDENCE supports, not what was hoped for."""
-        status = {VERIFIED: VERIFIED, REFUTED: REFUTED}.get(verdict, INCONCLUSIVE)
+        # "observed" is its own outcome: the test produced a candidate that the verifier has
+        # not judged yet. Collapsing that into "inconclusive" understates work that was done
+        # and muddles it with a test that could not run.
+        status = {VERIFIED: VERIFIED, REFUTED: REFUTED, OBSERVED: OBSERVED}.get(
+            verdict, INCONCLUSIVE)
         self.set_status(hid, status, detail or None)
         if finding_id:
             self.attach_finding(hid, finding_id)
@@ -335,6 +339,9 @@ def materialize(db: DB, engagement_id: str, auth: dict | None = None) -> list[st
             node_ids=[param["id"]],
             prerequisites={"endpoint": True, "query_param": True},
             test={"method": "boolean_differential", "param": param["key"],
+                  # the observed value is the base the payload extends: without it the
+                  # probe matches no rows and a real injection looks clean
+                  "base_value": param["data"].get("seen_value", ""),
                   "expect": "a boolean condition must not change the rows returned"}))
     for op in intel.nodes(appintel.SENSITIVE_OP):
         if not op["key"].startswith("auth:"):

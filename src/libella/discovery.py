@@ -48,9 +48,17 @@ DESTINATION_NAMES = ("url", "uri", "target", "src", "source", "dest", "destinati
 
 
 def _looks_like_place(value: str) -> bool:
-    """Does this parameter VALUE name somewhere a server could be asked to go?"""
+    """Does this parameter VALUE name somewhere a server could be asked to fetch?
+
+    An absolute URL, a scheme-relative URL or a traversal path qualifies. A bare filename
+    does NOT: `name=readme.txt` is a file selector, and treating it as a remote reference
+    raised an SSRF question against a parameter that takes a local file (measured on
+    PairLab, where it produced a hypothesis for `name`).
+    """
     v = (value or "").strip()
-    return bool(re.match(r"^(https?:)?//", v) or re.match(r"^(/|\.\./|[a-z0-9_-]+\.)", v, re.I))
+    if re.match(r"^(https?:)?//", v, re.I) or v.startswith("../"):
+        return True
+    return bool(re.match(r"^/[a-z0-9_]", v, re.I)) and "." not in v.split("/")[-1]
 
 
 def _norm_path(url: str) -> str:
