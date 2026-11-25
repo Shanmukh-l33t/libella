@@ -2,21 +2,37 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Download, FileText, RefreshCw } from "lucide-react";
 import type { Engagement, Report } from "../../types";
-import { downloadReport } from "../../api";
+import { downloadReport, type ReportFormat, type ReportKind } from "../../api";
 import { useApi } from "../../lib/hooks";
 import { fmtTime, money, severityTone, stateTone, title } from "../../lib/format";
-import { Badge, Button, Card, EmptyState, ErrorNote, Skeleton, Stat, Table } from "../../components/ui";
+import { Badge, Button, Card, EmptyState, ErrorNote, Select, Skeleton, Stat, Table } from "../../components/ui";
+
+const FORMAT_LABEL: Record<string, string> = {
+  pdf: "PDF", html: "HTML", md: "Markdown", docx: "Word", xlsx: "Excel",
+  csv: "CSV", json: "JSON", sarif: "SARIF", dojo: "DefectDojo",
+};
 
 export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engagement; live: number }) {
   const navigate = useNavigate();
   const { data, error, loading, reload } = useApi<Report>(`/api/engagements/${eid}/report?format=json&live=${live}`);
   const [dlError, setDlError] = useState<string | null>(null);
-  const download = (format: "md" | "sarif" | "pdf" | "dojo") => {
+  const kinds = useApi<{ kinds: { id: ReportKind; title: string; description: string; formats: string[] }[] }>(
+    `/api/engagements/${eid}/report/kinds`);
+  const [kind, setKind] = useState<ReportKind>("technical");
+  const formats = kinds.data?.kinds.find((k) => k.id === kind)?.formats || [];
+  const download = (format: ReportFormat) => {
     setDlError(null);
-    downloadReport(eid, format).catch((e) => setDlError(e instanceof Error ? e.message : String(e)));
+    downloadReport(eid, format, kind).catch((e) => setDlError(e instanceof Error ? e.message : String(e)));
   };
 
-  if (error) return <ErrorNote error={error} />;
+  // Keep the last good report and the controls on screen: a failed re-render must
+  // leave the operator a way to retry, not replace the whole tab with an error.
+  if (error && !data) return (
+    <div className="space-y-3">
+      <ErrorNote error={error} />
+      <Button size="sm" icon={<RefreshCw size={13} />} onClick={reload} loading={loading}>Retry</Button>
+    </div>
+  );
   if (loading && !data) return <Skeleton className="h-64 w-full" />;
   if (!data) return <EmptyState title="Report unavailable" description="The API returned no report for this engagement." />;
 
@@ -32,17 +48,22 @@ export default function ReportTab({ eid, eng, live }: { eid: string; eng: Engage
             status <span className="text-ink-700">{title(data.engagement.status)}</span>
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" icon={<RefreshCw size={13} />} onClick={reload} loading={loading}>Regenerate</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("md")}>Markdown</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("sarif")}>SARIF</Button>
-          <Button size="sm" icon={<Download size={13} />} onClick={() => download("dojo")}>DefectDojo</Button>
-          <Button size="sm" icon={<Download size={13} />} title="Renders the same report.json through the PDF exporter"
-            onClick={() => download("pdf")}>PDF</Button>
+          <Select aria-label="Report type" className="w-auto" value={kind}
+            onChange={(e) => setKind(e.target.value as ReportKind)}>
+            {(kinds.data?.kinds || [{ id: "technical" as ReportKind, title: "Technical report", description: "", formats: [] }])
+              .map((k) => <option key={k.id} value={k.id}>{k.title}</option>)}
+          </Select>
+          {formats.map((f) => (
+            <Button key={f} size="sm" icon={<Download size={13} />} onClick={() => download(f as ReportFormat)}>
+              {FORMAT_LABEL[f] || f.toUpperCase()}
+            </Button>
+          ))}
         </div>
       </div>
 
-      <ErrorNote error={dlError} />
+      <ErrorNote error={error || dlError} />
 
       {data.engagement.status !== "done" && (
         <div className="rounded border border-[#FEDF89] bg-[#FFFAEB] px-4 py-3 text-sm text-ink-700">

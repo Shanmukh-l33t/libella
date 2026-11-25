@@ -10,7 +10,10 @@ from .secrets import SecretBox, is_encrypted
 
 # Columns holding live session material: ciphertext at rest, plaintext through
 # DB.query()/one(). Writers must pass values through DB.seal().
-SECRET_COLUMNS = {"engagements": ("auth_json",), "auth_contexts": ("cookies_json",)}
+# exchanges: captured request/response headers carry live Cookie/Authorization
+# and Set-Cookie values, so the whole JSON column is sealed (not just a value).
+SECRET_COLUMNS = {"engagements": ("auth_json",), "auth_contexts": ("cookies_json",),
+                  "exchanges": ("req_headers_json", "resp_headers_json")}
 _SECRET_FIELDS = frozenset(c for cols in SECRET_COLUMNS.values() for c in cols)
 
 SCHEMA = """
@@ -19,7 +22,7 @@ CREATE TABLE IF NOT EXISTS engagements(
   status TEXT NOT NULL DEFAULT 'draft', scope_json TEXT NOT NULL, auth_json TEXT NOT NULL DEFAULT '{}',
   budgets_json TEXT NOT NULL DEFAULT '{}', objectives_json TEXT NOT NULL DEFAULT '[]',
   window_start TEXT, window_end TEXT, created_at REAL, started_at REAL, finished_at REAL,
-  status_detail TEXT
+  status_detail TEXT, standards_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS assets(
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
@@ -78,6 +81,26 @@ CREATE TABLE IF NOT EXISTS retests(
   detail TEXT, created_at REAL
 );
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+-- runtime-created specialist agents: registered, policy-checked, auditable
+CREATE TABLE IF NOT EXISTS specialists(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, slug TEXT NOT NULL,
+  parent_run_id TEXT, objective TEXT, charter_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'registered', created_at REAL, updated_at REAL,
+  history_json TEXT NOT NULL DEFAULT '[]',
+  UNIQUE(engagement_id, slug)
+);
+-- authoritative engagement spend: reservations are taken atomically before a
+-- model call and reconciled to the actual cost after it
+CREATE TABLE IF NOT EXISTS budget_ledger(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, run_id TEXT, kind TEXT NOT NULL,
+  amount_usd REAL NOT NULL, state TEXT NOT NULL, created_at REAL, settled_at REAL
+);
+-- analyst corrections of finding -> requirement attribution; append-only history
+CREATE TABLE IF NOT EXISTS requirement_links(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, engagement_id TEXT NOT NULL,
+  framework TEXT NOT NULL, requirement_id TEXT NOT NULL, finding_id TEXT NOT NULL,
+  action TEXT NOT NULL, note TEXT NOT NULL, actor TEXT, created_at REAL
+);
 CREATE TABLE IF NOT EXISTS hypotheses(
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, asset_id TEXT, intent_id TEXT,
   kind TEXT, statement TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
@@ -113,6 +136,55 @@ CREATE TABLE IF NOT EXISTS asset_changes(
   id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, asset_key TEXT NOT NULL,
   change_kind TEXT NOT NULL, old_json TEXT, new_json TEXT, detected_at REAL
 );
+-- requirement ids are namespaced by standard (WSTG-... vs V1.1.1), so one key
+-- covers every standard without a composite primary key change
+CREATE TABLE IF NOT EXISTS coverage_entries(
+  engagement_id TEXT NOT NULL, test_id TEXT NOT NULL, status TEXT NOT NULL,
+  framework TEXT NOT NULL DEFAULT 'wstg',
+  note TEXT, evidence_id TEXT, updated_at REAL,
+  PRIMARY KEY(engagement_id, test_id)
+);
+-- The projection and review history commit together, including clears.
+CREATE TRIGGER IF NOT EXISTS coverage_review_insert AFTER INSERT ON coverage_entries BEGIN
+  INSERT INTO events(engagement_id, kind, payload_json, created_at)
+  VALUES(NEW.engagement_id, 'coverage_review', json_object('framework', NEW.framework,
+    'requirement_id', NEW.test_id, 'status', NEW.status, 'note', NEW.note,
+    'evidence_id', NEW.evidence_id), NEW.updated_at);
+END;
+CREATE TRIGGER IF NOT EXISTS coverage_review_update AFTER UPDATE ON coverage_entries BEGIN
+  INSERT INTO events(engagement_id, kind, payload_json, created_at)
+  VALUES(NEW.engagement_id, 'coverage_review', json_object('framework', NEW.framework,
+    'requirement_id', NEW.test_id, 'status', NEW.status, 'note', NEW.note,
+    'evidence_id', NEW.evidence_id), NEW.updated_at);
+END;
+CREATE TRIGGER IF NOT EXISTS coverage_review_delete AFTER DELETE ON coverage_entries BEGIN
+  INSERT INTO events(engagement_id, kind, payload_json, created_at)
+  VALUES(OLD.engagement_id, 'coverage_review', json_object('framework', OLD.framework,
+    'requirement_id', OLD.test_id, 'status', 'unknown'), (julianday('now') - 2440587.5) * 86400);
+END;
+-- Application intelligence: what the application IS, with provenance on every claim.
+-- Distinct from `assets`, which records probe targets. This is functionality: routes,
+-- parameters, resources, owners, roles, workflows and trust boundaries, each row stating
+-- HOW it is known (observed, spec, inferred, hypothesized) and what proves it.
+CREATE TABLE IF NOT EXISTS app_nodes(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL,
+  kind TEXT NOT NULL,               -- app|route|endpoint|param|form|resource|owner|role|
+                                    -- workflow|step|trust_boundary|sensitive_op|technology
+  key TEXT NOT NULL,                -- stable identity within kind
+  label TEXT, data_json TEXT NOT NULL DEFAULT '{}',
+  provenance TEXT NOT NULL,         -- observed|spec|source|inferred|hypothesized
+  confidence REAL NOT NULL DEFAULT 1.0,
+  evidence_id TEXT, source_ref TEXT,
+  first_seen REAL, last_seen REAL,
+  UNIQUE(engagement_id, kind, key)
+);
+CREATE TABLE IF NOT EXISTS app_edges(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL,
+  src_id TEXT NOT NULL, dst_id TEXT NOT NULL, kind TEXT NOT NULL,
+  provenance TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 1.0,
+  evidence_id TEXT, created_at REAL,
+  UNIQUE(engagement_id, src_id, dst_id, kind)
+);
 CREATE INDEX IF NOT EXISTS idx_hyp_eng ON hypotheses(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_steps_eng ON investigation_steps(engagement_id, intent_id);
 CREATE INDEX IF NOT EXISTS idx_runs_eng ON agent_runs(engagement_id);
@@ -124,6 +196,8 @@ CREATE INDEX IF NOT EXISTS idx_obs_eng ON observations(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_findings_eng ON findings(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_events_eng ON events(engagement_id, seq);
 CREATE INDEX IF NOT EXISTS idx_exchanges_eng ON exchanges(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_appnodes_eng ON app_nodes(engagement_id, kind);
+CREATE INDEX IF NOT EXISTS idx_appedges_eng ON app_edges(engagement_id, src_id);
 """
 
 
@@ -156,8 +230,14 @@ class DB:
         additions = {
             "findings": [("remediation_notes", "TEXT"), ("owner", "TEXT"),
                          ("fix_commit", "TEXT"), ("remediated_at", "REAL"),
-                         ("due_at", "TEXT"), ("remediation_state", "TEXT DEFAULT 'open'")],
+                         ("due_at", "TEXT"), ("remediation_state", "TEXT DEFAULT 'open'"),
+                         # structured control ids the producing check asserted, and
+                         # where they came from (check | migrated | analyst)
+                         ("controls_json", "TEXT NOT NULL DEFAULT '[]'"),
+                         ("controls_source", "TEXT")],
             "exchanges": [("replay_of", "TEXT"), ("tags_json", "TEXT DEFAULT '[]'")],
+            "engagements": [("standards_json", "TEXT NOT NULL DEFAULT '{}'")],
+            "coverage_entries": [("framework", "TEXT NOT NULL DEFAULT 'wstg'")],
         }
         for table, cols in additions.items():
             existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}

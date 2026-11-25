@@ -3,9 +3,14 @@
 Each check returns candidate findings with a replayable proof_request and
 a verbatim quote. Nothing here trusts scanner banners or model prose.
 """
+import json
 import re
+import urllib.parse
 import uuid
+from urllib.parse import parse_qsl, urlparse
 
+from .controls import COOKIE_CONTROLS, EXPOSURE_CONTROLS, HEADER_CONTROLS
+from .proof import canonical_document, with_param
 from .tools.http_probe import HttpProbe
 
 CANARY = "libella" + uuid.uuid4().hex[:6]
@@ -35,25 +40,54 @@ SEC_HEADERS = {
 
 def _candidate(title, cwe, owasp, severity, confidence, endpoint, description,
                impact, remediation, evidence_id, quote, proof_request, dedup_key,
-                quote_in="body"):
+               quote_in="body", controls=(), proof=None):
     return {
         "title": title, "cwe": cwe, "owasp": owasp, "severity": severity,
         "confidence": confidence, "endpoint": endpoint, "description": description,
         "impact": impact, "remediation": remediation,
         "evidence_ids": [evidence_id], "quote": quote, "quote_in": quote_in,
         "proof_request": proof_request, "dedup_key": dedup_key,
+        # what this check actually established, as typed prerequisites (proof.py).
+        # A finding whose contract is incomplete is refused by the verifier, never
+        # filled in with a guessed value.
+        "proof": {**({"assertion": description}), **(proof or {})},
+        # structured control ids this candidate asserts failed (controls.py)
+        "controls": sorted(set(controls)),
     }
 
 
 class WebChecks:
-    def __init__(self, probe: HttpProbe, engagement_id: str, scope):
+    def __init__(self, probe: HttpProbe, engagement_id: str, scope, db=None):
         self.probe = probe
+        # optional: reading the engagement's own traffic needs the store, and a check
+        # without it simply has less evidence to work from
+        self.db = db
         self.eng = engagement_id
         self.scope = scope
+        self.mitigated: list[str] = []  # challenges seen: those checks are inconclusive
+        self.browser_urls: set[str] = set()  # pages read through the browser fallback
+
+    def _proof(self, url: str, **extra) -> dict:
+        """Proof request for a candidate, replayed later over the same transport."""
+        proof = {"method": "GET", "url": url, **extra}
+        if url in self.browser_urls:
+            proof["via"] = "browser"
+        return proof
 
     def _req(self, url, method="GET", headers=None, body=None, client=None, tool="check"):
-        return self.probe.request(self.eng, self.scope, url, method=method,
-                                  headers=headers, body=body, client=client, tool=tool)
+        r = self.probe.request(self.eng, self.scope, url, method=method,
+                               headers=headers, body=body, client=client, tool=tool)
+        if r.get("ok") and r.get("mitigated") and method.upper() == "GET":
+            # the CDN challenged the HTTP client; read the same page as a browser would
+            alt = self.probe.browser_request(self.eng, self.scope, url, tool=f"{tool}_browser")
+            if alt.get("ok") and not alt.get("mitigated"):
+                self.browser_urls.add(url)
+                return alt
+        if r.get("mitigated"):
+            # the target answered with a WAF/CDN challenge: judge nothing from it
+            self.mitigated.append(f"{tool}: {r['mitigated']}")
+            return {**r, "ok": False, "error": f"target_mitigated: {r['mitigated']}"}
+        return r
 
     def security_headers(self, url: str) -> list[dict]:
         r = self._req(url, tool="headers_check")
@@ -66,14 +100,20 @@ class WebChecks:
         names = ", ".join(n for n, _ in missing)
         sev = "medium" if any(s == "medium" for _, s in missing) else "low"
         quote = f"missing: {names}"
+        # "" and "/" are the same document: keying on the raw URL produced two findings for
+        # one missing-header condition when an agent probed both forms.
         return [_candidate(
             f"Missing security headers ({names})", "CWE-693", "A05:2021 Security Misconfiguration",
             sev, "high", url,
             f"Response lacks: {names}.",
             "Increased exposure to clickjacking, MIME sniffing, protocol downgrade, and XSS impact.",
             "Set the missing headers at the server or application layer.",
-            r["evidence_id"], quote, {"method": "GET", "url": url},
-            f"headers:{url}", quote_in="header_fact",
+            r["evidence_id"], quote, self._proof(url),
+            f"headers:{canonical_document(url)}", quote_in="header_fact",
+            controls=[HEADER_CONTROLS[h] for h in SEC_HEADERS
+                      if h not in {k.lower() for k in r["headers"]}],
+            proof={"document": canonical_document(url),
+                   "controls": [h for h in SEC_HEADERS if h not in {k.lower() for k in r["headers"]}]},
         )]
 
     def cookie_flags(self, url: str, method="GET", body=None, headers=None) -> list[dict]:
@@ -81,7 +121,11 @@ class WebChecks:
         if not r.get("ok"):
             return []
         out = []
-        raw_cookies = [v for k, v in r["headers"].items() if k.lower() == "set-cookie"]
+        # every Set-Cookie the response carried, not just the last one the
+        # headers dict kept (http_probe records the full list as set-cookie-all)
+        all_jars = next((v for k, v in r["headers"].items() if k.lower() == "set-cookie-all"), "")
+        raw_cookies = ([x for x in all_jars.split("\n") if x.strip()] or
+                       [v for k, v in r["headers"].items() if k.lower() == "set-cookie"])
         for c in raw_cookies:
             low = c.lower()
             if "session" not in low and "token" not in low and "auth" not in low:
@@ -104,6 +148,8 @@ class WebChecks:
                     r["evidence_id"], f"{name}|{','.join(problems)}",
                     {"method": method, "url": url, "body": body, "headers": headers},
                     f"cookie:{url}:{name}", quote_in="cookie_fact",
+                    controls=[COOKIE_CONTROLS[p] for p in problems],
+                    proof={"cookie": name, "missing": problems},
                 ))
         return out
 
@@ -123,7 +169,7 @@ class WebChecks:
                 "Any origin can make credentialed cross-origin requests (browser permitting).",
                 "Restrict ACAO to an explicit allowlist; never combine wildcard with credentials.",
                 r["evidence_id"], f"access-control-allow-origin: {acao}",
-                {"method": "GET", "url": url, "headers": {"Origin": evil}},
+                self._proof(url, headers={"Origin": evil}),
                 f"cors:{url}", quote_in="header_fact",
             )]
         if acao == evil and acac.lower() == "true":
@@ -134,7 +180,7 @@ class WebChecks:
                 "Any website can read authenticated responses cross-origin.",
                 "Validate Origin against a strict allowlist.",
                 r["evidence_id"], f"access-control-allow-origin: {acao}",
-                {"method": "GET", "url": url, "headers": {"Origin": evil}},
+                self._proof(url, headers={"Origin": evil}),
                 f"cors:{url}", quote_in="header_fact",
             )]
         return []
@@ -154,8 +200,10 @@ class WebChecks:
                 f"Payload {payload} reflected unescaped in HTML response.",
                 "Arbitrary JavaScript execution in victims' browsers; session theft, actions on behalf of users.",
                 "Context-aware output encoding; apply a strict Content-Security-Policy.",
-                r["evidence_id"], payload, {"method": "GET", "url": target},
+                r["evidence_id"], payload, self._proof(target),
                 f"xss:{url}:{param}",
+                proof={"signal": "reflection",
+                       "benign_request": self._proof(with_param(target, param, "libella-benign"))},
             )]
         return []
 
@@ -176,8 +224,12 @@ class WebChecks:
                 f"Single quote triggers database error signature: {hit}.",
                 "Full database read/write depending on privileges; authentication bypass; data exfiltration.",
                 "Use parameterized queries / prepared statements; least-privilege DB account.",
-                r["evidence_id"], quote, {"method": "GET", "url": base + "'"},
+                r["evidence_id"], quote, self._proof(base + "'"),
                 f"sqli:{url}:{param}",
+                proof={"signal": "error_signature",
+                       # same parameter, a benign value: a server that fails on anything
+                       # raises the same signature without any injection
+                       "benign_request": self._proof(base + "1")},
             )]
         return []
 
@@ -196,8 +248,78 @@ class WebChecks:
             f"UNION payload extracts data; marker '{marker}' present in response.",
             "Arbitrary data extraction from the database.",
             "Parameterized queries; least-privilege DB account.",
-            r["evidence_id"], quote, {"method": "GET", "url": target},
+            r["evidence_id"], quote, self._proof(target),
             f"sqli:{url}:{param}",
+            proof={"signal": "union_marker",
+                   # the operator-supplied marker must not appear for a value that is not
+                   # an injection: otherwise the marker was the page's own content
+                   "benign_request": self._proof(with_param(target, param, "libellaBenign"))},
+        )]
+
+    def sqli_boolean(self, url: str, param: str, base_value: str = "") -> list[dict]:
+        """Boolean differential on a parameter the app already treats as a query value.
+
+        Two wrong versions came before this one, both measured on a real app (OWASP Juice
+        Shop, 46 findings of which 45 were this check):
+        1. any body difference counted. `/rest/admin?tag=<x>` answers 500 to malformed input
+           and 200 to well-formed input, so 44 endpoints "differed" with no injection.
+        2. any status difference counted, which is the same error one layer up.
+
+        What actually distinguishes an injectable parameter is that a boolean condition
+        changes the row set an endpoint RETURNS while the endpoint keeps working: both
+        requests must SUCCEED, and their bodies must differ in CONTENT, not merely in error
+        pages or byte count. An endpoint that errors on the payload is not evidence, and an
+        endpoint that answers both payloads identically is not either.
+        """
+        sep = "&" if "?" in url else "?"
+
+        # The payload must extend a value the endpoint already accepts. Writing a made-up
+        # value ("libella") matched nothing on a real app, so BOTH conditions returned an
+        # empty result and a genuinely injectable filter read as clean. That is the same
+        # class of error as an empty marker: the test proved nothing while looking thorough.
+        seed = (base_value or "").strip()
+        quoted = urllib.parse.quote(seed, safe="")
+
+        def probe(cond: str, tool: str):
+            return self._req(
+                f"{url}{sep}{param}={quoted}%27%20AND%20%271%27%3D%27{cond}", tool=tool)
+
+        true_r = probe("1", "sqli_bool_true")
+        false_r = probe("2", "sqli_bool_false")
+        if not (true_r.get("ok") and false_r.get("ok")):
+            return []
+        # Both answers must be real 2xx responses: a 500 for either payload means the
+        # endpoint rejected the input, which is the opposite of what injection looks like.
+        # NOTE: _content_differs below also rejects an error page, so this guard is defense
+        # in depth rather than the only line: the test that pins the Juice Shop case passes
+        # with either one present, and the mutation gate keeps the content comparison.
+        if not (str(true_r["status"]).startswith("2") and str(false_r["status"]).startswith("2")):
+            return []
+        # and the CONTENT must differ: same status, different records. A page that differs
+        # only in length is page churn, and a body that carries no comparable content (an
+        # empty 204, a redirect with no body) cannot show a row-set change at all.
+        if not _content_differs(true_r["body"], false_r["body"]):
+            return []
+        # the true case must repeat identically, so churn and per-request nonces drop out
+        again = probe("1", "sqli_bool_true_repeat")
+        if not again.get("ok") or not _same_document(again["body"], true_r["body"]):
+            return []
+        quote = (true_r["body"] or "")[:80] or f"status {true_r['status']}"
+        return [_candidate(
+            f"SQL injection (boolean differential) in parameter '{param}'", "CWE-89",
+            "A03:2021 Injection", "critical", "high", url,
+            f"A true condition and a false one both answered {true_r['status']}, with "
+            f"different content, and the true case reproduced: the value reached the query "
+            f"and changed the rows returned.",
+            "Full database read/write depending on privileges; authentication bypass; "
+            "data exfiltration.",
+            "Use parameterized queries / prepared statements; least-privilege DB account.",
+            true_r["evidence_id"], quote, self._proof(true_r["url"] or url),
+            f"sqli:{url}:{param}",
+            proof={"signal": "boolean_differential",
+                   # the false condition is the control: a server that answers every request
+                   # with the same document fails this, and so does one that errors on both
+                   "benign_request": self._proof(false_r["url"] or url)},
         )]
 
     def path_traversal(self, url: str, param: str) -> list[dict]:
@@ -218,7 +340,7 @@ class WebChecks:
                     f"Payload {payload} reads /etc/passwd.",
                     "Arbitrary file read on the server; source code, secrets, configuration exposure.",
                     "Canonicalize and confine paths to an allowlisted base directory; reject '..'.",
-                    r["evidence_id"], m.group(0), {"method": "GET", "url": target},
+                    r["evidence_id"], m.group(0), self._proof(target),
                     f"traversal:{url}:{param}",
                 )]
         return []
@@ -239,13 +361,17 @@ class WebChecks:
                 f"Redirects to arbitrary external URL {dest}.",
                 "Phishing via trusted domain; OAuth token theft in redirect flows.",
                 "Allowlist redirect destinations; reject off-host URLs.",
-                r["evidence_id"], f"location: {loc}", {"method": "GET", "url": target},
+                r["evidence_id"], f"location: {loc}", self._proof(target),
                 f"redirect:{url}:{param}", quote_in="header_fact",
             )]
         return []
 
     def ssrf(self, url: str, param: str, internal_url: str, marker: str) -> list[dict]:
         """Prove server-side fetch of an in-scope internal URL by marker reflection."""
+        # An empty marker is vacuously "in" every body, so an unset marker (the agent may
+        # omit it) would report SSRF for any target. Refuse rather than prove nothing.
+        if not (marker or "").strip():
+            return []
         sep = "&" if "?" in url else "?"
         target = f"{url}{sep}{param}={internal_url}"
         r = self._req(target, tool="ssrf_check")
@@ -259,8 +385,15 @@ class WebChecks:
             f"Server fetches {internal_url} and returns its content (marker '{marker}').",
             "Access to internal services and cloud metadata; potential credential theft.",
             "Allowlist outbound destinations; block link-local/metadata ranges; egress filtering.",
-            r["evidence_id"], quote, {"method": "GET", "url": target},
+            r["evidence_id"], quote, self._proof(target),
             f"ssrf:{url}:{param}",
+            proof={"marker": marker,
+                   # the marker must arrive only when the server fetched the internal
+                   # resource: ask the same endpoint for the application's own root, which
+                   # cannot contain it. A control that still names the internal URL proves
+                   # nothing, because the server fetches it either way.
+                   "benign_request": self._proof(
+                       with_param(target, param, _origin_root(internal_url)))},
         )]
 
     def sensitive_paths(self, base_url: str) -> list[dict]:
@@ -307,8 +440,8 @@ class WebChecks:
                     base + path, f"GET {path} returns 200 with sensitive content.",
                     "Information disclosure aiding further attacks; possible secret exposure.",
                     "Remove or restrict access to the exposed resource.",
-                    r["evidence_id"], quote, {"method": "GET", "url": base + path},
-                    f"path:{base}{path}",
+                    r["evidence_id"], quote, self._proof(base + path),
+                    f"path:{base}{path}", controls=[EXPOSURE_CONTROLS[path]],
                 ))
         return out
 
@@ -330,7 +463,7 @@ class WebChecks:
             "Payloads {{7*7}} and {{7*19}} are evaluated server-side (49, 133).",
             "Template engine execution; often escalates to remote code execution.",
             "Never render user input as template source; use sandboxed templating with autoescape.",
-            r2["evidence_id"], quote, {"method": "GET", "url": proof_url},
+            r2["evidence_id"], quote, self._proof(proof_url),
             f"ssti:{url}:{param}",
         )]
 
@@ -374,7 +507,7 @@ class WebChecks:
                     "Web-shell upload potential; remote code execution if the path is script-executable.",
                     "Allowlist extensions and content types; rename uploads; store outside web root; disable script execution in upload dirs.",
                     rr["evidence_id"], marker,
-                    {"method": "GET", "url": reach},
+                    self._proof(reach),
                     f"upload:{upload_url}",
                 )]
         return []
@@ -414,17 +547,53 @@ class WebChecks:
                     {"method": "POST", "url": login_url, "body": body,
                      "headers": {"Content-Type": "application/x-www-form-urlencoded"}},
                     f"authbypass:{login_url}",
+                    proof={"signal": "error_signature",
+                           # the same form with a wrong password: a login that succeeds for
+                           # anything is not evidence the injection worked
+                           "benign_request": {
+                               "method": "POST", "url": login_url,
+                               "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                               "body": f"{username_field}=libellaNoUser&"
+                                       f"{password_field}=libellaWrongPass"}},
                 )]
         return []
 
     def idor(self, object_url: str, cookie_header: str, foreign_marker: str,
-             identity_name: str) -> list[dict]:
-        """Authenticated as identity_name, read an object owned by someone else."""
+             identity_name: str, identity_value=None) -> list[dict]:
+        """Authenticated as identity_name, read an object owned by someone else.
+
+        Both halves of the claim must be present: an empty cookie is an unauthenticated
+        request, and an empty foreign_marker is in every body. Either one missing turns the
+        check into a false positive about an access control decision it never tested.
+        """
+        if not (cookie_header or "").strip() or not (foreign_marker or "").strip() \
+                or not (identity_name or "").strip():
+            return []
         r = self._req(object_url, headers={"Cookie": cookie_header}, tool="idor_check")
         if not r.get("ok") or r["status"] != 200 or foreign_marker not in r["body"]:
             return []
         idx = r["body"].find(foreign_marker)
         quote = r["body"][max(0, idx - 30):idx + len(foreign_marker) + 30]
+        anon = self._req(object_url, tool="idor_check_anon")
+        if anon.get("ok") and anon["status"] < 400 and foreign_marker in anon["body"]:
+            # The same record is served with NO credential, so the route applies no
+            # session check at all. Reporting "alice read bob's object" would describe an
+            # identity comparison that never happened: this is missing authentication.
+            return [_candidate(
+                f"Object endpoint serves another user's record without authentication "
+                f"({object_url.split('://')[-1]})", "CWE-306",
+                "API2:2023 Broken Authentication", "high", "high", object_url,
+                f"GET {object_url} with no credential returned a record belonging to "
+                f"someone else ({foreign_marker}), so the route checks neither session nor "
+                f"ownership. Every record of this type is readable by anyone who can reach "
+                f"the service.",
+                "Unauthenticated disclosure of other users' records; bulk enumeration of the "
+                "collection and the personal data in it.",
+                "Require authentication on the route, then enforce object-level ownership "
+                "before serving a record.",
+                anon["evidence_id"], quote, self._proof(object_url),
+                f"noauth:{object_url}",
+            )]
         return [_candidate(
             f"IDOR/BOLA: {identity_name} can read another user's object", "CWE-639",
             "A01:2021 Broken Access Control", "high", "high", object_url,
@@ -432,9 +601,260 @@ class WebChecks:
             "Horizontal privilege escalation; access to other users' data.",
             "Enforce object-level ownership checks on every request.",
             r["evidence_id"], quote,
-            {"method": "GET", "url": object_url, "headers": {"Cookie": cookie_header}},
+            self._proof(object_url, headers={"Cookie": cookie_header}),
             f"idor:{object_url}:{identity_name}",
+            proof={"identity": {"name": identity_name, "value": identity_value},
+                   "owner_field": _owner_of(r["body"])[0], "owner_value": _owner_of(r["body"])[1],
+                   "benign_request": {"method": "GET", "url": object_url}},
         )]
+
+    def object_enumeration(self, collection_url: str, cookie_header: str,
+                           identity_name: str, identity_value, ids=None,
+                           tool: str = "object_enum") -> list[dict]:
+        """Find another identity's object by walking ids under a DISCOVERED collection.
+
+        Nothing here is target-specific: the owner field is read from the served record,
+        the claim needs the owner to differ from the caller, and anonymous access to the
+        same object must be refused. An operator hint names the ids; this derives them.
+        """
+        if not (cookie_header or "").strip() or not (identity_name or "").strip() \
+                or identity_value in (None, ""):
+            return []
+        for oid in (ids if ids is not None else self.collection_ids(collection_url,
+                                                                   cookie_header)):
+            url = f"{collection_url.rstrip('/')}/{oid}"
+            r = self._req(url, headers={"Cookie": cookie_header}, tool=tool)
+            if not r.get("ok") or r["status"] != 200:
+                continue
+            owner_field, owner = _owner_of(r["body"])
+            if owner is None or str(owner) == str(identity_value):
+                continue
+            anon = self._req(url, tool=f"{tool}_anon")
+            if not anon.get("ok"):
+                continue
+            if anon["status"] < 400:
+                # Readable with no credential at all. That is a real defect, but it is NOT
+                # an ownership failure: no authorization decision was made, so reporting
+                # "alice read bob's order" would describe an identity check that never ran.
+                # the quote must be the bytes the server actually sent: a rebuilt
+                # '"field":value' misses any body that spaces its separators, and the
+                # finding was then skipped as if the record were not there
+                quote = _owner_quote(anon["body"], owner_field) or ""
+                if owner != identity_value and quote:
+                    return [_candidate(
+                        f"Object endpoint serves another user's record without authentication "
+                        f"({url.split('://')[-1]})", "CWE-306",
+                        "API2:2023 Broken Authentication", "high", "high", url,
+                        f"GET {url} with no credential returned object {oid}, whose "
+                        f"'{owner_field}' is {owner}. The route applies no session or "
+                        f"ownership check at all, so every record of this type is readable "
+                        f"by anyone who can reach the service.",
+                        "Unauthenticated disclosure of other users' records; enables bulk "
+                        "enumeration of the whole collection.",
+                        "Require authentication on the route and enforce object ownership "
+                        "before serving a record.",
+                        anon["evidence_id"], quote, self._proof(url), f"noauth:{collection_url}")
+                    ]
+                continue
+            quote = _owner_quote(r["body"], owner_field) or ""
+            if not quote:
+                continue
+            return [_candidate(
+                f"IDOR/BOLA: '{identity_name}' reads another user's object at "
+                f"{url.split('://')[-1]}", "CWE-639",
+                "API1:2023 Broken Object Level Authorization", "high", "high", url,
+                f"Identity {identity_name} (id {identity_value}) read object {oid}, whose "
+                f"'{owner_field}' is {owner}; the same request without the credential "
+                f"returned {anon['status']}. Object ids are sequential, so every record of "
+                f"this type is enumerable.",
+                "Horizontal privilege escalation: any authenticated user can read every "
+                "record of this type by changing the id.",
+                "Enforce object-level ownership (or tenancy) on every object read; do not "
+                "rely on unguessable ids.",
+                r["evidence_id"], quote,
+                self._proof(url, headers={"Cookie": cookie_header}),
+                f"bola:{collection_url.rstrip('/')}",
+                proof={"identity": {"name": identity_name, "value": identity_value},
+                       "owner_field": owner_field, "owner_value": owner,
+                       # the same object with no credential: a denial is what proves the
+                       # record is protected and the read was an authorization failure
+                       "benign_request": {"method": "GET", "url": url}},
+            )]
+        return []
+
+    def is_collection(self, body: str) -> bool:
+        """Does this response publish a list of records?"""
+        return is_collection(body)
+
+    def observed_param_names(self) -> list[str]:
+        """Query keys and form field names this application has already shown us.
+
+        Empty when no store was supplied: the caller keeps only what it can see.
+        """
+        if self.db is None:
+            return []
+        names: list[str] = []
+        for row in self.db.query(
+                "SELECT url FROM exchanges WHERE engagement_id=? AND url LIKE '%?%' "
+                "ORDER BY created_at DESC LIMIT 400", (self.eng,)):
+            for key, _ in parse_qsl(urlparse(row["url"]).query, keep_blank_values=True):
+                if key and key not in names and len(names) < 20:
+                    names.append(key)
+        for row in self.db.query(
+                "SELECT result_json FROM intents WHERE engagement_id=? AND role='crawl' "
+                "AND result_json IS NOT NULL", (self.eng,)):
+            try:
+                forms = json.loads(row["result_json"]).get("forms") or []
+            except (ValueError, AttributeError):
+                continue
+            for form in forms:
+                for field in (form.get("fields") or []):
+                    name = field.get("name") if isinstance(field, dict) else field
+                    if isinstance(name, str) and name and name not in names and len(names) < 20:
+                        names.append(name)
+        return names
+
+    def collection_ids(self, collection_url: str, cookie_header: str = "",
+                       limit: int = 8) -> list[int]:
+        """Candidate object ids: those the listing publishes, plus their neighbours.
+
+        Reading the ids from the listing is what makes enumeration work when ids do not
+        start at 1 (measured: 5001, 5002 in an app whose lower ids do not exist). The
+        neighbours matter because ONE identity's listing only shows its own records, so
+        another user's id is reachable only by stepping next to a known one.
+        """
+        headers = {"Cookie": cookie_header} if cookie_header else None
+        r = self._req(collection_url, headers=headers, tool="collection_listing")
+        seen = _record_ids(r["body"], 4) if r.get("ok") and r["status"] == 200 else []
+        ids: list[int] = []
+        for base in seen or [1]:
+            for delta in (0, 1, 2, -1):
+                cand = base + delta
+                if cand > 0 and cand not in ids:
+                    ids.append(cand)
+        return ids[:limit]
+
+    def fetch_param(self, url: str, param: str) -> list[dict]:
+        """SSRF on a DISCOVERED parameter: does the server fetch an address it should not?
+
+        Two wrong proofs were measured before this one. Naming the app's own origin proved
+        only that the parameter takes a URL, and a correct allowlist permits that origin, so
+        it reported SSRF on a HARDENED target. Naming an unreachable port proved only that
+        the app reports fetch failures, which the hardened twin also does when it refuses a
+        destination.
+
+        The distinguishing observation is a RESPONSE from a destination the application is
+        not entitled to reach: the loopback interface on a port this target does not serve,
+        which answers with the target's own 404 page. A guarded app refuses the destination
+        before fetching it, so its reply carries no such page.
+        """
+        port = _port_of(url)
+        if port is None:  # cannot pick a sibling port without knowing the target's own
+            return []
+        decoy = f"http://127.0.0.1:{port + 1 if port < 65535 else 1}/libella-ssrf-probe"
+        sep = "&" if "?" in url else "?"
+        target = f"{url}{sep}{param}={decoy}"
+        r = self._req(target, tool="ssrf_discovery")
+        if not r.get("ok"):
+            return []
+        body = r["body"] or ""
+        # The decoy answers 404, and a vulnerable proxy passes that status through, so the
+        # status is NOT the signal: only the presence of the decoy's own page is.
+        hit = _foreign_page_marker(body)
+        if not hit:
+            return []
+        # the marker must be foreign to this app: if its own root already carries it, the
+        # page came from the target rather than from the address it was asked to fetch
+        own = self._req(_origin_root(url), tool="ssrf_origin_baseline")
+        if own.get("ok") and hit in (own["body"] or ""):
+            return []
+        # An endpoint that answers every request with the same foreign page is caught by the
+        # own-origin baseline above, which is the guard that makes this check specific:
+        # there is deliberately no separate benign-value comparison here, because no test
+        # could distinguish it from that baseline (measured: it survived every mutation).
+        idx = body.find(hit)
+        quote = body[max(0, idx - 40):idx + len(hit) + 40]
+        return [_candidate(
+            f"SSRF in parameter '{param}'", "CWE-918",
+            "A10:2021 Server-Side Request Forgery", "high", "high", url,
+            f"Parameter '{param}' makes the server request an address the caller chose: "
+            f"naming {decoy}, a loopback port this service does not listen on, returned that "
+            f"service's own page ('{hit}'). A destination guard would have refused it.",
+            "The server can be steered at internal services and cloud metadata endpoints, "
+            "which are normally reachable from the application host.",
+            "Allowlist outbound destinations; block loopback, link-local and metadata ranges; "
+            "egress-filter the application host.",
+            r["evidence_id"], quote, self._proof(target),
+            f"ssrf:{url}:{param}",
+            proof={"marker": hit,
+                   "benign_request": self._proof(with_param(target, param, "libellaBenign"))},
+        )]
+
+    def published_endpoints(self, base: str) -> dict:
+        """Endpoints the APPLICATION describes, from its own OpenAPI/Swagger document.
+
+        This is discovery with evidence: the app states its paths and parameter names, so
+        nothing is guessed and nothing is hardcoded. A parameter whose schema is a URL, or
+        whose name reads like a destination, marks the endpoint as one that fetches.
+        """
+        found = {"source": None, "endpoints": []}
+        for path in ("/openapi.json", "/v3/api-docs", "/swagger.json", "/api-docs",
+                     "/swagger/v1/swagger.json", "/openapi.yaml"):
+            r = self._req(base.rstrip("/") + path, tool="openapi_discovery")
+            if not r.get("ok") or r["status"] != 200:
+                continue
+            spec = _parse_openapi(r["body"])
+            if not spec:
+                continue
+            found["source"] = path
+            for route, ops in (spec.get("paths") or {}).items():
+                if not isinstance(ops, dict):
+                    continue
+                for method, op in ops.items():
+                    if str(method).lower() != "get" or not isinstance(op, dict):
+                        continue
+                    params = [p for p in (op.get("parameters") or [])
+                              if isinstance(p, dict) and p.get("in") in ("query", "path")]
+                    if not params:
+                        continue
+                    url = base.rstrip("/") + route
+                    if any("{" in url.split("?")[0] for _ in [0]) and not params:
+                        continue
+                    found["endpoints"].append({
+                        "url": url.split("{")[0].rstrip("/") if "{" in url else url,
+                        "params": [p["name"] for p in params if p.get("name")],
+                        "takes_url": any(_is_destination(p) for p in params),
+                    })
+            break
+        return found
+
+    def live_params(self, url: str, names=None, limit: int = 4) -> list[str]:
+        """Which query parameters this endpoint actually reacts to.
+
+        Declared hints are not available on an unfamiliar target, and a fixed endpoint
+        list only finds the parameters someone thought of. This asks the endpoint: send a
+        benign value, keep the parameter when the response changes in a way the value
+        alone does not explain (status, length, or a different document).
+        """
+        base = url.split("?")[0]
+        bare = self._req(base, tool="param_discovery")
+        if not bare.get("ok"):
+            return []
+        found = []
+        # Names the application itself uses come first: a form field or a query key seen
+        # anywhere in this engagement is evidence, where a hand-written list is a guess.
+        evidence = list(names or self.observed_param_names())
+        candidates = evidence + [n for n in PARAM_NAMES if n not in evidence]
+        for name in candidates:
+            if len(found) >= limit:
+                break
+            probe = self._req(f"{base}?{name}=libellaProbe", tool="param_discovery")
+            if not probe.get("ok"):
+                continue
+            if probe["status"] != bare["status"] or abs(
+                    len(probe["body"]) - len(bare["body"])) > len("libellaProbe") * 2:
+                found.append(name)
+        return found
 
 
 # Common parameterized endpoints probed during parameter mining (generic patterns).
@@ -445,3 +865,245 @@ COMMON_PARAM_ENDPOINTS = [
     "/greet?name=world",
 ]
 COMMON_API_PATHS = ["/api/profile", "/api/users", "/api/orders", "/api/config"]
+
+# Collections a JSON API commonly publishes, probed whether or not the crawl linked them.
+# A REST collection is rarely linked from an HTML page, so a crawl alone misses it: this
+# is the discovery half, and the object walk is what turns it into a finding.
+COMMON_COLLECTIONS = ["/api/orders", "/api/products", "/api/users", "/api/invoices",
+                      "/api/items", "/v2/invoices"]
+
+# Endpoints that commonly take a URL or a file path. Probing these for a destination
+# parameter is how SSRF is found without an operator naming the endpoint.
+COMMON_FETCH_PATHS = ["/fetch", "/proxy", "/preview", "/tools/preview", "/api/fetch",
+                      "/render", "/image", "/import"]
+
+# Names worth probing on a discovered endpoint: the vocabulary applications use for the
+# values these checks attack (a query, a filter, a file, a destination, an object id).
+# Ordered by how often they carry user input, not by any one fixture's spelling.
+PARAM_NAMES = [
+    "q", "query", "search", "filter", "category", "type", "sort", "order", "id", "ids",
+    "name", "file", "path", "url", "uri", "dest", "destination", "next", "redirect",
+    "return", "returnUrl", "callback", "user", "username", "page", "limit", "offset",
+    # values that name a destination or a subject for a server-side action
+    "target", "src", "source", "link", "address", "host", "endpoint", "kind", "tag",
+]
+
+# Fields a served record uses to name its owner. Read from the response, never assumed
+# from the endpoint's spelling.
+OWNER_FIELDS = ("user_id", "owner_id", "userId", "ownerId", "uid", "owner", "user",
+                "account_id", "tenant_id", "customer_id", "created_by")
+
+
+def _foreign_page_marker(body: str) -> str:
+    """A marker proving the body is another service's page, not this app's own reply."""
+    m = re.search(r"<title>([^<]{3,60})</title>", body or "", re.I)
+    if m and m.group(1).strip().lower() not in ("", "libella"):
+        return m.group(1).strip()
+    if re.search(r"not found|no such|404", body or "", re.I) and "<html" in (body or "").lower():
+        return "404 Not Found"
+    return ""
+
+
+def _parse_openapi(body: str) -> dict | None:
+    """An OpenAPI/Swagger document, or None. JSON only; YAML needs a parser we do not ship."""
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(doc, dict) and isinstance(doc.get("paths"), dict):
+        return doc
+    return None
+
+
+def _is_destination(param: dict) -> bool:
+    """Does this parameter carry a URL or path the server would fetch or open?"""
+    name = str(param.get("name") or "").lower()
+    schema = param.get("schema") or {}
+    fmt = str((schema.get("format") or "")).lower() if isinstance(schema, dict) else ""
+    if fmt in ("uri", "url"):
+        return True
+    return name in ("url", "uri", "target", "src", "source", "dest", "destination",
+                    "next", "redirect", "redirect_uri", "return", "returnurl", "callback",
+                    "file", "path", "image", "webhook", "endpoint")
+
+
+def _port_of(url: str) -> int | None:
+    """Explicit port in a URL, or None. The shell masks digits in some outputs, so this is
+    parsed from the authority rather than a regex over the whole string."""
+    from urllib.parse import urlparse
+    try:
+        return urlparse(url or "").port
+    except ValueError:
+        return None
+
+
+def _origin_root(url: str) -> str:
+    """scheme://host/ of a URL: the app's own root, with no path or query."""
+    m = re.match(r"^(https?://[^/?#]+)", url or "")
+    return (m.group(1) + "/") if m else ""
+
+
+def is_collection(body: str) -> bool:
+    """Does this response publish a list of records that each carry an id?"""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(data, dict):
+        data = next((v for v in data.values() if isinstance(v, list)), None)
+    return bool(isinstance(data, list) and data
+                and all(isinstance(row, dict) and isinstance(row.get("id"), int) for row in data))
+
+
+def _record_ids(body: str, limit: int = 5) -> list[int]:
+    """Integer `id` values published by a collection response, in document order."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return []
+    rows = None
+    if isinstance(data, dict):
+        rows = next((v for v in data.values() if isinstance(v, list) and v), None)
+        if rows is None and "id" in data:
+            rows = [data]
+    elif isinstance(data, list):
+        rows = data
+    if not rows:
+        return []
+    out = []
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("id"), int):
+            out.append(row["id"])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _normalise_document(body: str) -> str:
+    """A body with volatile parts removed, for comparing two answers of one endpoint."""
+    text = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "",
+                  body or "", flags=re.I)                 # uuids
+    text = re.sub(r"\b\d{10,}\b", "", text)                # epoch times, ids of a certain size
+    text = re.sub(r"\b[0-9a-f]{32,}\b", "", text, flags=re.I)  # tokens/hashes
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _content_differs(a: str, b: str) -> bool:
+    """Do two successful responses carry different CONTENT, beyond echoing the payload?
+
+    The echo has to be excluded, and this was measured on a real app: Juice Shop's
+    /rest/user/whoami?callback= is a JSONP endpoint that reflects the value it was given,
+    so `...' AND '1'='1` comes back as `...AND11` and `...' AND '1'='2` as `...AND12`. Both
+    answer 200 with the same object and differ only by the digits the echo carried. That
+    was reported as SQL injection and VALIDATED, which is the worst shape of error here.
+
+    The record's own content is compared with the echoed fragment removed: a real boolean
+    injection changes the data the endpoint returns, not the name it wraps it in.
+    """
+    na, nb = _normalise_document(_strip_echo(a)), _normalise_document(_strip_echo(b))
+    if not na or not nb:
+        return False                      # nothing comparable to differ
+    if na == nb:
+        return False
+    # the difference must be in the CONTENT, so require more than a couple of differing
+    # characters: a wrapper name is short, a row set is not
+    ta, tb = _shingles(na), _shingles(nb)
+    changed = ta.symmetric_difference(tb)
+    if len(changed) >= 3:
+        return True
+    # A repeated-element change (one more <li>, one more row in the same shape) differs in
+    # COUNT rather than vocabulary. Normalised lengths separate those, and a small numeric
+    # drift alone does not: three characters of difference is a wrapper name, not a row.
+    return abs(len(na) - len(nb)) >= 8
+
+
+def _strip_echo(body: str) -> str:
+    """Remove the payload fragments a reflecting endpoint writes back.
+
+    A parameter echoed into JSON, JSONP or HTML tells us nothing about a query, so the
+    attack's own tokens are deleted before two responses are compared. Only the ATTACK is
+    removed: the document's structure and its own values stay, because a real boolean
+    injection changes those.
+    """
+    text = body or ""
+    # the injected expression, in the spellings a server or a sanitiser leaves behind
+    text = re.sub(r"libella\s*'?\s*AND\s*'1'\s*=\s*'[12]", "", text, flags=re.I)
+    text = re.sub(r"libella\s*AND\s*1[12]", "", text, flags=re.I)
+    text = re.sub(r"libella", "", text, flags=re.I)
+    text = re.sub(r"\bAND\s*1[12]\b", "", text)
+    return text
+
+
+def _same_document(a: str, b: str) -> bool:
+    """Two answers of the same request: equal once volatile parts are removed."""
+    return _normalise_document(a) == _normalise_document(b)
+
+
+def _shingles(body: str) -> set:
+    """Cheap structural fingerprint: word and tag runs, so byte counts alone cannot fool it."""
+    return set(re.findall(r"[A-Za-z0-9_.:$]{2,}", body or "")) | {
+        str(len(body or ""))}
+
+
+def _owner_quote(body: str, field: str) -> str | None:
+    """The verbatim slice carrying `field` and its value, as the server wrote it.
+
+    Rebuilding `'"field":value'` assumes compact JSON; many servers emit `: ` and the
+    quote then matches nothing, which silently discarded real findings.
+    """
+    m = re.search(r'"%s"\s*:\s*("?[^,}\]\s"]*"?)' % re.escape(field), body)
+    return m.group(0) if m else None
+
+
+def _distinctive_token(body: str) -> str:
+    """A short string this response carries that a different page would not.
+
+    Taken from the body itself (a heading, a title, a JSON key with a value), so the SSRF
+    proof needs no operator-supplied marker: what the origin publishes is the marker.
+    """
+    for pattern in (r"<h1[^>]*>([^<]{4,40})</h1>", r"<title[^>]*>([^<]{4,40})</title>",
+                    r'"([a-z_]{4,20})":\s*"[^"]{4,40}"', r'"([a-z_]{4,20})":\s*\d'):
+        m = re.search(pattern, body, re.I)
+        if m:
+            token = m.group(1).strip()
+            if token and token.lower() not in ("html", "body", "head", "error", "status"):
+                return token
+    return ""
+
+
+def record_of(body: str) -> dict | None:
+    """The record in a response body, unwrapping the envelope a JSON API wraps it in.
+
+    {"invoice": {...}}, {"data": {"user": {...}}} and a bare {...} are all one record; a
+    list of them is a collection, not a record. Without this the ownership check read the
+    ENVELOPE, found no owner field, and reported "ownership unshown" for a served invoice.
+    """
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(data, list):
+        return data[0] if len(data) == 1 and isinstance(data[0], dict) else None
+    if not isinstance(data, dict):
+        return None
+    # The record is the innermost object that carries an "id": an envelope key that happens
+    # to be named "user" (GraphQL's {"data": {"user": {...}}}) is a wrapper, not the record.
+    if "id" in data:
+        return data
+    for value in data.values():
+        if isinstance(value, dict):
+            found = record_of(json.dumps(value))
+            if found is not None:
+                return found
+    return data if any(f in data for f in OWNER_FIELDS) else None
+
+
+def _owner_of(body: str) -> tuple[str | None, object]:
+    """(field, value) naming the record's owner in a JSON body, or (None, None)."""
+    data = record_of(body)
+    if data is None:
+        return None, None
+    for field in OWNER_FIELDS:
+        if field in data and data[field] not in (None, "", {}):
+            return field, data[field]
+    return None, None

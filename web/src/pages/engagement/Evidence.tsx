@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Fingerprint, ShieldCheck, X } from "lucide-react";
 import { qs } from "../../api";
 import type { ChainStatus, EvidenceDetail, Finding, TrafficPage } from "../../types";
-import { useApi } from "../../lib/hooks";
+import { useApi, usePagedApi } from "../../lib/hooks";
 import { severityTone } from "../../lib/format";
 import { Badge, Card, CodeBlock, EmptyState, ErrorNote, Input, Skeleton, TableSkeleton, cx } from "../../components/ui";
 import { KeyVal } from "../../components/bits";
@@ -20,7 +20,13 @@ type Observation = { id: string; kind: string; summary: string; evidence_id?: st
 export default function EvidenceTab({ eid, live }: { eid: string; live: number }) {
   const obs = useApi<Observation[]>(`/api/engagements/${eid}/observations?live=${live}`);
   const findings = useApi<Finding[]>(`/api/engagements/${eid}/findings?live=${live}`);
-  const traffic = useApi<TrafficPage>(`/api/engagements/${eid}/traffic${qs({ page_size: 100, page: 1, live })}`);
+  // Every captured exchange, not the first page: a real run produces several hundred and
+  // the API caps one page at 200 (MAX_PAGE), so artifacts silently vanished from this tab.
+  // The ordering must not depend on the request, so `build` is memoised.
+  const traffic = usePagedApi<TrafficPage>(
+    useCallback((page: number) => `/api/engagements/${eid}/traffic${qs({ page_size: 200, page, live })}`,
+      [eid, live]),
+  );
   const [term, setTerm] = useState("");
   const [source, setSource] = useState("all");
   const [selected, setSelected] = useState<string | null>(null);
@@ -30,7 +36,9 @@ export default function EvidenceTab({ eid, live }: { eid: string; live: number }
     const get = (id: string) => m.get(id) || m.set(id, { id, observations: [], findings: [], exchanges: [] }).get(id)!;
     for (const o of obs.data || []) if (o.evidence_id) get(o.evidence_id).observations.push({ id: o.id, kind: o.kind, summary: o.summary });
     for (const f of findings.data || []) for (const ev of f.evidence_ids || []) get(ev).findings.push({ id: f.id, title: f.title, severity: f.severity });
-    for (const x of traffic.data?.items || []) if (x.evidence_id) get(x.evidence_id).exchanges.push({ id: x.id, method: x.method, url: x.url, status: x.status, tool: x.tool });
+    for (const page of traffic.pages || []) {
+      for (const x of page.items || []) if (x.evidence_id) get(x.evidence_id).exchanges.push({ id: x.id, method: x.method, url: x.url, status: x.status, tool: x.tool });
+    }
     const needle = term.trim().toLowerCase();
     return [...m.values()]
       .filter((r) => source === "all" || (source === "observation" && r.observations.length) || (source === "finding" && r.findings.length) || (source === "exchange" && r.exchanges.length))
@@ -39,7 +47,7 @@ export default function EvidenceTab({ eid, live }: { eid: string; live: number }
         || r.findings.some((f) => f.title.toLowerCase().includes(needle))
         || r.exchanges.some((x) => (x.url || "").toLowerCase().includes(needle)))
       .sort((a, b) => (b.findings.length + b.observations.length + b.exchanges.length) - (a.findings.length + a.observations.length + a.exchanges.length));
-  }, [obs.data, findings.data, traffic.data, term, source]);
+  }, [obs.data, findings.data, traffic.pages, term, source]);
 
   const loading = obs.loading || findings.loading || traffic.loading;
   const errors = [obs.error, findings.error, traffic.error].filter(Boolean) as string[];

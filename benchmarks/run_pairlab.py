@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from libella.api import App
 
 ROOT = Path(__file__).parent.parent
+NO_HINTS = False
 GT = json.loads((ROOT / "labs/pairlab/ground_truth.json").read_text())
 
 HINTS = {
@@ -30,14 +31,18 @@ def run_one(mode: str, data_dir: Path) -> dict:
     port = 8801 if mode == "vuln" else 8802
     base = f"http://127.0.0.1:{port}"
     app = App(data_dir / mode)
-    hints = json.loads(json.dumps(HINTS).replace("{port}", str(port)))
+    # --no-hints measures the engine's own discovery: no declared endpoint, parameter,
+    # marker or object id, which is the only way to claim a native capability
+    hints = {} if NO_HINTS else json.loads(json.dumps(HINTS).replace("{port}", str(port)))
     scope = {"targets": [{"kind": "url", "value": base}],
              "categories": ["recon", "web", "api", "infra"],
              "rate_limit_rps": 20, "max_concurrency": 4}
     auth = {"identities": [
         {**i, "login_url": base + "/login", "username_field": "username",
          "password_field": "password"} for i in GT["identities"][:2]
-    ], "test_hints": hints}
+    ]}
+    if hints:
+        auth["test_hints"] = hints
     eid = app.db.execute(
         "INSERT INTO engagements(id, name, profile, status, scope_json, auth_json, budgets_json, created_at) "
         "VALUES(?,?,?,?,?,?,?,?)",
@@ -55,7 +60,8 @@ def run_one(mode: str, data_dir: Path) -> dict:
     for seed in GT["seeded_findings"]:
         path = seed["endpoint"].split("?")[0]
         hit = next((f for f in confirmed
-                    if f["cwe"] == seed["cwe"] and (path in (f["endpoint"] or "") or (f["endpoint"] or "") in seed["endpoint"])), None)
+                    if f["cwe"] in (seed["cwe"], *seed.get("cwe_also", ()))
+                    and (path in (f["endpoint"] or "") or (f["endpoint"] or "") in seed["endpoint"])), None)
         if hit:
             detected.append({"seed": seed["id"], "finding": hit["id"], "title": hit["title"],
                              "state": hit["state"]})
@@ -83,7 +89,12 @@ def main():
     p.add_argument("--mode", default="both", choices=["vuln", "hardened", "both"])
     p.add_argument("--data-dir", default=str(ROOT / "benchmark_runs"))
     p.add_argument("--out", default=str(ROOT / "benchmark_runs/results.json"))
+    p.add_argument("--no-hints", action="store_true",
+                   help="declare no endpoint, parameter, marker or object id: measures the "
+                        "engine's own discovery instead of an operator-supplied script")
     args = p.parse_args()
+    global NO_HINTS
+    NO_HINTS = args.no_hints
     data_dir = Path(args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     modes = ["vuln", "hardened"] if args.mode == "both" else [args.mode]

@@ -16,7 +16,7 @@ from .scope import Scope
 WEAK_PROTOCOLS = ["TLSv1", "TLSv1.1"]
 
 
-def _try_protocol(host: str, port: int, proto_name: str) -> dict:
+def _try_protocol(host: str, port: int, proto_name: str, ip: str | None = None) -> dict:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -32,7 +32,7 @@ def _try_protocol(host: str, port: int, proto_name: str) -> dict:
     except ValueError:
         return {"protocol": proto_name, "supported": False, "reason": "unsupported by local OpenSSL"}
     try:
-        with socket.create_connection((host, port), timeout=8) as sock:
+        with socket.create_connection((ip or host, port), timeout=8) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as tls:
                 return {"protocol": proto_name, "supported": True,
                         "cipher": tls.cipher()[0]}
@@ -40,8 +40,13 @@ def _try_protocol(host: str, port: int, proto_name: str) -> dict:
         return {"protocol": proto_name, "supported": False, "reason": type(e).__name__}
 
 
-def scan_tls(host: str, port: int) -> dict:
-    """Collect transport facts. Caller MUST scope-check first."""
+def scan_tls(host: str, port: int, ip: str | None = None) -> dict:
+    """Collect transport facts. Caller MUST scope-check first.
+
+    `ip` is the address the egress policy authorized: dial it, while still sending
+    `host` as the TLS server name, so a DNS answer that changes after the decision
+    cannot move the connection.
+    """
     from cryptography import x509
     from cryptography.x509.oid import ExtensionOID
 
@@ -50,7 +55,7 @@ def scan_tls(host: str, port: int) -> dict:
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     try:
-        with socket.create_connection((host, port), timeout=8) as sock:
+        with socket.create_connection((ip or host, port), timeout=8) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as tls:
                 facts["negotiated_protocol"] = tls.version()
                 facts["cipher"] = tls.cipher()[0]
@@ -99,19 +104,19 @@ def scan_tls(host: str, port: int) -> dict:
         facts["error"] = f"{type(e).__name__}: {e}"
         return facts
     facts["weak_protocols"] = [p for p in WEAK_PROTOCOLS
-                               if _try_protocol(host, port, p).get("supported")]
+                               if _try_protocol(host, port, p, ip).get("supported")]
     return facts
 
 
 def audit_tls(host: str, port: int, db: DB, evidence: EvidenceStore,
               pipeline: FindingPipeline, scope: Scope, engagement_id: str,
               intent_id: str | None = None) -> list[dict]:
-    decision = scope.check_host_port(host, port, "infra")
+    from .egress import Egress
+    decision = Egress(db, scope, engagement_id, tool="tls_audit", category="infra").decide(
+        host, port, scheme="https")
     if not decision.allowed:
-        db.emit(engagement_id, "scope_refusal",
-                {"url": f"tls://{host}:{port}", "reason": decision.reason, "tool": "tls_audit"})
-        return []
-    facts = scan_tls(host, port)
+        return []  # Egress already emitted egress_denied + scope_refusal for this host
+    facts = scan_tls(host, port, ip=decision.ip)
     ev = evidence.put_json(engagement_id, facts, "tls_scan")
     pipeline.record_observation(engagement_id, intent_id, "tls_scan",
                                 f"{host}:{port} {facts.get('negotiated_protocol')} "
@@ -169,11 +174,25 @@ def audit_tls(host: str, port: int, db: DB, evidence: EvidenceStore,
     return submitted
 
 
-def recheck_tls_fact(host: str, port: int, quote: str) -> tuple[bool, str]:
-    """Independent re-verification for tls_fact quotes (verifier dispatch)."""
-    facts = scan_tls(host, port)
+def recheck_tls_fact(host: str, port: int, quote: str, scope: Scope, db: DB | None = None,
+                     engagement_id: str | None = None) -> tuple[bool | None, str]:
+    """Independent re-verification for tls_fact quotes (verifier dispatch).
+
+    Returns (None, reason) when the fact cannot be judged — out of scope,
+    unreachable, or an unknown quote. None is never "reproduced" or "fixed".
+    """
+    # before dialling: the same dial-time decision every other path makes
+    if db is not None and engagement_id is not None:
+        from .egress import Egress
+        decision = Egress(db, scope, engagement_id, tool="tls_audit",
+                          category="infra").decide(host, port, scheme="https")
+    else:
+        decision = scope.check_host_port(host, port, "infra")
+    if not decision.allowed:
+        return None, f"refused: {decision.reason}"
+    facts = scan_tls(host, port, ip=getattr(decision, "ip", None))
     if facts.get("error"):
-        return False, f"recheck failed: {facts['error']}"
+        return None, f"recheck failed: {facts['error']}"
     if quote.startswith("expired:"):
         ok = facts.get("expired") is True
         return ok, f"expired now {facts.get('expired')}"
@@ -185,4 +204,4 @@ def recheck_tls_fact(host: str, port: int, quote: str) -> tuple[bool, str]:
         now = set(facts.get("weak_protocols", []))
         ok = bool(want & now)
         return ok, f"weak protocols now {sorted(now)}"
-    return False, "unknown tls_fact quote"
+    return None, "unknown tls_fact quote"

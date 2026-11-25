@@ -174,7 +174,13 @@ def assess_graphql(endpoint_url: str, db, evidence, pipeline, probe, scope, enga
                 "authentication bypass, and file or command access on many deployments.",
                 "Bind every resolver argument as a SQL parameter; never concatenate GraphQL "
                 "input into a statement.",
-                r["evidence_id"], quote, proof(_q(inj_q)), "gql:sqli:users"))
+                r["evidence_id"], quote, proof(_q(inj_q)), "gql:sqli:users",
+                proof={"signal": "error_signature",
+                       # the same resolver with a benign filter value: a server that
+                       # errors on any filter raises the same signature without injection
+                       "benign_request": {"method": "POST", "url": base,
+                                          "headers": {"Content-Type": "application/json"},
+                                          "body": _q('{users(filter:""){id username}}')}}))
 
         # ---- field-level authorization: another user's record
         if other:
@@ -202,7 +208,19 @@ def assess_graphql(endpoint_url: str, db, evidence, pipeline, probe, scope, enga
                         "personal data disclosure and a map for account takeover.",
                         "Check owner-or-admin on the resolved object inside the resolver, not "
                         "only at the transport layer.",
-                        r["evidence_id"], quote, proof(_q(q)), "gql:fieldauthz:user"))
+                        r["evidence_id"], quote, proof(_q(q)), "gql:fieldauthz:user",
+                        proof={
+                            "identity": {"name": my_name, "value": my_uid},
+                            # a GraphQL response nests the record under "data": the
+                            # contract names the field, the verifier reads it from there
+                            "owner_field": "id",
+                            "owner_value": other_uid,
+                            # the same query with no credential: a resolver that refuses
+                            # anonymous callers is enforcing authorization
+                            "benign_request": {"method": "POST", "url": base,
+                                               "headers": {"Content-Type": "application/json"},
+                                               "body": _q(q)},
+                        }))
 
         # ---- field-level authorization: admin-only field reachable by a regular user
         if (sessions[me]["role"] or "").lower() != "admin":
@@ -230,7 +248,14 @@ def assess_graphql(endpoint_url: str, db, evidence, pipeline, probe, scope, enga
                     "Administrative data and tenant-wide counts leak to every authenticated "
                     "user, aiding targeted abuse and enumeration.",
                     "Guard admin-only fields by role in the resolver; deny by default.",
-                    r["evidence_id"], quote, proof(_q(q)), "gql:fieldauthz:adminstats"))
+                    r["evidence_id"], quote, proof(_q(q)), "gql:fieldauthz:adminstats",
+                    proof={"identity": {"name": my_name, "value": my_uid},
+                           # the privilege the caller lacks, and the same query with no
+                           # credential: a resolver that refuses anonymous callers guards it
+                           "privilege": "admin",
+                           "benign_request": {"method": "POST", "url": base,
+                                              "headers": {"Content-Type": "application/json"},
+                                              "body": _q(q)}}))
 
         # ---- resource abuse: query depth
         depth = DEPTH_LEVELS + 2  # outer selection set + the user field's selection set

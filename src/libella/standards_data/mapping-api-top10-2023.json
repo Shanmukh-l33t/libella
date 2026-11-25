@@ -1,0 +1,264 @@
+{
+ "framework": "API-Top10",
+ "version": "2023",
+ "note": "Hand-authored evidence mapping from Libella's executed units to the OWASP API Security Top 10 2023 risks. A risk is evaluated, not 'passed': completed_no_issue only means the mapped check ran and found nothing, and only for a check that directly tests the risk. Per-unit CWE lists keep a finding on the risk its own check tests (an api_audit CWE-200 is excessive data exposure, API3; a graphql_audit CWE-200 is introspection, API8).",
+ "applies_to": [
+  "api"
+ ],
+ "rows": [
+  {
+   "unit": "api_audit",
+   "exchanges": [
+    "api_check",
+    "api_login"
+   ],
+   "why": "OpenAPI-driven probes across declared roles: another user's object by id, privileged functions with a low-privilege identity, writable privileged properties, credential fields in responses, and operations the spec marks authenticated",
+   "requirements": {
+    "API1:2023": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-639"
+     ]
+    },
+    "API2:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-306"
+     ]
+    },
+    "API3:2023": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-915",
+      "CWE-200"
+     ]
+    },
+    "API5:2023": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-285"
+     ]
+    },
+    "API9:2023": {
+     "strength": "indirect",
+     "cwe": []
+    }
+   }
+  },
+  {
+   "unit": "api",
+   "note": "agent api role drives the same api_audit probes",
+   "union": [
+    "api_audit"
+   ]
+  },
+  {
+   "unit": "graphql_audit",
+   "exchanges": [
+    "graphql_check",
+    "graphql_login"
+   ],
+   "why": "GraphQL introspection exposure, per-role object and function authorization queries, and depth/alias/batch cost probes",
+   "requirements": {
+    "API1:2023": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-639"
+     ]
+    },
+    "API4:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-770"
+     ]
+    },
+    "API5:2023": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-639"
+     ]
+    },
+    "API8:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "idor",
+   "exchanges": [
+    "idor_check",
+    "idor_check_anon",
+    "object_enum",
+    "object_enum_anon"
+   ],
+   "why": "authenticated read of another identity's object by id, compared with the expected denial",
+   "requirements": {
+    "API1:2023": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-639",
+      "CWE-306"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "privesc_audit",
+   "exchanges": [
+    "role_login",
+    "role_matrix",
+    "role_matrix_anon",
+    "authz_oracle"
+   ],
+   "why": "identity x endpoint matrix against the expected-authorization rule: object ownership (API1) and function level access (API5), GET only",
+   "requirements": {
+    "API1:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-639"
+     ]
+    },
+    "API5:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-285",
+      "CWE-284"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "ssrf",
+   "exchanges": [
+    "ssrf_check",
+    "ssrf_discovery"
+   ],
+   "why": "operator-declared internal URL must be fetched by the application and its marker returned",
+   "requirements": {
+    "API7:2023": {
+     "strength": "direct",
+     "cwe": [
+      "CWE-918"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "cors",
+   "exchanges": [
+    "cors_check"
+   ],
+   "why": "foreign Origin reflected with credentials is one misconfiguration among many that API8 covers",
+   "requirements": {
+    "API8:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-942"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "security_headers",
+   "exchanges": [
+    "headers_check"
+   ],
+   "why": "missing security headers on API responses are one part of API8",
+   "requirements": {
+    "API8:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-693"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "sensitive_paths",
+   "exchanges": [
+    "path_probe"
+   ],
+   "why": "reachable debug, monitoring and documentation endpoints are both a misconfiguration and an inventory gap; a user collection that returns credential fields is excessive data exposure (API3)",
+   "requirements": {
+    "API8:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200",
+      "CWE-548"
+     ],
+     "controls": [
+      "exposure.config_file",
+      "exposure.vcs_metadata",
+      "exposure.debug_endpoint",
+      "exposure.monitoring_endpoint",
+      "exposure.directory_listing"
+     ]
+    },
+    "API9:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ],
+     "controls": [
+      "exposure.debug_endpoint",
+      "exposure.monitoring_endpoint"
+     ]
+    },
+    "API3:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-200"
+     ],
+     "controls": [
+      "exposure.excess_fields"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "tls_audit",
+   "why": "transport configuration of the API endpoint is part of API8",
+   "requirements": {
+    "API8:2023": {
+     "strength": "partial",
+     "cwe": [
+      "CWE-326",
+      "CWE-327",
+      "CWE-298",
+      "CWE-297"
+     ]
+    }
+   }
+  },
+  {
+   "unit": "crawl",
+   "exchanges": [
+    "crawl",
+    "js_mining"
+   ],
+   "why": "rendered and static crawl plus JavaScript route mining build the endpoint inventory API9 is about; it records, it does not judge",
+   "requirements": {
+    "API9:2023": {
+     "strength": "indirect",
+     "cwe": []
+    }
+   }
+  }
+ ],
+ "unmapped": {
+  "web_checks": "the web role's parameter checks are attributed through their individual units",
+  "verify": "replays a candidate's proof; tests nothing new",
+  "report": "renders the report"
+ },
+ "manual": {
+  "API": "needs an analyst who understands the API's intended behaviour and roles"
+ },
+ "manual_overrides": {
+  "API6:2023": "sensitive business flows (purchase, booking, referral) must be identified with the owner and abused deliberately; no generic probe can know which flow is sensitive",
+  "API10:2023": "unsafe consumption is about how the API treats data from the third-party APIs it calls; it needs source review or a controlled upstream, not black-box requests"
+ },
+ "not_supported": {}
+}

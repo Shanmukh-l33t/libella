@@ -1,0 +1,72 @@
+{
+  "lab": "holdlab",
+  "description": "Holdout vulnerable/hardened twin with names and shapes different from PairLab. vuln=127.0.0.1:8831, hardened=127.0.0.1:8832. Lab-only fakes. Login: POST /auth/session fields email/passcode.",
+  "identities": [
+    {
+      "username": "maya@holdlab.invalid",
+      "password": "maya-pass-9921",
+      "role": "member",
+      "uid": 11
+    },
+    {
+      "username": "noor@holdlab.invalid",
+      "password": "noor-pass-4417",
+      "role": "member",
+      "uid": 12
+    },
+    {
+      "username": "root@holdlab.invalid",
+      "password": "root-pass-0083",
+      "role": "admin",
+      "uid": 13
+    }
+  ],
+  "seeded_findings": [
+    {
+      "id": "HL-01",
+      "cwe": "CWE-89",
+      "endpoint": "/catalog/items?kind=",
+      "title": "SQL injection in catalog kind filter",
+      "proof": "kind=' returns a sqlite error body; kind=' OR '1'='1 returns every row",
+      "present_in": "vuln"
+    },
+    {
+      "id": "HL-02",
+      "cwe": "CWE-918",
+      "endpoint": "/tools/preview?target=",
+      "title": "SSRF in link preview",
+      "proof": "target=http://127.0.0.1:8831/_internal/creds returns HOLDLAB-CRED-5e91c7",
+      "present_in": "vuln"
+    },
+    {
+      "id": "HL-03",
+      "cwe": "CWE-639",
+      "endpoint": "/v2/invoices/5002",
+      "title": "IDOR on invoices",
+      "proof": "maya (uid 11) reads noor's invoice 5002 (customer_id 12) inside an {invoice:{...}} envelope; anonymous gets 401 in both twins",
+      "present_in": "vuln"
+    },
+    {
+      "id": "HL-04",
+      "cwe": "CWE-614",
+      "endpoint": "/auth/session",
+      "title": "Session cookie without the Secure flag",
+      "proof": "the lab runs on plain http, so it sets SESSION_COOKIE_SECURE=False; both twins share it",
+      "present_in": "vuln and hardened"
+    }
+  ],
+  "negative_controls": [
+    {
+      "id": "NC-01",
+      "endpoint": "/v2/invoices/5001",
+      "signal": "maya reads her own invoice",
+      "expected": "no finding"
+    },
+    {
+      "id": "NC-02",
+      "endpoint": "all hardened routes",
+      "signal": "hardened twin",
+      "expected": "zero confirmed findings"
+    }
+  ]
+}

@@ -203,7 +203,16 @@ def assess_api(base_url: str, openapi_path, identities, db, evidence, pipeline, 
                             r2["evidence_id"], quote,
                             {"method": "GET", "url": base + path,
                              "headers": {"Cookie": sessions[me]["cookie"]}},
-                            f"bola:{detail_ep['path']}"))
+                            f"bola:{detail_ep['path']}",
+                            proof={
+                                # the claim is access AS me to a record owned by someone
+                                # else: name both, and keep the object id so the verifier
+                                # can ask the same route without the credential
+                                "identity": {"name": me, "value": my_uid},
+                                "owner_field": "owner_id",
+                                "owner_value": foreign["owner_id"],
+                                "benign_request": {"method": "GET", "url": base + path},
+                            }))
 
         # ---- administrative functions reachable by a non-admin identity (BFLA)
         my_role = (out["logins"][me]["role"] or "").lower()

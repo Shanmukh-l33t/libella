@@ -21,7 +21,19 @@ export function elapsed(from?: number | null, to?: number | null) {
   return fmtDuration(Math.max(0, end - from) * 1000);
 }
 export function money(n?: number | null) {
-  return `$${(n || 0).toFixed(n ? 2 : 2)}`;
+  // sub-cent spend must not read as $0.00
+  return `$${(n || 0).toFixed(n && n < 0.01 ? 4 : 2)}`;
+}
+
+/** A refusal for scope reasons. A missing binary or a bad argv never reached the scope check's verdict. */
+export const isScopeRefusal = (d?: string | null) =>
+  !!d && d.startsWith("refused") && !/^refused: (missing binary|argv build error|bad argv)/.test(d);
+
+/** Badge for a tool call's recorded decision. */
+export function callVerdict(d?: string | null): { tone: Tone; label: string } {
+  if (isScopeRefusal(d)) return { tone: "critical", label: "refused" };
+  if (d?.startsWith("refused")) return { tone: "warning", label: "not run" };
+  return { tone: "success", label: "allowed" };
 }
 
 const SEV: Record<string, Tone> = { critical: "critical", high: "danger", medium: "warning", low: "success", info: "info" };

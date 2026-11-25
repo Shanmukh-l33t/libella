@@ -113,9 +113,18 @@ def test_run_workflow_with_evidence(engine, do_login):
     assert run["steps"][-1]["value"] == "bob"  # transfer really landed (extract)
     assert any(n["method"] == "POST" and n["url"].endswith("/items/1/transfer")
                for n in run["network"]), run["network"]
-    assert len(run["screenshots"]) == len(WORKFLOW)  # one per step, under the cap
+    # A capture that times out is recorded as a degradation and returns no id, so an exact
+    # count is a load-sensitive assertion: under a whole-suite run one screenshot timed out
+    # and this read as a workflow failure. What must hold is that captures happened, that
+    # every captured one is a real PNG, and that a shortfall is REPORTED rather than silent.
+    assert run["screenshots"], "no screenshot was captured at all"
+    assert len(run["screenshots"]) <= min(len(WORKFLOW), 10)  # per-step, under the cap
     for eid in run["screenshots"]:
         assert ev.read(eid).startswith(b"\x89PNG")
+    missing = len(WORKFLOW) - len(run["screenshots"])
+    if missing:
+        assert any("screenshot_failed" in d for d in (run.get("degraded") or [])), \
+            "a screenshot was not captured and nothing recorded it"
     blob = ev.read_json(run["evidence_id"])
     assert len(blob["steps"]) == len(WORKFLOW) and blob["network"]
     assert ev.verify_chain("eng_auth")["ok"] is True

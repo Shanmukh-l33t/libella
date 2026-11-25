@@ -4,25 +4,31 @@ Autonomous penetration-testing workbench. Evidence-first, scope-enforced, multi-
 
 Libella plans, executes, verifies, and reports authorized security assessments.
 It is not a chatbot that runs security commands, and not a scanner wrapper.
-Every finding must survive independent replay verification before it is
+Every finding must pass a class-specific replay verification before it is
 called validated. Every network action is checked against an enforceable
 engagement authorization object before it executes.
 
 > For systems you own or are explicitly authorized to test. Libella enforces
 > scope in code, but authorization is your responsibility. See SECURITY.md.
 
-## What makes it different
+## Design choices
+
+These are design choices, not a ranking. No reference platform has been run against
+Libella on a shared benchmark, so no comparative claim is made; CAPABILITY_MATRIX.md
+lists what was found in six other platforms and how each point was checked.
 
 - **Scope is code, not prompt.** Targets, exclusions, ports, categories, time
   window, rate and budget limits live in an engagement authorization object.
   The tool execution layer resolves DNS and checks every target (including
   redirect hops and post-connect peer IPs) before execution. Refusals are
   audited. Prompts derive from the scope object; they never replace it.
-- **Verified means reproduced now.** Candidate findings carry a replayable
-  proof request and a verbatim evidence quote. An independent verifier
-  re-issues the request and compares the fresh response. No replay, no
-  promotion. Scanner banners and version strings are observations, never
-  automatic findings.
+- **Verified means reproduced now, and proved for its class.** Candidate findings
+  carry a replayable proof request and a typed proof contract for their class.
+  The verifier re-issues the request, compares the fresh response, and for each
+  class also runs a differential against a negative control. A reproduced quote
+  alone no longer validates a finding. No replay, no promotion. Scanner banners
+  and version strings are observations, never automatic findings. Out-of-band
+  and smuggling proofs replay as inconclusive by design.
 - **Tamper-evident evidence.** Content-addressed blobs with an append-only
   hash chain. Integrity is re-checked on every read; chain breaks fail closed.
 - **Typed tools, no shell.** Adapters build argv from validated, typed
@@ -37,15 +43,25 @@ engagement authorization object before it executes.
 
 ## Verified results (real execution, not claims)
 
-PairLab benchmark (labs/pairlab): a vulnerable/hardened twin app with 13
-seeded vulnerability classes and machine-readable ground truth.
+PairLab benchmark (labs/pairlab): a vulnerable/hardened twin app with 16
+seeded vulnerability classes (PL-01..PL-16, 6 negative controls) and
+machine-readable ground truth. Four-way run at `b656a67`:
 
-| Mode | Seeded vulns detected + independently validated | False positives | Duration |
-|---|---|---|---|
-| Vulnerable twin | 16 / 16 | 0 | ~158s (with nuclei) / ~9s (deterministic only) |
-| Hardened twin | 0 (correct) | 0 | ~158s / ~8s |
+| Mode | Vulnerable twin | False positives | Time | Cost |
+|-|-|-|-|-|
+| A native, declared hints | 16/16 confirmed | 0 (hardened twin 0) | ~14.7s | $0 |
+| A native, no hints | 13/16 (missed SQLi category filter, IDOR orders, SSRF) | 0 (hardened twin 0) | ~14.3s | $0 |
+| B agents, no hints | 13/16 genuine, plus 3 incorrect confirmed findings | 3 | ~286s | ~$0.27 |
+| C nuclei only | 0/16, stopped at the 600s cap | 0 | 600s | $0 |
+| D full | 16/16 | 0 (hardened twin 0) | ~615s | $0 |
 
-Evidence hash chains intact across all runs. Reproduce:
+Mode B found no true positive that native mode missed, and was run once on the
+vulnerable twin with one model. The three incorrect findings were fixed at
+`b656a67`. Mode B has not been rerun on the hardened twin or on the verifier
+below. The PairLab gate on the new typed-proof verifier (`973fa33`) is still
+being measured and no number is claimed for it yet.
+
+Evidence hash chains intact across the runs above. Reproduce:
 
 ```bash
 python labs/pairlab/app.py                      # vuln  :8801
@@ -65,7 +81,7 @@ Additional verified benchmarks (v0.2, all with vulnerable/hardened twins):
 | Browser crawl (Playwright) | Juice Shop: 9 rendered pages, 36 runtime API requests, 7 live /rest/ endpoints; screenshot evidence |
 | Container image (trivy) | real local-image scan; version-based CVEs are observations, not confirmed findings |
 
-Measured performance (PairLab, deterministic + nuclei, no LLM): 153.7s wall,
+Measured performance on an earlier head (PairLab, deterministic + nuclei, no LLM): 153.7s wall,
 platform CPU 0.5s, scanner subprocess CPU 19.3s, platform peak RSS 60.4MB.
 Reproduce: `python benchmarks/measure_perf.py`.
 
@@ -122,9 +138,10 @@ Availability is probed at startup and shown in Settings.
 
 ## Configure a model (optional, for LLM planning)
 
-Settings > LLM provider: any OpenAI-compatible endpoint (base URL, API key,
-model). Per-role model selection and fallback are supported. Token and cost
-accounting is recorded per engagement. Deterministic mode needs no model.
+Open **Settings → AI provider**. Use **Test connection** to validate the
+model and key before saving. See [provider setup](docs/provider-connection.md)
+for custom endpoints and what the check proves. Per-role model selection and
+fallback are optional; deterministic mode needs no model.
 
 ## Architecture
 
@@ -133,7 +150,7 @@ evidence store + static React UI. Supervisor planner emits leased worker
 intents (fencing tokens, expiry sweep, bounded retries). Workers execute
 typed tool adapters and deterministic checks. An independent verifier
 replays proof requests. Reports render deterministically from typed state
-(Markdown, JSON, SARIF) with secret redaction.
+(Markdown, JSON, SARIF, PDF, HTML, DOCX, XLSX, CSV) with secret redaction.
 
 Read ARCHITECTURE.md for the decision record and THREAT_MODEL.md for the
 security model and known limits.
@@ -142,8 +159,13 @@ security model and known limits.
 
 - Fail-closed scope: empty scope is rejected at creation.
 - Metadata/link-local ranges blocked unless explicitly targeted.
-- Per-engagement rate, concurrency, duration, and cost budgets.
-- Profiles: passive, safe_active, advanced_validation (explicit opt-in).
+- The planner checks authorized time windows at start, resume and between intents.
+  The built-in HTTP probe and finding/traffic replays also refuse outside the window.
+  A closed-window report is partial. Create a new engagement with a new authorized
+  window rather than reopening the old run. These checks do not preempt every
+  in-flight request, browser action or external process at the deadline.
+- Profiles: passive, production_safe, safe_active, advanced_validation — enforced in
+  planning and at execution; skipped work is reported as a coverage limitation.
 - Emergency stop: cancel propagates to intents and subprocesses.
 - Localhost-only bind by default; token auth on every API route.
 - Credentials redacted from logs, evidence views, and reports.
@@ -151,20 +173,44 @@ security model and known limits.
 
 ## Project status
 
-Working and benchmarked: genuine autonomous specialist agent runtime (ReAct
+Working and benchmarked: an autonomous specialist agent runtime (ReAct
 investigation, hypotheses, evidence-gated conclusions, delegation, cost-aware
-model routing, duplicate-action convergence) achieving 16/16 lab coverage with
-independent validation; deterministic baseline (16/16, 0 FP); scope enforcement;
+model routing, duplicate-action convergence). A v0.4 run reached 16/16 lab
+coverage; at `b656a67` the no-hint agent run found 13/16 genuine and produced
+3 incorrect confirmed findings, which the precondition guards now refuse (not
+rerun). Deterministic baseline: 16/16 with declared hints, 13/16 without, 0 FP; scope enforcement;
 recon; static + authenticated browser crawling; traffic intelligence + authorized
 replay; web (16 classes), OpenAPI API (5), GraphQL (7), TLS, source/supply-chain
 (6 + OSV), AWS cloud posture (moto-verified), container scanning, technology-
 specific modules (WordPress/PHP/Java/ColdFusion/Node/IIS/Apache/Nginx), ZAP
 adapter, plugin/MCP extension framework; deep investigation graph + cross-run
-memory + drift; independent verification + retest; PDF/MD/JSON/SARIF reports +
-remediation tracking + historical comparison; premium operational UI (Command
-Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph).
-448 tests; two independent adversarial audits (35 defects fixed). CI/issue-tracker
-hooks and scheduled retest are planned, not claimed. See CAPABILITY_MATRIX.md.
+memory + drift; replay verification with typed proof contracts + retest; PDF/HTML/DOCX/XLSX/CSV/MD/JSON/SARIF
+reports + remediation tracking + historical comparison; premium operational UI (Command
+Center, Agent Operations, Traffic, Tool Center, Evidence, Remediation, Graph,
+read-only Validation workspace, WSTG coverage review).
+1055 tests passed, 1 skipped (ZAP not installed) at `973fa33` (v0.5.0 in development).
+The PairLab gate on the new verifier is pending. Browser acceptance journeys (beginner run to Done and PDF,
+tool readiness, target credentials, execution controls, report recovery) live in
+benchmarks/acceptance_beginner.py and benchmarks/check_*_ui.py; the real-site
+journey is benchmarks/acceptance_keyreed.py (opt-in via LIBELLA_TARGET).
+
+Hardening from a real external assessment (keyreed.com, a Vercel-hosted static site):
+
+- a WAF/CDN challenge (Vercel, Cloudflare, captcha, WAF checkpoints) is classified as
+  an interstitial, never as the application: no finding is raised from it, the check
+  reads inconclusive, the reason is recorded, and a browser read of the same page is
+  used before giving up. Verification and retest replay over the transport that
+  captured the proof (`via: browser`), so a challenged replay can neither confirm nor
+  dismiss a finding.
+- scanners report real progress: nuclei `-stats` JSON is parsed per interval into
+  `scan_progress` events (percent, requests, matches, rps, templates) and shown in the
+  engagement view; a scan that stops early records `scan_partial` with its percentage.
+- a URL target authorizes its own port for host tools: an undeclared port set is
+  refused, and the infra scan declares exactly the authorized ports.
+- report kinds: technical, executive, coverage, evidence appendix (chain metadata) and
+  GitLab DAST 15.0.0 JSON, discoverable through `/api/engagements/{id}/report/kinds` Two independent adversarial audits (35 defects fixed).
+CI/issue-tracker hooks and scheduled retest are planned, not claimed. See
+CAPABILITY_MATRIX.md.
 
 ## License
 
