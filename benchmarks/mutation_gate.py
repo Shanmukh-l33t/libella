@@ -121,6 +121,22 @@ MUTATIONS = [
      '''        if not _content_differs(true_r["body"], false_r["body"]):
             return []''', "        pass",
      ["tests/verify/test_sqli_boolean_real_shapes.py"]),
+    ("appintel: a promotion needs no evidence", "src/libella/appintel.py",
+     '''        if not evidence_id:
+            raise ValueError("a provenance promotion requires an evidence id")''', "        pass",
+     ["tests/verify/test_appintel.py"]),
+    ("appintel: a weaker sighting downgrades a node", "src/libella/appintel.py",
+     '''            merged = {**json.loads(row["data_json"] or "{}"), **(data or {})}''',
+     '''            keep = provenance
+            merged = {**json.loads(row["data_json"] or "{}"), **(data or {})}''',
+     ["tests/verify/test_appintel.py"]),
+    ("discovery: a place-valued parameter is not recognised", "src/libella/discovery.py",
+     '''                shaped = name.lower() in DESTINATION_NAMES or _looks_like_place(value)''',
+     "                shaped = name.lower() in DESTINATION_NAMES",
+     ["tests/verify/test_appintel.py"]),
+    ("discovery: a record yields no owner", "src/libella/discovery.py",
+     '''        owner = _owner_field(record)''', "        owner = None",
+     ["tests/verify/test_appintel.py"]),
     ("checks: object enumeration accepts an anonymous read", "src/libella/checks.py",
      '''            if anon["status"] < 400:''', "            if False:",
      ["tests/verify"]),

@@ -162,6 +162,29 @@ CREATE TRIGGER IF NOT EXISTS coverage_review_delete AFTER DELETE ON coverage_ent
   VALUES(OLD.engagement_id, 'coverage_review', json_object('framework', OLD.framework,
     'requirement_id', OLD.test_id, 'status', 'unknown'), (julianday('now') - 2440587.5) * 86400);
 END;
+-- Application intelligence: what the application IS, with provenance on every claim.
+-- Distinct from `assets`, which records probe targets. This is functionality: routes,
+-- parameters, resources, owners, roles, workflows and trust boundaries, each row stating
+-- HOW it is known (observed, spec, inferred, hypothesized) and what proves it.
+CREATE TABLE IF NOT EXISTS app_nodes(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL,
+  kind TEXT NOT NULL,               -- app|route|endpoint|param|form|resource|owner|role|
+                                    -- workflow|step|trust_boundary|sensitive_op|technology
+  key TEXT NOT NULL,                -- stable identity within kind
+  label TEXT, data_json TEXT NOT NULL DEFAULT '{}',
+  provenance TEXT NOT NULL,         -- observed|spec|source|inferred|hypothesized
+  confidence REAL NOT NULL DEFAULT 1.0,
+  evidence_id TEXT, source_ref TEXT,
+  first_seen REAL, last_seen REAL,
+  UNIQUE(engagement_id, kind, key)
+);
+CREATE TABLE IF NOT EXISTS app_edges(
+  id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL,
+  src_id TEXT NOT NULL, dst_id TEXT NOT NULL, kind TEXT NOT NULL,
+  provenance TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 1.0,
+  evidence_id TEXT, created_at REAL,
+  UNIQUE(engagement_id, src_id, dst_id, kind)
+);
 CREATE INDEX IF NOT EXISTS idx_hyp_eng ON hypotheses(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_steps_eng ON investigation_steps(engagement_id, intent_id);
 CREATE INDEX IF NOT EXISTS idx_runs_eng ON agent_runs(engagement_id);
@@ -173,6 +196,8 @@ CREATE INDEX IF NOT EXISTS idx_obs_eng ON observations(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_findings_eng ON findings(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_events_eng ON events(engagement_id, seq);
 CREATE INDEX IF NOT EXISTS idx_exchanges_eng ON exchanges(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_appnodes_eng ON app_nodes(engagement_id, kind);
+CREATE INDEX IF NOT EXISTS idx_appedges_eng ON app_edges(engagement_id, src_id);
 """
 
 

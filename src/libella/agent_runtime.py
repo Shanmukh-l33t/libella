@@ -13,6 +13,7 @@ import json
 import time
 
 from . import specialists
+from .appintel import AppIntel
 from .checks import WebChecks
 from .db import DB, new_id
 from .evidence import EvidenceStore
@@ -638,9 +639,30 @@ class AgentRunner:
                 "by_kind": dict(sorted(by_kind.items(), key=lambda kv: -kv[1])[:6]),
                 "samples": [(o["kind"], (o["summary"] or "")[:100]) for o in older[:3]]},
         }
+        # Application intelligence: what the app IS, which is what a hypothesis needs. The
+        # model is bounded and provenance-labelled, so an agent can tell an observed route
+        # from an inferred one, and `gaps` says where its knowledge stops.
+        try:
+            intel = AppIntel(self.db, self.eng)
+            ctx["application"] = {
+                "shape": intel.summary(),
+                "endpoints": [{"key": n["key"], "provenance": n["provenance"]}
+                              for n in intel.nodes("endpoint")[:20]],
+                "resources_with_owners": [
+                    {"resource": r["key"],
+                     "owner": [e["other"]["label"] for e in intel.edges(r["id"])
+                               if e["kind"] == "owned_by"]}
+                    for r in intel.nodes("resource")[:10]],
+                "candidate_features": intel.candidate_features()[:6],
+                "gaps": intel.gaps()[:5],
+            }
+        except Exception:  # a model failure must not stop an investigation
+            ctx["application"] = {"shape": {}, "endpoints": [], "gaps": [
+                {"gap": "app_model_unavailable",
+                 "detail": "the application model could not be read for this run"}]}
         # deterministic trim: the newest evidence-bearing detail outranks the rest
-        return _trim(ctx, ("assets", "findings", "hypotheses", "recent_observations"),
-                     limit or CONTEXT_CHARS)
+        return _trim(ctx, ("application", "assets", "findings", "hypotheses",
+                           "recent_observations"), limit or CONTEXT_CHARS)
 
     # ---- the investigation loop ----
 

@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from .assessment_window import window_state
 from .checks import WebChecks
 from .crawl import Crawler
+from .discovery import Discovery
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
@@ -52,6 +53,14 @@ class ConcurrencyGate:
             yield
         finally:
             self._sem.release()
+
+
+def _norm_app_path(url: str) -> str:
+    """Route identity for the intelligence model: numeric ids collapsed, query dropped."""
+    from urllib.parse import urlparse
+    import re as _re
+    path = urlparse(url).path or "/"
+    return _re.sub(r"/\d+(?=/|$)", "/{id}", path)
 
 
 def _object_collections(checks, endpoints, base: str, cookie_header: str = "") -> list[str]:
@@ -807,6 +816,26 @@ class Orchestrator:
         if result.get("browser_degradation"):
             self.pipeline.record_observation(engagement_id, intent_id, "degradation",
                                              result["browser_degradation"], ev["id"])
+        # Application intelligence: the traffic the browser engine actually observed is the
+        # evidence base for what this application IS, so record it before any check runs.
+        # An agent later reads that model instead of being handed the raw traffic log.
+        try:
+            intel = Discovery(self.db, engagement_id)
+            intel.ingest_traffic(result.get("api_requests") or [], evidence_id=ev["id"])
+            pages = [{"route": p.get("url"), "status": p.get("status")}
+                     for p in (result.get("pages") or [])]
+            for page in pages:
+                if page["route"]:
+                    intel.intel.add("route", _norm_app_path(page["route"]),
+                                    page["route"], {"from": "crawl"},
+                                    provenance="observed", evidence_id=ev["id"])
+            self.db.emit(engagement_id, "app_model",
+                         {"source": "crawl", **intel.intel.summary()})
+        except Exception as e:  # an intelligence failure must never abort an assessment
+            self.db.emit(engagement_id, "degradation", {
+                "code": "app_model_failed", "unit": "crawl", "intent_id": intent_id,
+                "detail": f"application intelligence could not be recorded ({type(e).__name__}: "
+                          f"{e}); checks run without the model"})
         # returned, not written here: _complete persists the handler's result under the
         # same lease fence, so a write here was overwritten with {} and every later
         # web_checks intent found zero endpoints to test.
