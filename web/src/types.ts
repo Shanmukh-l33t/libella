@@ -168,6 +168,6 @@ export interface Report {
   degradations: { code: string; detail: string }[];
   generated_at: number;
 }
-export interface Settings { llm: { base_url?: string; api_key?: string; default_model?: string; models?: Record<string, string>; fallback?: string[] } }
+export interface Settings { llm: { base_url?: string; api_key?: string; default_model?: string; models?: Record<string, string>; fallback?: string[]; api_style?: string } }
 
 export type Tone = "neutral" | "accent" | "success" | "warning" | "danger" | "critical" | "info";

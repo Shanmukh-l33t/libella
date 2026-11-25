@@ -29,6 +29,10 @@ export default function Settings() {
   const [keySet, setKeySet] = useState(false);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<ProviderResult | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const [detected, setDetected] = useState<{ id: string; label: string }[]>([]);
+  const [detectMsg, setDetectMsg] = useState<string | null>(null);
+  const [apiStyle, setApiStyle] = useState<"auto" | "openai" | "anthropic">("auto");
   const usingSavedKey = keySet && effectiveUrl(baseUrl) === effectiveUrl(cfg.data?.llm?.base_url);
 
   useEffect(() => {
@@ -39,7 +43,28 @@ export default function Settings() {
     setModels(llm.models || {});
     setFallback((llm.fallback || []).join("\n"));
     setKeySet(llm.api_key === "[SET]");
+    const st = (llm.api_style || "auto").toLowerCase();
+    setApiStyle(st === "anthropic" || st === "openai" ? st : "auto");
   }, [cfg.data]);
+
+  /** Ask the endpoint which models it has, so nobody has to type an ID from memory. */
+  const detect = async () => {
+    setDetecting(true);
+    setDetectMsg(null);
+    setDetected([]);
+    try {
+      const r = await post<{ status: string; message: string; models: { id: string; label: string }[] }>(
+        "/api/settings/provider-models",
+        { base_url: baseUrl.trim(), api_key: apiKey.trim(), api_style: apiStyle === "auto" ? "" : apiStyle },
+      );
+      setDetected(r.models || []);
+      setDetectMsg(r.models?.length ? `${r.models.length} model(s) found` : r.message);
+    } catch {
+      setDetectMsg("Could not reach the endpoint to list models.");
+    } finally {
+      setDetecting(false);
+    }
+  };
 
   const test = async () => {
     setTesting(true);
@@ -63,6 +88,7 @@ export default function Settings() {
     try {
       const llm: Record<string, unknown> = {
         base_url: baseUrl.trim(),
+        api_style: apiStyle === "auto" ? "" : apiStyle,
         default_model: defaultModel.trim(),
         models: Object.fromEntries(Object.entries(models).filter(([, v]) => v && v.trim()).map(([k, v]) => [k, v.trim()])),
         fallback: fallback.split("\n").map((s) => s.trim()).filter(Boolean),
@@ -100,8 +126,38 @@ export default function Settings() {
                 <Field label={<span className="inline-flex items-center gap-2">API key <Badge tone="info">{usingSavedKey ? "saved" : "not saved"}</Badge></span>} htmlFor="api-key" hint={usingSavedKey ? "Leave blank to use the saved key." : "Enter a key if this endpoint requires one."}>
                   <Input id="api-key" type="password" autoComplete="new-password" value={apiKey} disabled={testing || busy} onChange={(e) => { setApiKey(e.target.value); setResult(null); }} placeholder={usingSavedKey ? "•••••••• (saved)" : undefined} />
                 </Field>
-                <Field label="Default model" htmlFor="default-model" hint="Enter the exact model ID. Blank uses gpt-4o-mini.">
-                  <Input id="default-model" value={defaultModel} disabled={testing || busy} onChange={(e) => { setDefaultModel(e.target.value); setResult(null); }} placeholder="gpt-4o-mini" />
+                <Field label="API style" htmlFor="api-style"
+                  hint="Auto detects from the host. Anthropic speaks the Messages API, which is a different wire format.">
+                  <select id="api-style" className="input h-8 w-full text-sm" value={apiStyle}
+                    disabled={testing || busy}
+                    onChange={(e) => { setApiStyle(e.target.value as "auto" | "openai" | "anthropic"); setDetected([]); setDetectMsg(null); }}>
+                    <option value="auto">Auto detect</option>
+                    <option value="openai">OpenAI compatible</option>
+                    <option value="anthropic">Anthropic Messages</option>
+                  </select>
+                </Field>
+                <Field label="Default model" htmlFor="default-model"
+                  hint="Detect to list what the endpoint offers, then pick one. Typing an exact ID still works.">
+                  <div className="flex gap-2">
+                    <Input id="default-model" value={defaultModel} disabled={testing || busy}
+                      onChange={(e) => { setDefaultModel(e.target.value); setResult(null); }}
+                      placeholder={detected.length ? "pick a detected model" : "gpt-4o-mini"} />
+                    <Button type="button" variant="secondary" disabled={busy || detecting}
+                      loading={detecting} onClick={detect}>Detect</Button>
+                  </div>
+                  {detectMsg && <p className="mt-1 text-xs text-ink-500">{detectMsg}</p>}
+                  {!!detected.length && (
+                    <ul className="mt-2 max-h-40 overflow-auto rounded border border-ink-100">
+                      {detected.map((m) => (
+                        <li key={m.id}>
+                          <button type="button" onClick={() => { setDefaultModel(m.id); setResult(null); }}
+                            className={`w-full px-2 py-1 text-left text-xs hover:bg-ink-50 ${defaultModel === m.id ? "bg-ink-50 font-medium" : ""}`}>
+                            {m.id}{m.label && m.label !== m.id ? <span className="text-ink-400"> — {m.label}</span> : null}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </Field>
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-3">

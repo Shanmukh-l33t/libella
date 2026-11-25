@@ -811,7 +811,8 @@ def create_api(app: App) -> FastAPI:
         except (ValueError, RecursionError):
             raise HTTPException(400, "Invalid provider settings.") from None
         if not isinstance(draft, dict) or any(
-            k not in {"base_url", "default_model", "api_key"} or not isinstance(v, str) or len(v) > 2048
+            k not in {"base_url", "default_model", "api_key", "api_style"}
+            or not isinstance(v, str) or len(v) > 2048
             for k, v in draft.items()
         ):
             raise HTTPException(400, "Invalid provider settings.")
@@ -819,6 +820,37 @@ def create_api(app: App) -> FastAPI:
             return diagnostic_result("busy")
         try:
             return await test_connection(app.llm_settings(), draft)
+        finally:
+            provider_test_lock.release()
+
+    @api.post("/api/settings/provider-models", dependencies=[Depends(auth)])
+    async def provider_models(request: Request):
+        """List the models this endpoint advertises, so a model need not be typed by hand.
+
+        Bounded and allowlisted exactly like the connection test, because it sends the
+        operator's key: discovering models must not become a way to probe arbitrary hosts.
+        """
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 8192:
+                raise HTTPException(413, "Provider settings are too large.")
+            raw.extend(chunk)
+        try:
+            draft = json.loads(raw)
+        except (ValueError, RecursionError):
+            raise HTTPException(400, "Invalid provider settings.") from None
+        if not isinstance(draft, dict) or any(
+            k not in {"base_url", "api_key", "api_style"} or not isinstance(v, str)
+            or len(v) > 2048
+            for k, v in draft.items()
+        ):
+            raise HTTPException(400, "Invalid provider settings.")
+        if not provider_test_lock.acquire(blocking=False):
+            return {"status": "busy", "message": "another provider test is running",
+                    "models": []}
+        try:
+            from .provider_diagnostic import list_models
+            return await list_models(app.llm_settings(), draft)
         finally:
             provider_test_lock.release()
 

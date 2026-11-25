@@ -4,6 +4,7 @@ deterministic code owns state writes and policy.
 """
 import json
 import time
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -36,6 +37,7 @@ class LLM:
         """config: {base_url, api_key, models: {role: model}, fallback: [models],
         pricing: {model: [in, out]}, timeout_s}"""
         self.db = db
+        self.config = config or {}
         self.base_url = (config.get("base_url") or "https://api.openai.com/v1").rstrip("/")
         self.api_key = config.get("api_key") or ""
         self.models = config.get("models", {})
@@ -107,8 +109,27 @@ class LLM:
                 self.ledger.settle(reservation, 0.0)  # no usage known: give the headroom back
             raise
 
+    def protocol(self) -> str:
+        """Which wire protocol this endpoint speaks: "anthropic" or "openai".
+
+        An operator may point Libella at either kind of API, so the choice must be explicit
+        rather than guessed from the URL: a compatible proxy can expose Claude models behind
+        an OpenAI-shaped path and vice versa. `api_style` in the settings wins; otherwise a
+        host of api.anthropic.com implies the Messages API.
+        """
+        style = (self.config.get("api_style") or "").strip().lower()
+        if style in ("anthropic", "messages"):
+            return "anthropic"
+        if style in ("openai", "chat"):
+            return "openai"
+        host = urlsplit(self.base_url).hostname or ""
+        return "anthropic" if "anthropic" in host else "openai"
+
     def _provider_call(self, model, role, system, user, engagement_id, json_schema, temperature,
                        reservation) -> dict:
+        if self.protocol() == "anthropic":
+            return self._anthropic_call(model, role, system, user, engagement_id, json_schema,
+                                        temperature, reservation)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         body = {"model": model, "messages": messages, "temperature": temperature}
         if json_schema:
@@ -168,6 +189,62 @@ class LLM:
         return {"content": content, "parsed": parsed,
                 "usage": {"input_tokens": it, "output_tokens": ot, "cost_usd": round(cost, 6),
                           "model": model}}
+
+    def _anthropic_call(self, model, role, system, user, engagement_id, json_schema,
+                        temperature, reservation) -> dict:
+        """One Messages API call. Same accounting and refusal semantics as the OpenAI path.
+
+        The two APIs differ in the parts an agent actually depends on: the auth header, the
+        system prompt being a top-level field rather than a message, `max_tokens` being
+        REQUIRED, and usage being `input_tokens`/`output_tokens`. Getting any of these wrong
+        fails every agent turn with a provider 400, so they are translated explicitly.
+        """
+        body = {"model": model, "max_tokens": int(self.config.get("max_tokens") or 4096),
+                "temperature": temperature,
+                "system": system,
+                "messages": [{"role": "user", "content": user}]}
+        if json_schema:
+            # a JSON-object nudge, not a schema: the Messages API has no response_format
+            body["system"] = system + "\nReply with ONE JSON object and nothing else."
+        headers = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        try:
+            with httpx.Client(timeout=self.timeout, trust_env=False) as client:
+                resp = client.post(f"{self.base_url}/messages", json=body, headers=headers)
+        except httpx.HTTPError as e:
+            raise LLMError(f"transport: {e}") from e
+        if resp.status_code == 429 or resp.status_code >= 500:
+            raise LLMError(f"provider {resp.status_code}: {resp.text[:200]}")
+        if resp.status_code != 200:
+            raise LLMError(f"provider {resp.status_code}: {resp.text[:300]}")
+        try:
+            data = resp.json()
+            blocks = data.get("content") or []
+            content = "".join(b.get("text", "") for b in blocks
+                              if isinstance(b, dict) and b.get("type") == "text")
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            raise LLMError("provider returned an unexpected response shape") from e
+        if data.get("stop_reason") == "refusal":
+            raise LLMError("provider refusal")
+        usage = data.get("usage") or {}
+        it = usage.get("input_tokens", 0)
+        ot = usage.get("output_tokens", 0)
+        pin, pout = self._price(model)
+        cost = (it * pin + ot * pout) / 1_000_000
+        self.db.execute(
+            "INSERT INTO llm_usage(id, engagement_id, role, model, input_tokens, output_tokens, "
+            "cost_usd, created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (new_id("lu"), engagement_id, role, model, it, ot, round(cost, 6), time.time()),
+        )
+        if reservation is not None and self.ledger is not None:
+            self.ledger.settle(reservation, cost)
+        parsed = self._parse_json(content) if json_schema else None
+        if json_schema and parsed is None:
+            raise LLMError("malformed structured output")
+        return {"content": content, "parsed": parsed,
+                "usage": {"input_tokens": it, "output_tokens": ot,
+                          "cost_usd": round(cost, 6), "model": model}}
 
     @staticmethod
     def _parse_json(content: str):
