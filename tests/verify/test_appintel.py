@@ -185,6 +185,23 @@ def test_context_is_relevant_and_reports_what_it_left_out(intel):
     assert wide["truncated"] is True and len(wide["items"]) <= 5
 
 
+def test_gaps_survive_an_endpoint_that_has_a_parameter(intel):
+    """Regression: gaps() read the wrong edge field and crashed once a parameter existed.
+
+    The unit tests passed because none of them recorded a parameter before calling gaps();
+    the UI found it as a 500 on a real engagement. This pins the combination.
+    """
+    intel["disc"].ingest_traffic(
+        [{"method": "GET", "url": "http://h/api/orders?page=1", "page": "http://h/"}],
+        evidence_id="ev")
+    gaps = intel["intel"].gaps()
+    assert isinstance(gaps, list)
+    # the endpoint HAS a parameter, so that gap must not be reported
+    assert not any(g["gap"] == "unknown_parameters" for g in gaps)
+    # and it serves nothing yet, so that gap must be
+    assert any(g["gap"] == "unknown_resource" for g in gaps)
+
+
 def test_gaps_are_stated_rather_than_silent(intel):
     """An agent must know where its knowledge stops, or it re-tests and invents."""
     intel["disc"].ingest_traffic(

@@ -9,6 +9,7 @@ import { Badge, Button, ErrorNote, Modal, Select, Skeleton, Tabs, cx, useToast }
 import Overview from "./engagement/Overview";
 import { feedView } from "../lib/feed";
 import Operations from "./engagement/Operations";
+import ApplicationTab from "./engagement/ApplicationTab";
 import AssetsTab from "./engagement/Assets";
 import GraphTab from "./engagement/Graph";
 import FindingsTab from "./engagement/FindingsTab";
@@ -17,7 +18,7 @@ import EvidenceTab from "./engagement/Evidence";
 import RemediationTab from "./engagement/Remediation";
 import ReportTab from "./engagement/Report";
 
-const TABS = ["overview", "operations", "assets", "traffic", "evidence", "graph", "findings", "remediation", "report"];
+const TABS = ["overview", "operations", "application", "assets", "traffic", "evidence", "graph", "findings", "remediation", "report"];
 const MODES = ["deterministic", "llm", "agent"];
 const STARTABLE = ["draft", "done", "failed", "cancelled", "budget_exhausted"];
 
@@ -192,6 +193,7 @@ export default function Engagement() {
       <Tabs value={tab} onChange={setTab} tabs={[
         { id: "overview", label: "Overview" },
         { id: "operations", label: "Operations" },
+        { id: "application", label: "Application" },
         { id: "assets", label: "Assets" },
         { id: "traffic", label: "Traffic" },
         { id: "evidence", label: "Evidence" },
@@ -203,6 +205,7 @@ export default function Engagement() {
 
       {tab === "overview" && <Overview eid={id} eng={e} live={live} events={events} degradations={degradations} />}
       {tab === "operations" && <Operations eid={id} live={live} />}
+      {tab === "application" && <ApplicationTab eid={id} live={live} />}
       {tab === "assets" && <AssetsTab eid={id} live={live} />}
       {tab === "traffic" && <TrafficTab eid={id} live={live} />}
       {tab === "evidence" && <EvidenceTab eid={id} live={live} />}

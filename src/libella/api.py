@@ -1030,6 +1030,10 @@ def create_api(app: App) -> FastAPI:
         return {"server": server, "available": True,
                 "tools": [s.schema() for s in specs]}
 
+    # application intelligence: read-only view of what the engine understands
+    from .routes_application import register as register_application_routes
+    register_application_routes(api, app, auth)
+
     # target credentials: sealed at rest, tested only inside an authorized scope
     from .routes_target_auth import register as register_target_auth
     register_target_auth(api, app, auth)

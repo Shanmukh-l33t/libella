@@ -217,14 +217,18 @@ class AppIntel:
                         "authorization questions cannot be framed",
                         "would_close_with": "log in as at least one identity and record the role"})
         endpoints = [n for n in nodes if n["kind"] == ENDPOINT]
-        with_params = {e["key"] for e in self.edges_all() if e["kind"] == "accepts"}
+        edges = self.edges_all()
+        # an endpoint HAS a parameter when an "accepts" edge starts at it: the edge names
+        # src/dst, not "key", and reading the wrong field crashed this method on any
+        # engagement that had recorded a parameter at all
+        with_params = {e["src"] for e in edges if e["kind"] == "accepts"}
+        serves = {e["src"] for e in edges if e["kind"] == "serves"}
         for ep in endpoints:
             if ep["key"] not in with_params and ep["provenance"] in (OBSERVED, SPEC):
                 out.append({"gap": "unknown_parameters", "endpoint": ep["key"],
                             "detail": "endpoint observed but no input surface recorded",
                             "would_close_with": "a request with a parameter, or a schema"})
-            if not any(e["kind"] == "serves" and e["src"] == ep["key"]
-                       for e in self.edges_all()):
+            if ep["key"] not in serves:
                 out.append({"gap": "unknown_resource", "endpoint": ep["key"],
                             "detail": "no resource model for this endpoint",
                             "would_close_with": "a response showing the object and its owner"})
