@@ -176,11 +176,15 @@ class Discovery:
         res_id = self.intel.add(appintel.RESOURCE, res_key, res_key,
                                 {"id_field": "id", "sample_id": record.get("id")},
                                 provenance=appintel.OBSERVED, evidence_id=evidence_id)
+        # The endpoint that served this record is itself evidence: record it and link it,
+        # rather than only linking when a crawl happened to register the same URL. Without
+        # this edge the resource has no serving endpoint and the authorization hypothesis
+        # is blocked forever, which reads as "nothing to test" instead of a missing link.
         ep_key = f"{method.upper()} {url.split('?')[0]}"
-        ep = self.intel.node(appintel.ENDPOINT, ep_key)
-        if ep:
-            self.intel.link(ep["id"], res_id, "serves", appintel.OBSERVED,
-                            evidence_id=evidence_id)
+        ep_id = self.intel.add(appintel.ENDPOINT, ep_key, url.split("?")[0],
+                               {"method": method.upper(), "from": "response"},
+                               provenance=appintel.OBSERVED, evidence_id=evidence_id)
+        self.intel.link(ep_id, res_id, "serves", appintel.OBSERVED, evidence_id=evidence_id)
         owner = _owner_field(record)
         if owner:
             name, value = owner

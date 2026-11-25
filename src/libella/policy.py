@@ -26,6 +26,11 @@ MIN_PROFILE = {
     # offence: token, OAuth, session and role-boundary audits are active but bounded
     "jwt_audit": "safe_active", "oauth_audit": "safe_active",
     "session_audit": "safe_active", "privesc_audit": "safe_active",
+    # hypothesis-driven tests are active but bounded: a planner may only schedule classes
+    # the engagement profile already permits, and each test is one of the checks above
+    "hypothesis_tests": "safe_active", "hypothesis_authz": "safe_active",
+    "hypothesis_ssrf": "safe_active", "hypothesis_injection": "safe_active",
+    "hypothesis_session": "safe_active",
     "injection_audit": "safe_active", "web_protocol_audit": "safe_active",
     "impact_proof": "safe_active",
     # agent specialist roles

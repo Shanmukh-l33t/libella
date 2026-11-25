@@ -19,6 +19,7 @@ from .assessment_window import window_state
 from .checks import WebChecks
 from .crawl import Crawler
 from .discovery import Discovery
+from .hypotheses import HypothesisStore, materialize
 from .db import DB, new_id
 from .evidence import EvidenceStore
 from .findings import FindingPipeline
@@ -34,6 +35,7 @@ from .verifier import Verifier
 LEASE_S = 120
 MODES = ("deterministic", "llm", "agent")
 ROLES = {"recon", "crawl", "web_checks", "nuclei_scan", "infra_scan", "verify", "report",
+         "hypothesis_tests",
          "code_audit", "api_audit", "container_scan", "graphql_audit",
          "jwt_audit", "oauth_audit", "session_audit", "privesc_audit",
          "injection_audit", "web_protocol_audit", "impact_proof"}
@@ -53,6 +55,33 @@ class ConcurrencyGate:
             yield
         finally:
             self._sem.release()
+
+
+def _identity_for(checks, auth: dict, scope) -> tuple[str, object, str]:
+    """Log in as the FIRST declared identity and return (cookie, uid, name).
+
+    Authorization testing needs an authenticated identity, and it must be one the operator
+    declared: this never invents credentials. An empty cookie means the test cannot run, and
+    the caller treats that as "not executed" rather than as a pass.
+    """
+    for ident in auth.get("identities") or []:
+        login_url = ident.get("login_url")
+        if not login_url or not scope.check_url(login_url).allowed:
+            continue
+        uf = ident.get("username_field", "username")
+        pf = ident.get("password_field", "password")
+        r = checks.probe.request(
+            checks.eng, scope, login_url, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            body=f"{uf}={ident.get('username','')}&{pf}={ident.get('password','')}",
+            tool="hypothesis_login")
+        if not r.get("ok"):
+            continue
+        jar = [v for k, v in (r.get("headers") or {}).items() if k.lower() == "set-cookie"]
+        cookie = "; ".join(j.split(";")[0] for j in jar)
+        if cookie:
+            return cookie, ident.get("uid"), ident.get("username", "")
+    return "", None, ""
 
 
 def _norm_app_path(url: str) -> str:
@@ -318,6 +347,14 @@ class Orchestrator:
             audit_ids.append(self._add_intent(engagement_id, "session_audit",
                                               "Session lifecycle audit for the declared identity",
                                               depends=recon_ids))
+        # Hypothesis-driven testing: after the crawl has populated the application model,
+        # one intent schedules the tests the model itself raises. It depends on the crawl
+        # because there is nothing to hypothesize about before functionality is discovered.
+        if "web" in scope.categories and urls and crawl_ids:
+            audit_ids.append(self._add_intent(
+                engagement_id, "hypothesis_tests",
+                "Test the security questions the application model raises",
+                depends=crawl_ids))
         if len(auth.get("identities") or []) >= 2 and urls:
             audit_ids.append(self._add_intent(engagement_id, "privesc_audit",
                                               "Role matrix across the declared identities",
@@ -685,6 +722,9 @@ class Orchestrator:
             result = self._do_crawl(engagement_id, scope, obj, intent["id"]) or {}
         elif role == "web_checks":
             result = self._do_web_checks(engagement_id, scope, eng, obj, intent["id"]) or {}
+        elif role == "hypothesis_tests":
+            result = self._do_hypothesis_tests(engagement_id, scope, eng, obj,
+                                               intent["id"]) or {}
         elif role == "nuclei_scan":
             self._do_nuclei(engagement_id, scope, eng, obj, intent["id"])
         elif role == "infra_scan":
@@ -1082,6 +1122,80 @@ class Orchestrator:
                       "mitigated": len(checks.mitigated)})
         return {"candidates": len(candidates), "mitigated": len(checks.mitigated),
                 "skipped": skipped}
+
+    def _do_hypothesis_tests(self, engagement_id, scope, eng, obj, intent_id):
+        """Execute the tests the application model raises, best-value first, and record why.
+
+        This is the bridge the product was missing: the model names a security question, the
+        planner ranks it deterministically, the prerequisites decide whether it may run, and
+        the outcome updates the hypothesis. Nothing here converts a graph edge into a
+        finding: a test either produced evidence the verifier accepted, or it did not.
+        """
+        from .checks import WebChecks
+        auth = json.loads(eng.get("auth_json") or "{}")
+        materialize(self.db, engagement_id, auth)
+        store = HypothesisStore(self.db, engagement_id)
+        planned = store.plan(limit=6)
+        self.db.emit(engagement_id, "hypothesis_plan",
+                     {"intent_id": intent_id, "planned": len(planned),
+                      "blocked": len(store.all("blocked"))})
+        if not planned:
+            return {"planned": 0, "executed": 0}
+        checks = WebChecks(self.probe, engagement_id, scope, self.db)
+        executed, findings = 0, []
+        for h in planned:
+            before = {f["id"] for f in self.pipeline.list(engagement_id)}
+            store.attach_intent(h["id"], intent_id)
+            produced: list[dict] = []
+            try:
+                produced = self._run_hypothesis(checks, h, auth, scope)
+            except Exception as e:  # a hypothesis that cannot run is inconclusive, not fatal
+                self.pipeline.record_observation(
+                    engagement_id, intent_id, "degradation",
+                    f"hypothesis {h['id']} ({h['class']}) could not run: "
+                    f"{type(e).__name__}: {e}")
+                store.record_outcome(h["id"], "inconclusive", f"{type(e).__name__}: {e}")
+                continue
+            for cand in produced:
+                self.pipeline.submit_candidate(engagement_id, cand, intent_id)
+            after = self.pipeline.list(engagement_id)
+            new = [f for f in after if f["id"] not in before]
+            executed += 1
+            if new:
+                findings.extend(f["id"] for f in new)
+                # the test produced candidates; whether they are WEAKNESSES is the
+                # verifier's decision, so the hypothesis records "observed", never "verified"
+                store.record_outcome(h["id"], "observed",
+                                     f"{len(new)} candidate(s) awaiting verification",
+                                     new[0]["id"])
+            else:
+                store.record_outcome(h["id"], "refuted",
+                                     "the test ran and produced no evidence of the weakness")
+        self.db.emit(engagement_id, "hypothesis_executed",
+                     {"intent_id": intent_id, "executed": executed,
+                      "candidates": len(findings)})
+        return {"planned": len(planned), "executed": executed, "candidates": len(findings)}
+
+    def _run_hypothesis(self, checks, h: dict, auth: dict, scope) -> list[dict]:
+        """Dispatch ONE hypothesis to the check its class names, using its own parameters."""
+        endpoint, param = h.get("endpoint"), h.get("param")
+        if not endpoint:
+            return []
+        if h["class"] == "ssrf" and param:
+            return checks.fetch_param(endpoint, param)
+        if h["class"] == "injection" and param:
+            return checks.sqli_boolean(endpoint, param) + checks.sqli(endpoint, param)
+        if h["class"] == "authorization" and h.get("resource"):
+            cookie, uid, name = _identity_for(checks, auth, scope)
+            if not cookie:
+                return []
+            # The hypothesis names the endpoint that SERVED the record ("GET <url>/5001").
+            # Enumeration needs the COLLECTION, and it derives the ids itself from the
+            # listing, so strip the method prefix and the object id rather than guessing.
+            target = endpoint.split(" ", 1)[1] if " " in endpoint else endpoint
+            collection = target.rstrip("/").rsplit("/", 1)[0]
+            return checks.object_enumeration(collection, cookie, name, uid)
+        return []
 
     def _do_nuclei(self, engagement_id, scope, eng, obj, intent_id):
         url = self._target_from_obj(obj)
